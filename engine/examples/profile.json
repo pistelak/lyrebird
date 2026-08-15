@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "_comment": "Exact hostnames to intercept. Subdomains are NOT implied — list each one you need. Replace these with the API your simulator app actually calls.",
+  "hosts": [
+    "api.example.com"
+  ],
+  "simBundleId": "com.example.Store"
+}

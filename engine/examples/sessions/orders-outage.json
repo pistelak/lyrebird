@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "name": "orders-outage",
+  "notes": "replace + wildcard path: every GET /api/v1/orders/<anything> returns 500 without contacting the upstream at all. Use this to exercise error and retry states. 'replace' short-circuits locally, so it works even when the real API is unreachable.",
+  "verified": false,
+  "overrides": [
+    {
+      "match": {
+        "method": "GET",
+        "path": "/api/v1/orders/*"
+      },
+      "mode": "replace",
+      "status": 500,
+      "body": {
+        "error": {
+          "code": "INTERNAL_ERROR",
+          "message": "Something went wrong."
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "name": "slow-profile",
+  "notes": "replace + delayMs: a canned profile payload returned after a one-second pause, for checking loading states and spinners. The delay applies to this flow only \u2014 other requests keep being served while it waits.",
+  "verified": false,
+  "overrides": [
+    {
+      "match": {
+        "method": "GET",
+        "path": "/api/v1/users/me"
+      },
+      "mode": "replace",
+      "status": 200,
+      "delayMs": 1000,
+      "body": {
+        "id": "usr_000001",
+        "displayName": "Example User",
+        "plan": "free",
+        "preferences": {
+          "theme": "light",
+          "notifications": true
+        }
+      }
+    }
+  ]
+}

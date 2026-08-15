@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "name": "enable-beta-export",
+  "notes": "patch + appendToArray: let the REAL GET /api/v1/features response through, then append one extra feature so a flag-gated screen becomes reachable without a backend change. Because this patches a real response, it needs an upstream that actually serves /api/v1/features \u2014 see 'replace' sessions for rules that work with no upstream at all.",
+  "verified": false,
+  "overrides": [
+    {
+      "match": {
+        "method": "GET",
+        "path": "/api/v1/features"
+      },
+      "mode": "patch",
+      "patchStrategy": "appendToArray",
+      "patch": {
+        "features": [
+          {
+            "id": "BETA_EXPORT",
+            "enabled": true
+          }
+        ]
+      }
+    }
+  ]
+}

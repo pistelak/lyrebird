@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "name": "checkout-edge-cases",
+  "notes": "Several rules cooperating in one scenario, and the matchers the other examples don't reach: matching on HTTP method, on a query parameter, and on request-body content; custom response headers; and a bodyless 204. The first rule only fires for a POST to /api/v1/checkout that carries ?mode=test AND an expired coupon in the body \u2014 anything else falls through to the real API.",
+  "verified": false,
+  "overrides": [
+    {
+      "match": {
+        "method": "POST",
+        "path": "/api/v1/checkout",
+        "query": {
+          "mode": "test"
+        },
+        "bodyContains": "\"coupon\":\"EXPIRED\""
+      },
+      "mode": "replace",
+      "status": 422,
+      "headers": {
+        "Content-Type": "application/json",
+        "X-Lyrebird-Scenario": "expired-coupon"
+      },
+      "body": {
+        "error": {
+          "code": "COUPON_EXPIRED",
+          "message": "That coupon is no longer valid."
+        }
+      }
+    },
+    {
+      "match": {
+        "method": "DELETE",
+        "path": "/api/v1/orders/*"
+      },
+      "mode": "replace",
+      "status": 204
+    }
+  ]
+}
