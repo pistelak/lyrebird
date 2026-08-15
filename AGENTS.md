@@ -156,7 +156,8 @@ net; if not, take a copy before touching someone else's sessions.
 | `up` fails on CA | No booted simulator. Boot one first |
 | 421 / 415 from the API | Missing `Host: 127.0.0.1:8088` or `Content-Type: application/json` — or just use the CLI |
 
-`lyrebird logs` tails the proxy log. When the proxy itself fails to start, `up` prints the last
+`lyrebird logs` prints the last 60 lines of the proxy log and writes the path to stderr, so
+`tail -f "$(lyrebird logs 2>&1 >/dev/null)"` follows it. When the proxy itself fails to start, `up` prints the last
 lines for you; later failures (CA, PAC, relaunch) report their own reason instead.
 
 ## Do not

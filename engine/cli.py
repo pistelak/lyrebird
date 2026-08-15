@@ -615,8 +615,9 @@ def untrust_ca_cmd() -> None:
 
 @cli.command()
 def logs() -> None:
-    """Tail the proxy log."""
+    """Print the last 60 lines of the proxy log (not a follow — use `tail -f` on the path shown)."""
     click.echo(_tail_log(60))
+    click.echo(f"{DIM}{config.LOG_FILE}{R}", err=True)
 
 
 @cli.command(name="_watchdog", hidden=True)

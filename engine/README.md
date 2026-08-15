@@ -62,7 +62,7 @@ worth keeping in git — which is why it lives in `~/.config` and none of the ab
 ../bin/lyrebird --profile ~/lyrebird-profiles/my-app status  # intercepting? which session? PAC state?
 ../bin/lyrebird --profile ~/lyrebird-profiles/my-app use orders-outage
 ../bin/lyrebird --profile ~/lyrebird-profiles/my-app down    # stop and restore previous settings
-../bin/lyrebird logs                                          # tail proxy log
+../bin/lyrebird logs                                          # last 60 lines; path on stderr
 ```
 
 `up` prints a **🔴 INTERCEPT ACTIVE** banner and starts a watchdog that notices within a couple of
