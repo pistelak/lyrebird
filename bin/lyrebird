@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# Lyrebird launcher — runs the engine CLI inside its own venv.
+ENGINE="$(cd "$(dirname "${BASH_SOURCE[0]}")/../engine" && pwd)"
+
+if [[ ! -x "$ENGINE/.venv/bin/python" ]]; then
+  cat >&2 <<EOF
+lyrebird: no virtualenv at $ENGINE/.venv
+
+  cd "$ENGINE"
+  python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+EOF
+  exit 1
+fi
+
+exec "$ENGINE/.venv/bin/python" "$ENGINE/cli.py" "$@"
