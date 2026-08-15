@@ -10,7 +10,7 @@
     lyrebird status [--json]              show intercept state (honest about PAC on/off)
     lyrebird wait-ready [--match]         block until traffic arrives, or until a rule matches
     lyrebird trust-ca / untrust-ca        manage the simulator CA
-    lyrebird logs                         tail the proxy log
+    lyrebird logs                         print the last 60 lines; path on stderr
 
 Routing uses a *host-scoped PAC* so only the hosts in your profile go through the proxy; everything
 else stays DIRECT. Whatever PAC you had before is recorded and put back on `down` — and by the
@@ -240,10 +240,7 @@ def _up_locked(bundle_id: str | None) -> None:
         click.echo(f"{YELLOW}proxy already running{R} (session '{existing['activeSession']}')")
         proxy_pid = existing.get("pid", 0)
     else:
-        config.LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-        # 0600 at creation: the log names every host and path that came through, and
-        # LYREBIRD_STATE_DIR can point somewhere with none of ~/Library's protection.
-        os.close(os.open(config.LOG_FILE, os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600))
+        _start_fresh_log()
         # Popen dups the fd for the child, so closing our copy immediately is correct.
         with open(config.LOG_FILE, "a", encoding="utf-8") as log:
             proc = subprocess.Popen(
@@ -642,6 +639,18 @@ def watchdog(service: str) -> None:
 
 
 # MARK: - Presentation
+
+def _start_fresh_log() -> None:
+    """Begin each run on a new inode rather than truncating the old one.
+
+    The log names every host and path that came through, so it is 0600 — but a log left by an
+    older version may be 0644, and `chmod` cannot revoke a descriptor somebody already holds.
+    Truncating in place keeps that inode, so a reader who opened it while it was readable goes on
+    seeing new traffic. Renaming a fresh private file over it leaves them holding the old one.
+    """
+    config.LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    config.atomic_write(config.LOG_FILE, "")
+
 
 def _tail_log(lines: int) -> str:
     if not config.LOG_FILE.is_file():

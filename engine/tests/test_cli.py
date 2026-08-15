@@ -6,6 +6,8 @@ the user is left with a PAC pointing at a dead port and no indication why.
 """
 
 
+import os
+
 import pytest
 from click.testing import CliRunner
 
@@ -151,3 +153,26 @@ def test_status_fails_when_the_proxy_is_up_but_the_pac_is_off(profile, runner, m
                         lambda service: netproxy.PacStatus(netproxy.pac_url(), False, True))
 
     assert runner.invoke(cli.cli, ["status"]).exit_code == 1
+
+
+def test_up_starts_the_log_on_a_new_inode(profile, tmp_path):
+    """A log left at 0644 by an older version cannot be made private by chmod alone.
+
+    Anyone already holding it keeps reading, because a descriptor carries its own access. Only a
+    new inode cuts them off — so this asserts the identity of the file changed, not just its mode.
+    """
+    config.LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    config.LOG_FILE.write_text("from an older run\n")
+    os.chmod(config.LOG_FILE, 0o644)
+    stale_inode = config.LOG_FILE.stat().st_ino
+
+    with open(config.LOG_FILE) as reader:
+        reader.read()
+        cli._start_fresh_log()
+        with open(config.LOG_FILE, "a", encoding="utf-8") as sink:
+            sink.write("a host and a path\n")
+        overheard = reader.read()
+
+    assert config.LOG_FILE.stat().st_ino != stale_inode, "the lax inode was truncated, not replaced"
+    assert config.LOG_FILE.stat().st_mode & 0o777 == 0o600
+    assert overheard == "", f"a reader of the old log still saw traffic: {overheard!r}"

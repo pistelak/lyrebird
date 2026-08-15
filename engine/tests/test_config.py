@@ -1,8 +1,10 @@
 """Host scoping. The three mechanisms below must agree, because each one is a separate chance to
 intercept traffic the user never asked us to touch."""
 
+import builtins
 import os
 import re
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -106,9 +108,10 @@ def test_pac_advertises_the_proxy_host_not_the_control_host(hosts):
 
 # MARK: - Default locations
 #
-# Profiles are configuration and belong in ~/.config. Nothing the tool writes for itself does, and
-# the three places it writes differ in what is allowed to destroy them: state and the CA must
-# survive, the catalog may be discarded, the log is for a person to read.
+# Profiles are configuration and belong in ~/.config, as do the sessions and presets you save into
+# one. Nothing the tool writes for its own purposes does, and the three places it writes differ in
+# what may destroy them: state and the CA must survive, the catalog may be discarded, the log is
+# for a person to read.
 
 def test_default_profile_lives_in_config_home(monkeypatch):
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
@@ -132,6 +135,16 @@ def test_each_default_root_is_the_macos_directory_for_its_lifetime():
         assert str(root).endswith(f"Library/{expected}"), f"{root} is not Library/{expected}"
         assert "/.config" not in str(root)
     assert len(set(roots.values())) == 3, "the three roots must be distinct"
+
+
+def test_configure_wires_each_path_to_its_own_root(monkeypatch, tmp_path):
+    """Naming the right directories is worth nothing if `configure` does not use them."""
+    monkeypatch.delenv("LYREBIRD_STATE_DIR", raising=False)
+    config.configure(str(tmp_path / "profile"))
+
+    assert config.STATE_FILE.is_relative_to(config._default_state_root())
+    assert config.CATALOG_FILE.is_relative_to(config._default_cache_root())
+    assert config.LOG_FILE.is_relative_to(config._default_log_root())
 
 
 def test_state_dir_override_collapses_all_three(monkeypatch, tmp_path):
@@ -178,46 +191,6 @@ def test_all_three_matchers_agree_on_case(hosts):
     assert "toLowerCase" in pac
 
 
-# MARK: - Private writes
-#
-# atomic_write promises, in its first sentence, that what it writes is never world-readable and
-# never observed half-written. It used to write first and chmod second, so the payload sat at 0644
-# for the width of that gap.
-
-def test_atomic_write_is_never_world_readable(tmp_path):
-    target = tmp_path / "secret.json"
-    config.atomic_write(target, '{"token": "value"}')
-
-    assert target.stat().st_mode & 0o777 == 0o600
-    assert target.read_text(encoding="utf-8") == '{"token": "value"}'
-
-
-def test_atomic_write_refuses_to_write_through_a_planted_symlink(tmp_path):
-    """The temporary name is derived from the pid, so it is guessable by anything running as you."""
-    victim = tmp_path / "victim"
-    victim.write_text("untouched")
-    target = tmp_path / "out.json"
-    decoy = target.with_suffix(target.suffix + f".tmp{os.getpid()}")
-    decoy.symlink_to(victim)
-
-    config.atomic_write(target, "payload")
-
-    assert victim.read_text() == "untouched", "the write followed a symlink out of its directory"
-    assert target.read_text() == "payload"
-
-
-def test_atomic_write_survives_a_stale_temporary_file(tmp_path):
-    """A crash, or a reused pid, can leave one behind; that must not wedge every later write."""
-    target = tmp_path / "out.json"
-    stale = target.with_suffix(target.suffix + f".tmp{os.getpid()}")
-    stale.write_text("leftover")
-
-    config.atomic_write(target, "fresh")
-
-    assert target.read_text() == "fresh"
-    assert not stale.exists()
-
-
 def test_the_same_profile_gets_one_fingerprint_however_it_is_named(monkeypatch, tmp_path):
     """State is keyed by a hash of the profile path, so two spellings of one directory would mean
     two active-session pointers and two logs for the same profile."""
@@ -235,3 +208,207 @@ def test_the_same_profile_gets_one_fingerprint_however_it_is_named(monkeypatch, 
     implicit = config.PROFILE_FINGERPRINT
     config.configure(str(link / "lyrebird"))            # explicit: the same directory, named
     assert config.PROFILE_FINGERPRINT == implicit
+
+
+# MARK: - Private writes
+#
+# atomic_write promises, in its first sentence, that what it writes is never world-readable and
+# never observed half-written. It used to write first and chmod second, so the payload sat at 0644
+# for the width of that gap.
+
+def test_atomic_write_creates_the_file_already_private(tmp_path, monkeypatch):
+    """Read the mode off the descriptor while it is open, because the finished file cannot tell you.
+
+    The original implementation chmodded after writing and so also ended at 0600 — an assertion
+    about the final mode passes either way and proves nothing about the window in between.
+    """
+    seen = {}
+    real_open = builtins.open
+
+    def spy(file, *args, **kwargs):
+        if isinstance(file, int):
+            seen["mode"] = os.fstat(file).st_mode & 0o777
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", spy)
+    config.atomic_write(tmp_path / "secret.json", '{"token": "value"}')
+
+    assert seen["mode"] == 0o600, "content was written into a file others could already read"
+
+
+def test_atomic_write_leaves_the_finished_file_private(tmp_path):
+    target = tmp_path / "secret.json"
+    config.atomic_write(target, '{"token": "value"}')
+
+    assert target.stat().st_mode & 0o777 == 0o600
+    assert target.read_text(encoding="utf-8") == '{"token": "value"}'
+
+
+def test_atomic_write_closes_the_descriptor_when_the_wrapper_cannot_be_built(tmp_path, monkeypatch):
+    """The failure path must close the descriptor exactly once and surface the original error.
+
+    Two assertions, because neither alone is enough. Counting closes catches a cleanup that never
+    happens — unlinking the temporary hides the leaked descriptor, so nothing else would notice.
+    The sentinel catches the opposite error, a cleanup that closes a descriptor it no longer owns:
+    both `closefd` settings end with the descriptor closed, the LookupError preserved and the
+    temporary gone, and the EBADF a double close would raise is suppressed, so what separates them
+    is *when* the number is released. Under `closefd=True` the real `open` frees it as it fails,
+    the sentinel claimed immediately afterwards is handed that same number, and cleanup closes it.
+    """
+    owned, sentinel, closes = {}, {}, []
+    real_open, real_close = builtins.open, os.close
+
+    def record_close(descriptor):
+        closes.append(descriptor)
+        real_close(descriptor)
+
+    def unusable_encoding(file, *args, **kwargs):
+        if not isinstance(file, int):
+            return real_open(file, *args, **kwargs)
+        owned["fd"] = file
+        kwargs["encoding"] = "definitely-not-a-codec"
+        try:
+            return real_open(file, *args, **kwargs)
+        except LookupError:
+            sentinel["fd"] = os.open(os.devnull, os.O_RDONLY)
+            raise
+
+    monkeypatch.setattr(builtins, "open", unusable_encoding)
+    monkeypatch.setattr(os, "close", record_close)
+    with pytest.raises(LookupError):
+        config.atomic_write(tmp_path / "secret.json", "payload")
+    monkeypatch.undo()
+
+    survived = True
+    try:
+        os.fstat(sentinel["fd"])
+    except OSError:
+        survived = False
+    else:
+        os.close(sentinel["fd"])
+
+    assert closes.count(owned["fd"]) == 1, f"owned descriptor closed {closes.count(owned['fd'])}x"
+    assert survived, "cleanup closed a descriptor it no longer owned"
+    assert not list(tmp_path.iterdir()), "a temporary file was left behind"
+
+def test_atomic_write_reports_the_write_failure_not_the_cleanup_failure(tmp_path, monkeypatch):
+    """If tidying up also fails, the caller still needs to know why the write did."""
+    def refuse_replace(self, target):
+        raise OSError("replace failed")
+
+    def refuse_unlink(self, missing_ok=False):
+        raise OSError("unlink failed")
+
+    monkeypatch.setattr(Path, "replace", refuse_replace)
+    monkeypatch.setattr(Path, "unlink", refuse_unlink)
+
+    with pytest.raises(OSError, match="replace failed"):
+        config.atomic_write(tmp_path / "out.json", "payload")
+
+
+def test_atomic_write_refuses_to_write_through_a_planted_symlink(tmp_path):
+    """A predictable temporary name is guessable by anything running as you; a unique one is not."""
+    victim = tmp_path / "victim"
+    victim.write_text("untouched")
+    target = tmp_path / "out.json"
+    decoy = target.with_suffix(target.suffix + f".tmp{os.getpid()}")
+    decoy.symlink_to(victim)
+
+    config.atomic_write(target, "payload")
+
+    assert victim.read_text() == "untouched", "the write followed a symlink out of its directory"
+    assert target.read_text() == "payload"
+
+
+def test_atomic_write_uses_a_unique_temporary_each_time(tmp_path, monkeypatch):
+    """The name used to be derived from the pid, which every thread in a process shares, so two
+    concurrent writes raced for one file. A unique name also cannot be lain in wait at."""
+    target = tmp_path / "out.json"
+    names = set()
+    real_mkstemp = tempfile.mkstemp
+
+    def record(*args, **kwargs):
+        descriptor, name = real_mkstemp(*args, **kwargs)
+        names.add(name)
+        return descriptor, name
+
+    monkeypatch.setattr(tempfile, "mkstemp", record)
+    for _ in range(3):
+        config.atomic_write(target, "payload")
+
+    assert len(names) == 3, "the temporary name was reused"
+    assert target.read_text() == "payload"
+    assert [p.name for p in tmp_path.iterdir()] == ["out.json"], "a temporary file was left behind"
+
+
+@pytest.mark.parametrize("mask", [0o022, 0o077, 0o177, 0o777])
+def test_atomic_write_mode_does_not_depend_on_the_umask(tmp_path, mask):
+    """`mkstemp` requests 0600 and the umask subtracts from it: under 0o777 the file came out 000,
+    which is not just a wrong number — nothing could read the state back afterwards."""
+    target = tmp_path / "secret.json"
+    previous = os.umask(mask)
+    try:
+        config.atomic_write(target, "payload")
+    finally:
+        os.umask(previous)
+
+    assert target.stat().st_mode & 0o777 == 0o600
+    assert target.read_text() == "payload"
+
+
+def test_atomic_write_reports_the_write_failure_not_a_failing_close(tmp_path, monkeypatch):
+    """A close that fails while unwinding must not become the error the caller sees."""
+    real_open = builtins.open
+
+    closes = []
+
+    class FailsBothWays:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info):
+            raise OSError("close failed")
+
+        def close(self):
+            closes.append(True)
+            raise OSError("close failed")
+
+        def write(self, _text):
+            raise OSError("write failed")
+
+    def hand_back_a_broken_wrapper(file, *args, **kwargs):
+        if isinstance(file, int):
+            return FailsBothWays()
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", hand_back_a_broken_wrapper)
+    with pytest.raises(OSError, match="write failed"):
+        config.atomic_write(tmp_path / "out.json", "payload")
+
+    assert closes == [True], "the wrapper was not closed while unwinding"
+
+
+def test_atomic_write_aborts_if_the_descriptor_will_not_close(tmp_path, monkeypatch):
+    """The descriptor is closed before the rename, so a close failure must stop the write there.
+
+    That ordering is the point: a close is where buffered data finally reports failure, and the
+    destination must still be untouched when it does.
+    """
+    target = tmp_path / "out.json"
+    target.write_text("previous")
+
+    attempts = []
+    real_close = os.close
+
+    def close_then_report_failure(descriptor):
+        attempts.append(descriptor)
+        real_close(descriptor)  # released, as a real close is even when it reports an error
+        raise OSError("descriptor close failed")
+
+    monkeypatch.setattr(os, "close", close_then_report_failure)
+    with pytest.raises(OSError, match="descriptor close failed"):
+        config.atomic_write(target, "payload")
+    monkeypatch.undo()
+
+    assert len(attempts) == 1, f"closed {len(attempts)} times; the second may hit someone else's fd"
+    assert target.read_text() == "previous", "the destination was replaced despite a failed write"

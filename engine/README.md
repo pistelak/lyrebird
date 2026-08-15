@@ -36,14 +36,15 @@ Select one with `--profile PATH` (wins) or `LYREBIRD_PROFILE`; the default is
 list means *intercept nothing*, and a malformed profile aborts rather than falling back to a
 default.
 
-Nothing the tool writes for itself goes in the profile. It goes to the macOS directory that matches
-how long the file deserves to live:
+Sessions and presets you save go into the profile — that is what it is for. Everything the tool
+writes for its own purposes stays out, in the macOS directory that matches how long the file
+deserves to live:
 
 | | |
 |---|---|
 | `~/Library/Application Support/Lyrebird/` | must survive: the active-session pointer, per-port runtime and lock files, and the CA |
 | `~/Library/Caches/com.lyrebird.Lyrebird/` | may be discarded: the generated endpoint catalog |
-| `~/Library/Logs/Lyrebird/` | for a person to read: the proxy log — this is where Console.app looks |
+| `~/Library/Logs/Lyrebird/` | for a person to read: the proxy log — this is where the Console app looks |
 
 Runtime files are keyed by **control port**, not profile, so `lyrebird down` finds the running
 instance from any directory. `LYREBIRD_STATE_DIR` collapses all three underneath one directory,

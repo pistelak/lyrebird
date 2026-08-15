@@ -23,10 +23,12 @@ and refused by another.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
 import re
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -96,7 +98,7 @@ def _default_cache_root() -> Path:
 def _default_log_root() -> Path:
     """What a person reads: `~/Library/Logs/Lyrebird`.
 
-    Apple's directory for user-visible logs, which is where Console.app looks — so putting the
+    Apple's directory for user-visible logs, which is where the Console app looks — so putting the
     proxy log here means it can be read and searched without `lyrebird logs` at all.
     """
     return Path.home() / "Library" / "Logs" / "Lyrebird"
@@ -171,26 +173,57 @@ def atomic_write(path: Path, text: str) -> None:
     """Write privately and indivisibly: these files hold response payloads and pids, so they must
     not be world-readable and must never be observed half-written.
 
-    The mode is set when the file is created, not after it is filled. Writing first and calling
-    `chmod` second leaves the payload world-readable for the width of that gap under the usual 022
-    umask — which is the opposite of what the sentence above promises.
+    `mkstemp` rather than a name of our own, for two reasons. It creates the file no more
+    permissively than 0600 before handing back a descriptor — the umask can make it stricter still,
+    which is why the mode is set explicitly below rather than merely requested — so the payload is
+    never world-readable. Writing first and calling `chmod` second, as this once did, leaves it at
+    0644 for the width of that gap under the usual 022 umask, which is the opposite of what the
+    sentence above promises. And the name is unique, so it cannot collide with a symlink planted at
+    a predictable path, a stale file left by a crash, or another caller: a name built from the pid
+    is shared by every thread in the process.
 
-    `O_EXCL | O_NOFOLLOW` because the temporary name is derived from the pid and therefore
-    predictable: after a crash, or with a pid reused, something may already be sitting there. The
-    unlink first keeps the old overwrite behaviour; the flags make sure that between the unlink and
-    the open we cannot be talked into writing through a symlink someone else planted.
+    Ownership of the descriptor never moves — `closefd=False` keeps it ours — and it is closed
+    exactly once. Both halves of that matter. Handing it to the wrapper and closing it ourselves
+    only when the wrapper raised is wrong, because a wrapper that fails may already have closed it.
+    And ownership is relinquished *before* the close is attempted, not after it returns: `close`
+    can release the descriptor and still report an error, so retrying on the failure path would
+    close whatever unrelated descriptor had since been handed that number.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + f".tmp{os.getpid()}")
-    tmp.unlink(missing_ok=True)
-    descriptor = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+    descriptor, name = tempfile.mkstemp(dir=path.parent, prefix=f"{path.name}.", suffix=".tmp")
+    tmp = Path(name)
+    descriptor_released = False
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        # `mkstemp` asks for 0600, but the umask still subtracts from it: under 0o777 the file ends
+        # up 000, which is not merely a wrong number — the next process to read our own state
+        # cannot open it. Setting the mode says what we mean instead of requesting it.
+        os.fchmod(descriptor, 0o600)
+        handle = open(descriptor, "w", encoding="utf-8", closefd=False)
+        try:
             handle.write(text)
+        except BaseException:
+            # Not a `with`: closing a file raises on a failed flush, and inside a `with` that
+            # exception silently replaces the one being handled, so the caller would be told the
+            # close failed and never why the write did.
+            with contextlib.suppress(Exception):
+                handle.close()
+            raise
+        handle.close()  # not suppressed here — this is where buffered data reports failure
+        # Closed before the rename, not after, so anything that fails does so while the
+        # destination is still untouched. Marked released first: `close` can free the descriptor
+        # and still raise, and retrying it below would then be closing someone else's file.
+        descriptor_released = True
+        os.close(descriptor)
+        tmp.replace(path)
     except BaseException:
-        tmp.unlink(missing_ok=True)
+        # Every cleanup here is best-effort and silent. The caller needs to hear why the write
+        # failed; a close or unlink that also fails would otherwise replace that answer with its own.
+        if not descriptor_released:
+            with contextlib.suppress(OSError):
+                os.close(descriptor)
+        with contextlib.suppress(OSError):
+            tmp.unlink(missing_ok=True)
         raise
-    tmp.replace(path)
 
 
 def read_runtime() -> dict:

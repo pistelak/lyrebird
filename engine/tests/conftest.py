@@ -38,3 +38,12 @@ def hosts(profile):
     config.reload_profile()
     yield ["api.example.com"]
     config.reload_profile()
+
+
+@pytest.fixture(autouse=True)
+def _restore_resolved_paths():
+    """`config.configure()` rebinds module globals, so a test that calls it leaves its profile and
+    state paths in place for everything that runs afterwards. Autouse and declared here so it tears
+    down after monkeypatch has put the environment back."""
+    yield
+    config.configure()
