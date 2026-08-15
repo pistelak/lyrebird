@@ -112,3 +112,42 @@ def test_down_reports_a_proxy_that_did_not_stop(profile, runner, fake_network, m
 
     assert result.exit_code == 1
     assert "still responding" in result.output
+
+
+# `status` is a query, but its exit code is a claim about the machine, and an agent acts on it.
+# The pair below exists because the two output formats once disagreed: --json exited 1 when
+# nothing was being intercepted while the human form exited 0, so `lyrebird status && …` ran
+# happily against a proxy that was mocking nothing.
+
+@pytest.mark.parametrize("args", [[], ["--json"]])
+def test_status_fails_when_not_intercepting_in_either_format(profile, runner, monkeypatch, args):
+    monkeypatch.setattr(cli, "_health", lambda: None)
+    monkeypatch.setattr(netproxy, "active_service", lambda: "Wi-Fi")
+    monkeypatch.setattr(netproxy, "pac_status",
+                        lambda service: netproxy.PacStatus(netproxy.pac_url(), False, True))
+
+    assert runner.invoke(cli.cli, ["status", *args]).exit_code == 1
+
+
+@pytest.mark.parametrize("args", [[], ["--json"]])
+def test_status_succeeds_only_when_up_and_intercepting(profile, runner, monkeypatch, args):
+    monkeypatch.setattr(cli, "_health",
+                        lambda: {"pid": 1, "sessions": ["default"], "activeSession": "default",
+                                 "overrideCount": 0, "simBundleId": None, "proxyPort": 8080})
+    monkeypatch.setattr(netproxy, "active_service", lambda: "Wi-Fi")
+    monkeypatch.setattr(netproxy, "pac_status",
+                        lambda service: netproxy.PacStatus(netproxy.pac_url(), True, True))
+
+    assert runner.invoke(cli.cli, ["status", *args]).exit_code == 0
+
+
+def test_status_fails_when_the_proxy_is_up_but_the_pac_is_off(profile, runner, monkeypatch):
+    """Up is not the same as intercepting, and this is the gap the exit code exists to report."""
+    monkeypatch.setattr(cli, "_health",
+                        lambda: {"pid": 1, "sessions": [], "activeSession": None,
+                                 "overrideCount": 0, "simBundleId": None})
+    monkeypatch.setattr(netproxy, "active_service", lambda: "Wi-Fi")
+    monkeypatch.setattr(netproxy, "pac_status",
+                        lambda service: netproxy.PacStatus(netproxy.pac_url(), False, True))
+
+    assert runner.invoke(cli.cli, ["status"]).exit_code == 1

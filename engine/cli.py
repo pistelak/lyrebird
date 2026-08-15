@@ -414,10 +414,17 @@ def down() -> None:
 @cli.command()
 @click.option("--json", "as_json", is_flag=True, help="Machine-readable state on stdout.")
 def status(as_json: bool) -> None:
-    """Show intercept state (honest about whether the PAC is actually enabled)."""
+    """Show intercept state (honest about whether the PAC is actually enabled).
+
+    The exit code reports the state, not the formatting: 0 only when the proxy is up *and*
+    intercepting, whichever way you asked. `--json` changes what is printed and never what it
+    means — a flag that decides how output is rendered must not also decide what success is, or
+    `lyrebird status && …` silently proceeds against a proxy that is mocking nothing.
+    """
     health = _health()
+    service = config.read_runtime().get("service") or netproxy.active_service()
+
     if as_json:
-        service = config.read_runtime().get("service") or netproxy.active_service()
         pac = netproxy.pac_status(service) if service else None
         click.echo(json.dumps({
             "proxyUp": health is not None,
@@ -431,21 +438,19 @@ def status(as_json: bool) -> None:
             "pac": {"url": pac.url, "enabled": pac.enabled, "ours": pac.ours} if pac else None,
             "dashboard": config.CONTROL_ORIGIN,
         }, indent=2))
-        ready = health is not None and netproxy.intercepting(service)
-        raise SystemExit(0 if ready else 1)
+    else:
+        click.echo(f"{DIM}profile: {config.PROFILE_DIR}{R}")
+        _banner(health, service)
+        if health:
+            click.echo(f"  sessions: {', '.join(health['sessions'])}")
+            click.echo(f"  dashboard: {CONTROL}/")
+        if service:
+            pac = netproxy.pac_status(service)
+            state = "enabled" if pac.enabled else f"{RED}DISABLED{R}"
+            owner = "" if pac.ours or not pac.url else " · not ours"
+            click.echo(f"  PAC on '{service}': {pac.url or '(none)'} · {state}{owner}")
 
-    runtime = config.read_runtime()
-    service = runtime.get("service") or netproxy.active_service()
-    click.echo(f"{DIM}profile: {config.PROFILE_DIR}{R}")
-    _banner(health, service)
-    if health:
-        click.echo(f"  sessions: {', '.join(health['sessions'])}")
-        click.echo(f"  dashboard: {CONTROL}/")
-    if service:
-        pac = netproxy.pac_status(service)
-        state = "enabled" if pac.enabled else f"{RED}DISABLED{R}"
-        owner = "" if pac.ours or not pac.url else " · not ours"
-        click.echo(f"  PAC on '{service}': {pac.url or '(none)'} · {state}{owner}")
+    raise SystemExit(0 if health is not None and netproxy.intercepting(service) else 1)
 
 
 @cli.command()

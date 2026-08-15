@@ -63,7 +63,9 @@ lyrebird --profile PATH status --json
 ```
 
 Exit code is 0 only when the proxy is up **and** intercepting, so
-`lyrebird status --json > /dev/null` works as a readiness check on its own.
+`lyrebird status > /dev/null` works as a readiness check on its own. `--json` selects the output
+format and nothing else — both forms exit the same way, so `lyrebird status && …` is safe to
+write either way round.
 
 **4. Relaunch the app after `up`, every time.**
 
