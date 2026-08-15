@@ -22,6 +22,48 @@ From the repository root. Each line is a subshell, so neither depends on the oth
 
 CI runs both.
 
+## What lands on `main` and what goes through a pull request
+
+Scale the landing to the change:
+
+- **Directly on `main`:** docs, comments, and small fixes — with both check
+  lines above green, and after the independent review below for anything
+  beyond a trivial fix.
+- **Via a branch and pull request:** anything security-relevant (host scoping,
+  path containment, the control-API guard, CA handling), changes to command
+  exit-code or postcondition semantics, the control-API surface, new features,
+  and menu-bar app changes. Do not merge until CI — the engine checks and the
+  app build on a clean machine — is green and a human has read the diff. The
+  branch is not protected, so this is a rule to follow, not one the platform
+  enforces.
+
+Either way, a behavior change is not done without a test pinned to the
+failure that motivated it (see *Test the failure path* below).
+
+## Independent review
+
+Before pushing anything beyond a trivial fix, get a review from a capable
+model outside the authoring agent's family (any independent model for
+human-authored changes). The Codex CLI example below therefore fits changes
+authored outside the GPT family; for Codex-authored changes use a non-GPT
+equivalent, and if none is available, say plainly that the independent-review
+requirement is unmet:
+
+```bash
+P=$(mktemp); O=$(mktemp); cat >"$P" <<'EOF'
+<goal, exact paths in scope, constraints, non-goals,
+ proof expected per claim, output shape>
+EOF
+codex exec -s read-only -C . \
+  -m gpt-5.6-sol -c model_reasoning_effort="xhigh" \
+  -o "$O" - <"$P"
+```
+
+The prompt contract does the work: state the goal, the exact scope, what is
+out of scope, and demand file:line evidence for every claim. Read the output
+file and verify every finding against the code before acting; fix what is
+real, name what you skip.
+
 ## House rules
 
 **No example may reference a real API.** Examples, fixtures and docs use

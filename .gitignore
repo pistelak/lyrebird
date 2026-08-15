@@ -23,6 +23,10 @@ xcuserdata/
 menubar/Lyrebird.xcodeproj/
 menubar/Lyrebird/Info.plist
 
+# Claude Code — .claude/skills/ is tracked; per-machine state is not
+.claude/worktrees/
+.claude/settings.local.json
+
 # macOS
 .DS_Store
 
