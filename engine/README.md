@@ -36,17 +36,23 @@ Select one with `--profile PATH` (wins) or `LYREBIRD_PROFILE`; the default is
 list means *intercept nothing*, and a malformed profile aborts rather than falling back to a
 default.
 
-Mutable state lives outside the profile, under `~/Library/Application Support/Lyrebird/`
-(override with `LYREBIRD_STATE_DIR`): the active-session pointer, generated catalogs, logs, the CA,
-and per-port runtime/lock files. Runtime files are keyed by **control port**, not profile, so
-`lyrebird down` finds the running instance from any directory.
+Nothing the tool writes for itself goes in the profile. It goes to the macOS directory that matches
+how long the file deserves to live:
 
-The two locations are split on purpose. A profile is configuration — hand-edited, worth keeping in
-git — so it lives in `~/.config`. Nothing in the state directory is configuration: it is state, a
-regenerable cache, logs, runtime files and a CA private key, which under XDG would mean four
-separate directories. Lyrebird is macOS-only, so those follow Apple's convention instead, where
-Time Machine and Migration Assistant handle them correctly and the private key is not sitting in a
-browsable directory.
+| | |
+|---|---|
+| `~/Library/Application Support/Lyrebird/` | must survive: the active-session pointer, per-port runtime and lock files, and the CA |
+| `~/Library/Caches/com.lyrebird.Lyrebird/` | may be discarded: the generated endpoint catalog |
+| `~/Library/Logs/Lyrebird/` | for a person to read: the proxy log — this is where Console.app looks |
+
+Runtime files are keyed by **control port**, not profile, so `lyrebird down` finds the running
+instance from any directory. `LYREBIRD_STATE_DIR` collapses all three underneath one directory,
+which is how the tests keep their writes in a temp tree and how you get a single thing to delete.
+
+The split is not cosmetic. `tmutil isexcluded` reports Caches and Logs as excluded from Time
+Machine and Application Support as included, so a regenerable catalog left in the wrong directory
+gets backed up forever to no purpose. A profile, by contrast, *is* configuration — hand-edited and
+worth keeping in git — which is why it lives in `~/.config` and none of the above does.
 
 ## Use
 

@@ -4,9 +4,12 @@ There are two seams, deliberately kept apart:
 
 * the **profile** (``--profile`` / ``LYREBIRD_PROFILE``) — your data, and safe to keep in version
   control: which hosts to intercept, saved sessions, presets.
-* the **state directory** (``LYREBIRD_STATE_DIR``, default
-  ``~/Library/Application Support/Lyrebird``) — tool-owned mutable files: the active-session
-  pointer, generated caches, logs, runtime pids and locks. Never put this in a repo.
+* **tool-owned files**, which macOS wants in three different places and which differ in what may
+  destroy them: durable state and the CA in ``~/Library/Application Support/Lyrebird``, the
+  regenerable catalog in ``~/Library/Caches/com.lyrebird.Lyrebird``, and the proxy log in
+  ``~/Library/Logs/Lyrebird``. Setting ``LYREBIRD_STATE_DIR`` collapses all three underneath it,
+  which is what the tests and anyone who wants one directory to delete rely on. Never put any of
+  them in a repo.
 
 Runtime files are keyed by *control port*, not by profile, so ``lyrebird down`` finds the running
 instance no matter which profile — or which directory — it is invoked from.
@@ -70,15 +73,33 @@ def _default_profile() -> Path:
 
 
 def _default_state_root() -> Path:
-    """`~/Library/Application Support/Lyrebird`, overridable with LYREBIRD_STATE_DIR.
+    """What must survive: `~/Library/Application Support/Lyrebird`.
 
-    Deliberately NOT `~/.config`: nothing here is configuration. It holds mutable state (the
-    active-session pointer), a regenerable cache, logs, per-port runtime files, and the CA private
-    key — four different XDG categories, none of them config. Lyrebird only runs on macOS, so this
-    follows Apple's convention rather than splitting across four XDG directories: Time Machine and
-    Migration Assistant treat it correctly, and a private key is better somewhere Finder hides.
+    Deliberately NOT `~/.config`: none of this is configuration. It is the active-session pointer,
+    the per-port recovery files, and the CA private key — which is better somewhere Finder hides,
+    and all of which it would be wrong to lose. Time Machine includes this directory, which is the
+    reason the other two exist: `tmutil isexcluded` reports Caches and Logs as excluded, so a cache
+    kept here would be backed up forever for no benefit.
     """
     return Path.home() / "Library" / "Application Support" / "Lyrebird"
+
+
+def _default_cache_root() -> Path:
+    """What may be thrown away: `~/Library/Caches/com.lyrebird.Lyrebird`.
+
+    Apple's directory for discardable files, and excluded from Time Machine. The catalog is derived
+    from a spec or from observed traffic, so losing it costs one regeneration.
+    """
+    return Path.home() / "Library" / "Caches" / "com.lyrebird.Lyrebird"
+
+
+def _default_log_root() -> Path:
+    """What a person reads: `~/Library/Logs/Lyrebird`.
+
+    Apple's directory for user-visible logs, which is where Console.app looks — so putting the
+    proxy log here means it can be read and searched without `lyrebird logs` at all.
+    """
+    return Path.home() / "Library" / "Logs" / "Lyrebird"
 
 
 PROFILE_DIR: Path
@@ -86,6 +107,8 @@ PROFILE_FILE: Path
 SESSIONS_DIR: Path
 PRESETS_DIR: Path
 STATE_ROOT: Path
+CACHE_ROOT: Path
+LOG_ROOT: Path
 STATE_FILE: Path
 CATALOG_FILE: Path
 LOG_FILE: Path
@@ -100,7 +123,7 @@ def configure(profile: str | None = None) -> None:
     # re-resolves them once at startup before anything else imports them. Threading a settings
     # object through the addon, store, control server and CLI would buy nothing here.
     global PROFILE_DIR, PROFILE_FILE, SESSIONS_DIR, PRESETS_DIR
-    global STATE_ROOT, STATE_FILE, CATALOG_FILE, LOG_FILE, PROFILE_FINGERPRINT
+    global STATE_ROOT, CACHE_ROOT, LOG_ROOT, STATE_FILE, CATALOG_FILE, LOG_FILE, PROFILE_FINGERPRINT
 
     raw = profile or os.environ.get("LYREBIRD_PROFILE")
     PROFILE_DIR = Path(raw).expanduser().resolve() if raw else _default_profile()
@@ -109,12 +132,22 @@ def configure(profile: str | None = None) -> None:
     PRESETS_DIR = PROFILE_DIR / "presets"
 
     state_env = os.environ.get("LYREBIRD_STATE_DIR")
-    STATE_ROOT = Path(state_env).expanduser().resolve() if state_env else _default_state_root()
+    if state_env:
+        # An explicit override means "put everything here", not "here plus two Library directories":
+        # the tests point it at a temp tree and expect nothing to escape, and someone who sets it by
+        # hand wants one directory to delete. The platform split is a property of the defaults only.
+        STATE_ROOT = Path(state_env).expanduser().resolve()
+        CACHE_ROOT = STATE_ROOT / "cache"
+        LOG_ROOT = STATE_ROOT / "logs"
+    else:
+        STATE_ROOT = _default_state_root()
+        CACHE_ROOT = _default_cache_root()
+        LOG_ROOT = _default_log_root()
 
     PROFILE_FINGERPRINT = hashlib.sha256(str(PROFILE_DIR).encode("utf-8")).hexdigest()[:12]
     STATE_FILE = STATE_ROOT / "profiles" / PROFILE_FINGERPRINT / "state.json"
-    CATALOG_FILE = STATE_ROOT / "cache" / PROFILE_FINGERPRINT / "catalog.json"
-    LOG_FILE = STATE_ROOT / "logs" / f"{PROFILE_FINGERPRINT}.log"
+    CATALOG_FILE = CACHE_ROOT / PROFILE_FINGERPRINT / "catalog.json"
+    LOG_FILE = LOG_ROOT / f"{PROFILE_FINGERPRINT}.log"
 
 
 def runtime_file() -> Path:
