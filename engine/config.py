@@ -126,7 +126,10 @@ def configure(profile: str | None = None) -> None:
     global STATE_ROOT, CACHE_ROOT, LOG_ROOT, STATE_FILE, CATALOG_FILE, LOG_FILE, PROFILE_FINGERPRINT
 
     raw = profile or os.environ.get("LYREBIRD_PROFILE")
-    PROFILE_DIR = Path(raw).expanduser().resolve() if raw else _default_profile()
+    # Resolved either way. Only the explicit path used to be, so if `~/.config` is a symlink — or
+    # XDG_CONFIG_HOME is — the same physical profile got two fingerprints depending on whether you
+    # named it or let it default, and therefore two active-session pointers and two logs.
+    PROFILE_DIR = (Path(raw).expanduser() if raw else _default_profile()).resolve()
     PROFILE_FILE = PROFILE_DIR / "profile.json"
     SESSIONS_DIR = PROFILE_DIR / "sessions"
     PRESETS_DIR = PROFILE_DIR / "presets"

@@ -216,3 +216,22 @@ def test_atomic_write_survives_a_stale_temporary_file(tmp_path):
 
     assert target.read_text() == "fresh"
     assert not stale.exists()
+
+
+def test_the_same_profile_gets_one_fingerprint_however_it_is_named(monkeypatch, tmp_path):
+    """State is keyed by a hash of the profile path, so two spellings of one directory would mean
+    two active-session pointers and two logs for the same profile."""
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(link))
+    monkeypatch.setenv("LYREBIRD_STATE_DIR", str(tmp_path / "state"))
+    # conftest sets LYREBIRD_PROFILE for the whole session, which would make the "implicit" call
+    # below take the explicit branch and quietly test nothing.
+    monkeypatch.delenv("LYREBIRD_PROFILE", raising=False)
+
+    config.configure()                                  # implicit: XDG_CONFIG_HOME/lyrebird
+    implicit = config.PROFILE_FINGERPRINT
+    config.configure(str(link / "lyrebird"))            # explicit: the same directory, named
+    assert config.PROFILE_FINGERPRINT == implicit
