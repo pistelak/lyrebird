@@ -166,11 +166,27 @@ def mitmproxy_confdir() -> Path:
 
 def atomic_write(path: Path, text: str) -> None:
     """Write privately and indivisibly: these files hold response payloads and pids, so they must
-    not be world-readable and must never be observed half-written."""
+    not be world-readable and must never be observed half-written.
+
+    The mode is set when the file is created, not after it is filled. Writing first and calling
+    `chmod` second leaves the payload world-readable for the width of that gap under the usual 022
+    umask — which is the opposite of what the sentence above promises.
+
+    `O_EXCL | O_NOFOLLOW` because the temporary name is derived from the pid and therefore
+    predictable: after a crash, or with a pid reused, something may already be sitting there. The
+    unlink first keeps the old overwrite behaviour; the flags make sure that between the unlink and
+    the open we cannot be talked into writing through a symlink someone else planted.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + f".tmp{os.getpid()}")
-    tmp.write_text(text, encoding="utf-8")
-    os.chmod(tmp, 0o600)
+    tmp.unlink(missing_ok=True)
+    descriptor = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(text)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
     tmp.replace(path)
 
 

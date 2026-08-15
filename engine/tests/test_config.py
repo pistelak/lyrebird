@@ -1,6 +1,7 @@
 """Host scoping. The three mechanisms below must agree, because each one is a separate chance to
 intercept traffic the user never asked us to touch."""
 
+import os
 import re
 from pathlib import Path
 
@@ -166,8 +167,6 @@ def test_validate_host_rejects_bare_addresses():
             config.validate_host(value)
 
 
-
-
 def test_all_three_matchers_agree_on_case(hosts):
     """A client may send any case. The addon check lowercases, so allow_hosts and the PAC must too
     — otherwise a request routes to the proxy and is then silently tunnelled undecrypted."""
@@ -177,3 +176,43 @@ def test_all_three_matchers_agree_on_case(hosts):
         allow = any(re.search(p, f"{host}:443") for p in config.allow_hosts_regexes())
         assert addon is True and allow is True, f"{host}: addon={addon} allow_hosts={allow}"
     assert "toLowerCase" in pac
+
+
+# MARK: - Private writes
+#
+# atomic_write promises, in its first sentence, that what it writes is never world-readable and
+# never observed half-written. It used to write first and chmod second, so the payload sat at 0644
+# for the width of that gap.
+
+def test_atomic_write_is_never_world_readable(tmp_path):
+    target = tmp_path / "secret.json"
+    config.atomic_write(target, '{"token": "value"}')
+
+    assert target.stat().st_mode & 0o777 == 0o600
+    assert target.read_text(encoding="utf-8") == '{"token": "value"}'
+
+
+def test_atomic_write_refuses_to_write_through_a_planted_symlink(tmp_path):
+    """The temporary name is derived from the pid, so it is guessable by anything running as you."""
+    victim = tmp_path / "victim"
+    victim.write_text("untouched")
+    target = tmp_path / "out.json"
+    decoy = target.with_suffix(target.suffix + f".tmp{os.getpid()}")
+    decoy.symlink_to(victim)
+
+    config.atomic_write(target, "payload")
+
+    assert victim.read_text() == "untouched", "the write followed a symlink out of its directory"
+    assert target.read_text() == "payload"
+
+
+def test_atomic_write_survives_a_stale_temporary_file(tmp_path):
+    """A crash, or a reused pid, can leave one behind; that must not wedge every later write."""
+    target = tmp_path / "out.json"
+    stale = target.with_suffix(target.suffix + f".tmp{os.getpid()}")
+    stale.write_text("leftover")
+
+    config.atomic_write(target, "fresh")
+
+    assert target.read_text() == "fresh"
+    assert not stale.exists()

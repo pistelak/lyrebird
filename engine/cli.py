@@ -241,7 +241,9 @@ def _up_locked(bundle_id: str | None) -> None:
         proxy_pid = existing.get("pid", 0)
     else:
         config.LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-        config.LOG_FILE.write_text("", encoding="utf-8")
+        # 0600 at creation: the log names every host and path that came through, and
+        # LYREBIRD_STATE_DIR can point somewhere with none of ~/Library's protection.
+        os.close(os.open(config.LOG_FILE, os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600))
         # Popen dups the fd for the child, so closing our copy immediately is correct.
         with open(config.LOG_FILE, "a", encoding="utf-8") as log:
             proc = subprocess.Popen(

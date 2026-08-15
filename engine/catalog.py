@@ -29,8 +29,9 @@ import config
 
 
 def _write(catalog: list[dict]) -> None:
-    config.CATALOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-    config.CATALOG_FILE.write_text(json.dumps(catalog, indent=2), encoding="utf-8")
+    # Atomic because the control API serves this file: `GET /__mock__/catalog` json-decodes it, and
+    # a plain write lets a request land mid-write and fail on half a document.
+    config.atomic_write(config.CATALOG_FILE, json.dumps(catalog, indent=2))
     operations = sum(len(group["operations"]) for group in catalog)
     click.echo(f"wrote {config.CATALOG_FILE} — {len(catalog)} domains, {operations} operations")
 
