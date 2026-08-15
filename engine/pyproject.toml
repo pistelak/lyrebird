@@ -1,0 +1,52 @@
+[project]
+name = "lyrebird"
+version = "0.1.0"
+description = "Transparent MITM mock proxy for iOS-simulator development (mitmproxy engine + endpoint-override dashboard)"
+requires-python = ">=3.12"   # mitmproxy 12.2.3 requires >=3.12
+license = "MIT"
+
+# Dependencies live in requirements.txt / requirements-dev.txt, which is what CI and
+# ../bin/lyrebird actually install — duplicating the pins here would only let them drift.
+#
+# Lyrebird is deliberately NOT pip-installable. Modules are flat and run by path, because
+# mitmproxy's `-s addon.py` loader puts that file's *directory* on sys.path, and that is what
+# lets the addon `import config` inside the mitmdump child. A package layout would break it.
+#
+#   python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
+#   ../bin/lyrebird up
+#
+# So this file exists for the tool configuration below.
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]     # flat layout: puts engine/ on sys.path so tests can `import config`
+# mitmproxy's transitive dependencies emit deprecation warnings we cannot act on; silencing them
+# keeps a real warning from our own code visible.
+filterwarnings = [
+    "ignore::DeprecationWarning:ldap3.*",
+    "ignore::DeprecationWarning:pyasn1.*",
+    "ignore::DeprecationWarning:pyparsing.*",
+]
+
+[tool.ruff]
+line-length = 120          # longest line today is 115 — flags nothing now, guards later
+target-version = "py312"   # matches requires-python
+src = ["."]
+
+[tool.ruff.lint]
+# Deliberately small. Wider rule families found a handful of real issues once, then mostly
+# generated `noqa` comments arguing with stylistic opinions — which is noise, not quality.
+select = ["E", "F", "I", "B", "UP", "C4"]
+
+# No formatter. The code is already consistently styled, so a formatter's real benefit — ending
+# style arguments on a team — is worth nothing here, while it would explode the hand-packed
+# constant tables and rewrap the CLI strings whose line breaks track sentences.
+
+[tool.mypy]
+files = ["addon.py", "catalog.py", "cli.py", "config.py",
+         "control.py", "netproxy.py", "rules.py", "store.py"]
+mypy_path = "."            # flat layout: `import config` must resolve from engine/
+python_version = "3.12"
+disallow_untyped_defs = true
+# Tests are excluded deliberately: they are validated by running, and annotating fixtures and
+# parametrised cases is ceremony. All three runtime deps ship py.typed, so no stubs are needed.

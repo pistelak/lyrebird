@@ -1,0 +1,27 @@
+# Python
+engine/.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.coverage
+
+# local environment — may contain credentials; do NOT rely on a global gitignore
+.envrc
+
+# Profiles and runtime state live outside the repo entirely (see engine/README.md), so there is
+# nothing here to ignore. Profile data is deliberately NOT ignored either: a profile that ends up
+# in the tree should be glaring in `git status`, not hidden by the rule meant to protect it.
+
+# Swift / Xcode
+DerivedData/
+build/
+.build/
+*.xcuserstate
+xcuserdata/
+
+# xcodegen output — project.yml is the source of truth (run `xcodegen generate`)
+menubar/Lyrebird.xcodeproj/
+menubar/Lyrebird/Info.plist
+
+# macOS
+.DS_Store
