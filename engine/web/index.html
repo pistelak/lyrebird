@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Lyrebird</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header id="banner" class="banner">
+    <span id="banner-dot" class="dot"></span>
+    <span id="banner-text">connecting…</span>
+    <span class="grow"></span>
+    <label>Session
+      <select id="session-select"></select>
+    </label>
+    <button id="clear-overrides">Clear overrides</button>
+  </header>
+
+  <main>
+    <section>
+      <h2>Active overrides <span id="override-count" class="pill">0</span></h2>
+      <div id="overrides" class="list"></div>
+    </section>
+    <section>
+      <h2>Recent traffic</h2>
+      <div id="recent" class="list mono"></div>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>
