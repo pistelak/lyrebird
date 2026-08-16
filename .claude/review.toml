@@ -1,0 +1,14 @@
+# Policy for the /local-review pipeline (engine lives in the user-level
+# skill). This file is only trusted once it is on the default branch — a
+# candidate branch cannot grant itself permissions, and editing this file
+# always escalates to frontier review.
+
+test = "cd engine && .venv/bin/python -m pytest tests/ -q"
+lint = "cd engine && .venv/bin/python -m ruff check . && .venv/bin/python -m mypy"
+
+# The set of changes a local model may clear alone. Deliberately narrow:
+# engine code, the menubar app, and bin/ all escalate. SECURITY.md is
+# deliberately NOT here — a security policy edit deserves frontier eyes.
+local_only_allowlist = ["README.md", "**/README.md", "CONTRIBUTING.md"]
+
+model = "qwen3.8:27b-mtp-q8_0"
