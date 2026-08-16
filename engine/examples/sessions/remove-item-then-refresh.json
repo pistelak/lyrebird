@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "name": "remove-item-then-refresh",
+  "notes": "sequence + advanceOn: the list endpoint answers with three items until a DELETE arrives, then with two. Because the trigger is the DELETE rather than the list rule's own calls, the screen can fetch the list as many times as it likes — a prefetch, a re-render, a pull-to-refresh on appear — without moving the scenario on. That is the difference between this and a plain step-per-call sequence, which the first extra fetch would desynchronise. onExhausted is repeatLast so a second delete leaves the list where it is rather than answering 500.",
+  "verified": false,
+  "overrides": [
+    {
+      "id": "ovr_items_list",
+      "match": {
+        "method": "GET",
+        "path": "/api/v1/items"
+      },
+      "mode": "replace",
+      "sequence": {
+        "advanceOn": {
+          "method": "DELETE",
+          "path": "/api/v1/items/*"
+        },
+        "onExhausted": "repeatLast",
+        "steps": [
+          {
+            "body": {
+              "items": [
+                { "id": "itm_000001", "name": "First" },
+                { "id": "itm_000002", "name": "Second" },
+                { "id": "itm_000003", "name": "Third" }
+              ]
+            }
+          },
+          {
+            "body": {
+              "items": [
+                { "id": "itm_000001", "name": "First" },
+                { "id": "itm_000003", "name": "Third" }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "ovr_items_delete",
+      "match": {
+        "method": "DELETE",
+        "path": "/api/v1/items/*"
+      },
+      "mode": "replace",
+      "status": 204
+    }
+  ]
+}

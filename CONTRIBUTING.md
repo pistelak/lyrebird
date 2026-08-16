@@ -111,6 +111,12 @@ When you add code, the questions to ask:
 Warn-and-continue is fine when the caller can still succeed without the thing that failed. It is
 not fine when the command is named after the thing that failed.
 
+**A per-rule side effect must be checked against the case where the rule loses.** `find_override`
+returns only the *most specific* match, so a rule whose matcher fits a request may not be the rule
+that answered it. Any effect keyed to "my matcher matched" rather than "I answered" therefore fires
+for rules that were shadowed — and, like everything above, the drift is invisible at the moment it
+happens. This is the shape that made sequence cursors advance on requests they never served.
+
 **Test the failure path.** Every instance above was found by running the tool or reviewing it, not
 by the tests, because the tests covered the happy path. `engine/tests/test_cli.py` is almost
 entirely failure paths — an unreadable runtime file, a foreign PAC, nothing to stop — and that is

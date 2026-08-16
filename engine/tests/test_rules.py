@@ -199,3 +199,202 @@ def test_deep_merge_appends_at_the_top_level():
 def test_validate_override_rejects_an_unknown_patch_strategy():
     with pytest.raises(rules.ValidationError):
         rules.validate_override({"mode": "patch", "patchStrategy": "prependToArray"})
+
+
+# MARK: - Sequences
+#
+# A sequence answers differently as a scenario progresses. Everything here is pure: the cursor is
+# an argument, because the store owns it.
+
+def _sequenced(**sequence):
+    """A minimal valid sequenced rule, with the sequence body overridden per test."""
+    return {"mode": "replace", "match": {"path": "/a"},
+            "sequence": {"steps": [{"status": 200}], **sequence}}
+
+
+@pytest.mark.parametrize("override", [
+    pytest.param({"mode": "replace", "sequence": "nope"}, id="sequence-not-an-object"),
+    pytest.param({"mode": "replace", "sequence": {"steps": "nope"}}, id="steps-not-a-list"),
+    pytest.param({"mode": "replace", "sequence": {"steps": []}}, id="empty-steps"),
+    pytest.param({"mode": "replace", "sequence": {"steps": [[]]}}, id="step-not-an-object"),
+    pytest.param({"mode": "replace", "sequence": {"steps": [{"delayMs": 10}]}}, id="step-delayMs"),
+    pytest.param({"mode": "replace", "sequence": {"steps": [{"active": False}]}}, id="step-active"),
+    pytest.param({"mode": "replace", "sequence": {"steps": [{"match": {}}]}}, id="step-match"),
+    pytest.param({"mode": "replace", "sequence": {"steps": [{"mode": "patch"}]}}, id="step-mode"),
+    pytest.param({"mode": "replace", "sequence": {"steps": [{"id": "x"}]}}, id="step-id"),
+    pytest.param({"mode": "replace", "sequence": {"steps": [{"sequence": {}}]}}, id="step-nested"),
+    pytest.param({"mode": "replace", "sequence": {"steps": [{"patch": {}}]}}, id="step-patch"),
+    pytest.param({"mode": "replace", "sequence": {"steps": [{"status": 9999}]}}, id="step-bad-status"),
+    pytest.param({"mode": "replace", "sequence": {"steps": [{"headers": {"a": 1}}]}}, id="step-bad-headers"),
+    pytest.param({"mode": "patch", "sequence": {"steps": [{"status": 200}]}}, id="sequence-on-patch"),
+    pytest.param({"mode": "replace", "sequence": {"steps": [{"status": 200}],
+                                                  "onExhausted": "nonsense"}}, id="unknown-policy"),
+    pytest.param({"mode": "replace", "sequence": {"steps": [{"status": 200}],
+                                                  "advanceOn": {}}}, id="advanceOn-unconstrained"),
+    pytest.param({"mode": "replace", "sequence": {"steps": [{"status": 200}],
+                                                  "advanceOn": {"query": {"a": "b"}}}},
+                 id="advanceOn-neither-method-nor-path"),
+    pytest.param({"mode": "replace", "sequence": {"steps": [{"status": 200}],
+                                                  "advanceOn": {"path": 42}}}, id="advanceOn-bad-path"),
+    pytest.param({"mode": "replace", "sequence": {"steps": [{"status": 200}],
+                                                  "advance_on": {"method": "DELETE", "path": "/x"}}},
+                 id="sequence-unknown-field"),
+    pytest.param({"mode": "replace", "sequence": {"steps": [{"status": 200}],
+                                                  "advanceOn": {"method": "DELETE", "paths": "/x/*"}}},
+                 id="advanceOn-unknown-field"),
+    pytest.param({"mode": "replace", "match": {"path": "/a", "methods": "GET"},
+                  "sequence": {"steps": [{"status": 200}]}}, id="match-unknown-field"),
+])
+def test_sequence_validation_rejects(override):
+    """Each of these would otherwise be a rule that loads cleanly and quietly does the wrong thing:
+    a step that can never answer, a field that cannot take effect, or an advance matcher that fires
+    on every request that reaches the proxy."""
+    with pytest.raises(rules.ValidationError):
+        rules.validate_override(override)
+
+
+def test_too_many_steps_is_rejected():
+    with pytest.raises(rules.ValidationError):
+        rules.validate_override(_sequenced(steps=[{"status": 200}] * (rules.MAX_SEQUENCE_STEPS + 1)))
+
+
+def test_a_valid_sequence_is_accepted():
+    assert rules.validate_override(_sequenced(advanceOn={"method": "DELETE", "path": "/x/*"},
+                                              onExhausted="repeatLast"))
+
+
+def test_the_step_delay_rejection_says_where_to_put_it():
+    """A step carrying delayMs has a right answer, so the error gives it rather than only refusing."""
+    with pytest.raises(rules.ValidationError, match="set it on the override"):
+        rules.validate_override(_sequenced(steps=[{"delayMs": 10}]))
+
+
+# MARK: - Step overlay
+
+OVERLAY_PARENT = {
+    "id": "o", "mode": "replace", "status": 500, "delayMs": 250,
+    "headers": {"X-Parent": "1"}, "body": {"from": "parent"},
+    "sequence": {"steps": [{}]},
+}
+
+
+def test_a_step_inherits_the_parent_response_fields():
+    view = rules.step_view(OVERLAY_PARENT, {})
+    assert view["status"] == 500
+    assert view["body"] == {"from": "parent"}
+    assert view["delayMs"] == 250, "delay is parent-level, so every step inherits it"
+
+
+def test_step_headers_replace_the_parent_wholesale():
+    """Documented as a shallow overlay. A merge would be defensible but this is what is specified,
+    and the difference is invisible until a session relies on one of them."""
+    view = rules.step_view(OVERLAY_PARENT, {"headers": {"X-Step": "2"}})
+    assert view["headers"] == {"X-Step": "2"}
+
+
+def test_empty_headers_clears_the_inherited_headers():
+    assert rules.step_view(OVERLAY_PARENT, {"headers": {}})["headers"] == {}
+
+
+def test_null_clears_an_inherited_field():
+    """Validation treats None as absent, so an explicit null is how a step opts out of a default."""
+    assert rules.step_view(OVERLAY_PARENT, {"body": None})["body"] is None
+
+
+def test_step_view_drops_the_sequence_key():
+    """The result is handed to wire logic that must not need to know sequences exist."""
+    assert "sequence" not in rules.step_view(OVERLAY_PARENT, {})
+
+
+# MARK: - Cursor arithmetic
+
+def test_bumped_clamps_one_past_the_last_step():
+    """Clamping at n rather than n+1 would make a second and a third advance event land on the same
+    value, collapsing 'used up' into 'overrun' — the two states health reports separately."""
+    assert [rules.bumped(c, 2) for c in (0, 1, 2, 3, 4)] == [1, 2, 3, 3, 3]
+
+
+@pytest.mark.parametrize("cursor,expected", [(0, 201), (1, 202)])
+def test_resolve_step_selects_by_cursor(cursor, expected):
+    rule = _sequenced(steps=[{"status": 201}, {"status": 202}])
+    action, view = rules.resolve_step(rule, cursor)
+    assert action == rules.APPLY
+    assert view["status"] == expected
+
+
+@pytest.mark.parametrize("policy,cursor,expected_action", [
+    ("error", 2, rules.EXHAUSTED_ERROR),
+    ("error", 3, rules.EXHAUSTED_ERROR),
+    ("passThrough", 2, rules.PASS_THROUGH),
+    ("repeatLast", 2, rules.APPLY),
+])
+def test_resolve_step_past_the_end_follows_the_policy(policy, cursor, expected_action):
+    rule = _sequenced(steps=[{"status": 201}, {"status": 202}], onExhausted=policy)
+    action, _ = rules.resolve_step(rule, cursor)
+    assert action == expected_action
+
+
+def test_repeat_last_serves_the_final_step_again():
+    rule = _sequenced(steps=[{"status": 201}, {"status": 202}], onExhausted="repeatLast")
+    _, view = rules.resolve_step(rule, 5)
+    assert view["status"] == 202
+
+
+def test_the_default_policy_is_error():
+    """A normal-looking response to an unplanned extra request is a false success, which is the
+    failure this project's house rules single out."""
+    assert rules.exhaustion_policy(_sequenced()) == "error"
+    action, _ = rules.resolve_step(_sequenced(), 1)
+    assert action == rules.EXHAUSTED_ERROR
+
+
+def test_an_ordinary_override_resolves_to_itself():
+    action, view = rules.resolve_step({"id": "o", "mode": "replace", "status": 204}, 0)
+    assert action == rules.APPLY and view["status"] == 204
+
+
+def test_advance_matcher_is_none_for_the_self_default():
+    """`self` cannot be represented as a copy of `match`: the caller has to know whether this rule
+    actually answered, and a matcher cannot express that."""
+    assert rules.advance_matcher(_sequenced()) is None
+    assert rules.advance_matcher(_sequenced(advanceOn={"method": "DELETE"})) == {"method": "DELETE"}
+
+
+# MARK: - Unique ids
+
+def test_duplicate_override_ids_are_reported_and_dropped():
+    """Ids address a rule: add replaces by id, remove deletes every rule carrying one, and sequence
+    state is keyed by it. Two rules sharing an id would share a cursor."""
+    session = rules.normalise_session({"overrides": [
+        {"id": "dup", "mode": "replace", "match": {"path": "/a"}},
+        {"id": "dup", "mode": "replace", "match": {"path": "/b"}},
+    ]}, "s")
+    assert [o["match"]["path"] for o in session["overrides"]] == ["/a"]
+    assert any("duplicate id" in problem for problem in session["_problems"])
+
+
+def test_identical_rules_collide_on_their_derived_id_and_one_is_dropped():
+    """Two byte-identical rules derive the same id, so the same rule applies."""
+    rule = {"mode": "replace", "match": {"path": "/a"}}
+    session = rules.normalise_session({"overrides": [dict(rule), dict(rule)]}, "s")
+    assert len(session["overrides"]) == 1
+    assert len(session["_problems"]) == 1
+
+
+# MARK: - Untrusted input at the boundary
+
+def test_a_null_id_is_replaced_by_a_derived_one():
+    """`setdefault` leaves an explicit null in place, so the rule loaded with no usable id: not
+    addressable by the CLI, and recorded as `matched: null`, which reads as "nothing answered"."""
+    session = rules.normalise_session(
+        {"overrides": [{"id": None, "mode": "replace", "match": {"path": "/a"}}]}, "s")
+    assert session["overrides"][0]["id"].startswith("ovr_")
+
+
+@pytest.mark.parametrize("injected", ["bad", {"seq": {"cursor": 1, "runId": "x"}}])
+def test_internal_runtime_keys_are_stripped_from_input(injected):
+    """Underscore keys are ours. `_persistable` strips them on the way out, so nothing we wrote can
+    contain one — but a hand-edited or imported file can, and `_sequenceRuntime` reaching the store
+    means either a crash inside a proxy hook or a scenario that quietly starts on step 2."""
+    session = rules.normalise_session({"_sequenceRuntime": injected, "overrides": []}, "s")
+    assert "_sequenceRuntime" not in session

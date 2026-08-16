@@ -142,3 +142,95 @@ def test_a_non_object_body_says_so(profile):
     status, _, body = call(profile, "POST", "/__mock__/sessions", raw_body="[1,2,3]")
     assert status == 400
     assert "object" in body["detail"].lower()
+
+
+# MARK: - Sequences
+
+SEQ_SESSION = {
+    "name": "default",
+    "overrides": [{"id": "ovr_seq", "mode": "replace", "match": {"path": "/api/items"},
+                   "sequence": {"steps": [{"status": 201}, {"status": 202}]}}],
+}
+
+
+def seed(profile):
+    """A session on disk, because `call` builds a fresh Store that loads from the profile."""
+    (profile / "sessions").mkdir(parents=True, exist_ok=True)
+    (profile / "sessions" / "default.json").write_text(json.dumps(SEQ_SESSION), encoding="utf-8")
+
+
+def test_health_reports_live_sequence_state(profile):
+    seed(profile)
+    status, _, body = call(profile, "GET", "/__mock__/health")
+    assert status == 200
+    assert [state["id"] for state in body["sequences"]] == ["ovr_seq"]
+    assert body["sequences"][0]["nextStep"] == 1
+
+
+def test_health_reports_an_empty_list_when_nothing_is_sequenced(profile):
+    status, _, body = call(profile, "GET", "/__mock__/health")
+    assert body["sequences"] == []
+
+
+def test_reset_reports_what_it_rewound(profile):
+    seed(profile)
+    status, _, body = call(profile, "POST", "/__mock__/sequences/reset", json_body={})
+    assert status == 200
+    assert list(body["reset"]) == ["ovr_seq"]
+
+
+def test_resetting_an_unknown_sequence_is_a_404(profile):
+    """Not a 200 with an empty result: a typo must not look like a successful rewind."""
+    seed(profile)
+    status, _, body = call(profile, "POST", "/__mock__/sequences/reset", json_body={"id": "nope"})
+    assert status == 404
+    assert body["error"] == "unknown_sequence"
+
+
+def test_a_non_string_reset_id_is_a_bad_request_not_a_crash(profile):
+    """A list would reach a dict lookup and raise TypeError, which `_guard` does not translate — it
+    catches ValueError — so this would otherwise surface as a 500 describing nothing."""
+    seed(profile)
+    status, _, body = call(profile, "POST", "/__mock__/sequences/reset", json_body={"id": []})
+    assert status == 400
+    assert body["error"] == "id_must_be_a_non_empty_string"
+
+
+def test_reset_is_still_behind_the_content_type_guard(profile):
+    seed(profile)
+    status, _, _ = call(profile, "POST", "/__mock__/sequences/reset",
+                        raw_body="{}", content_type="text/plain")
+    assert status == 415
+
+
+def test_importing_a_session_that_cannot_be_kept_whole_is_refused(profile):
+    """Answering 200 to a payload whose second override was discarded tells the caller their rule
+    is installed when it is not."""
+    status, _, body = call(profile, "POST", "/__mock__/sessions/import", json_body={
+        "session": {"name": "imp", "overrides": [
+            {"id": "dup", "mode": "replace", "match": {"path": "/a"}},
+            {"id": "dup", "mode": "replace", "match": {"path": "/b"}}]}})
+    assert status == 400
+    assert "duplicate id" in body["detail"]
+
+
+def test_importing_over_an_existing_session_is_a_conflict(profile):
+    """AGENTS.md promises the refusal: importing a session that already exists must not silently
+    replace it."""
+    seed(profile)
+    payload = {"session": {"name": "imp", "overrides": []}}
+    status, _, _ = call(profile, "POST", "/__mock__/sessions/import", json_body=payload)
+    assert status == 200
+    status, _, body = call(profile, "POST", "/__mock__/sessions/import", json_body=payload)
+    assert status == 409
+    assert body["error"] == "session_exists"
+
+
+def test_importing_overrides_that_are_not_a_list_is_refused(profile):
+    """`normalise_session` used to swap a malformed `overrides` for [] without recording a
+    problem, so the import persisted an empty session and answered 200."""
+    seed(profile)
+    status, _, body = call(profile, "POST", "/__mock__/sessions/import", json_body={
+        "session": {"name": "imp", "overrides": {"keep": {"mode": "replace"}}}})
+    assert status == 400
+    assert "overrides must be a list" in body["detail"]

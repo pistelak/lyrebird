@@ -176,3 +176,185 @@ def test_up_starts_the_log_on_a_new_inode(profile, tmp_path):
     assert config.LOG_FILE.stat().st_ino != stale_inode, "the lax inode was truncated, not replaced"
     assert config.LOG_FILE.stat().st_mode & 0o777 == 0o600
     assert overheard == "", f"a reader of the old log still saw traffic: {overheard!r}"
+
+
+# MARK: - Sequence commands
+#
+# `sequence wait` is the command an agent leans on to prove a transition happened, so its failure
+# modes matter more than its happy path: a wait that hangs for its full timeout on something that
+# already happened sends the operator looking in the wrong place.
+
+_BASE_SEQ = {"id": "ovr_a", "runId": "r1", "advanceOn": "self", "nextStep": 1, "stepCount": 2,
+             "exhausted": False, "hasOverrun": False, "serves": {}}
+
+
+def _health_over(*states):
+    """Live state that moves under the poll: each call serves the next state, the last repeats.
+
+    `None` for a state means the rule is gone from the session."""
+    queue = list(states)
+
+    def payload():
+        state = queue.pop(0) if len(queue) > 1 else queue[0]
+        sequences = [] if state is None else [{**_BASE_SEQ, **state}]
+        return {"pid": 1, "sessions": ["default"], "activeSession": "default",
+                "overrideCount": 1, "simBundleId": None, "proxyPort": 8080,
+                "sequences": sequences}
+    return payload
+
+
+def _health_with(**state):
+    return _health_over(state)
+
+
+def test_sequence_reset_names_what_it_rewound(profile, runner, monkeypatch):
+    monkeypatch.setattr(cli, "_control",
+                        lambda *a, **k: {"session": "default", "reset": {"ovr_a": "abc123"}})
+    result = runner.invoke(cli.cli, ["sequence", "reset"])
+    assert result.exit_code == 0
+    assert "ovr_a" in result.output
+
+
+def test_sequence_reset_says_so_when_there_is_nothing_to_rewind(profile, runner, monkeypatch):
+    monkeypatch.setattr(cli, "_control", lambda *a, **k: {"session": "default", "reset": {}})
+    result = runner.invoke(cli.cli, ["sequence", "reset"])
+    assert result.exit_code == 0
+    assert "nothing to reset" in result.output
+
+
+def test_sequence_wait_rejects_an_unknown_sequence(profile, runner, monkeypatch):
+    monkeypatch.setattr(cli, "_health", lambda: {"sequences": []})
+    result = runner.invoke(cli.cli, ["sequence", "wait", "nope", "--step", "1"])
+    assert result.exit_code == 1
+    assert "no sequence" in result.output
+
+
+def test_sequence_wait_rejects_a_step_that_does_not_exist(profile, runner, monkeypatch):
+    monkeypatch.setattr(cli, "_health", _health_with())
+    result = runner.invoke(cli.cli, ["sequence", "wait", "ovr_a", "--step", "5"])
+    assert result.exit_code == 1
+    assert "out of range" in result.output
+
+
+def test_sequence_wait_fails_at_once_when_the_step_already_passed(profile, runner, monkeypatch):
+    """This has to come from live state, not the traffic buffer: /recent holds a bounded window, so
+    the event may be long evicted while the fact that it happened is still true."""
+    monkeypatch.setattr(cli, "_health", _health_with(nextStep=None, exhausted=True))
+    result = runner.invoke(cli.cli, ["sequence", "wait", "ovr_a", "--step", "1", "--timeout", "30"])
+    assert result.exit_code == 1
+    assert "already past" in result.output
+    assert "sequence reset ovr_a" in result.output, "say how to fix it"
+
+
+SERVED = {"sequenceId": "ovr_a", "runId": "r1", "selectedStep": 1, "stepCount": 2,
+          "method": "GET", "path": "/api/items", "status": 200,
+          "time": "2026-08-16T10:00:00+00:00"}
+
+
+def test_sequence_wait_succeeds_when_the_step_is_served(profile, runner, monkeypatch):
+    monkeypatch.setattr(cli, "_health", _health_over({}, {"serves": {"1": 1}}))
+    monkeypatch.setattr(cli, "_get_json", lambda _path, timeout=2: [SERVED])
+    result = runner.invoke(cli.cli, ["sequence", "wait", "ovr_a", "--step", "1"])
+    assert result.exit_code == 0
+    assert "served step 1/2" in result.output
+    assert "/api/items" in result.output, "the /recent detail when the entry is still there"
+
+
+def test_sequence_wait_survives_the_serve_being_evicted_from_recent(profile, runner, monkeypatch):
+    """The failure that motivated the serve counter: /recent is a 200-entry window, so under enough
+    traffic the serve's entry is gone before the next poll — and a wait reading only the traffic
+    buffer timed out on something that happened. The counter in live state cannot be evicted."""
+    monkeypatch.setattr(cli, "_health", _health_over({}, {"serves": {"1": 1}}))
+    monkeypatch.setattr(cli, "_get_json", lambda _path, timeout=2: [])
+    result = runner.invoke(cli.cli, ["sequence", "wait", "ovr_a", "--step", "1"])
+    assert result.exit_code == 0
+    assert "served step 1/2" in result.output
+
+
+def test_sequence_wait_succeeds_at_once_when_the_step_was_already_served_this_run(profile, runner, monkeypatch):
+    """The serve counter lives in the runtime entry a reset drops, so everything in it happened
+    after the last reset — it IS the postcondition, verified. The documented workflow is
+    reset → trigger → wait, and when the action lands before the wait starts, refusing or timing
+    out would report failure on a transition that completed."""
+    monkeypatch.setattr(cli, "_health", _health_with(advanceOn="match", serves={"1": 3}))
+    result = runner.invoke(cli.cli, ["sequence", "wait", "ovr_a", "--step", "1", "--timeout", "30"])
+    assert result.exit_code == 0
+    assert "served step 1/2 this run (3×, before the wait began)" in result.output
+
+
+def test_sequence_wait_fails_fast_when_the_run_advances_past_the_step_without_serving_it(profile, runner, monkeypatch):
+    """Two advance requests can march the cursor over the awaited step while an `advanceOn` rule
+    serves nothing. That wait can never be satisfied, and burning the rest of the timeout would
+    blame the sequence for not serving rather than the traffic for advancing it."""
+    monkeypatch.setattr(cli, "_health", _health_over({}, {"nextStep": None, "exhausted": True}))
+    monkeypatch.setattr(cli, "_get_json", lambda _path, timeout=2: [])
+    result = runner.invoke(cli.cli, ["sequence", "wait", "ovr_a", "--step", "1", "--timeout", "30"])
+    assert result.exit_code == 1
+    assert "advanced past step 1 without serving it" in result.output
+
+
+def test_sequence_wait_survives_a_transient_health_failure(profile, runner, monkeypatch):
+    """One dropped health poll must read as "could not check right now", not "the rule is gone" —
+    those are different claims, and the second one exits the wait."""
+    responses = [_health_with()(), None, _health_with(serves={"1": 1})()]
+    monkeypatch.setattr(cli, "_health", lambda: responses.pop(0) if len(responses) > 1 else responses[0])
+    monkeypatch.setattr(cli, "_get_json", lambda _path, timeout=2: [])
+    result = runner.invoke(cli.cli, ["sequence", "wait", "ovr_a", "--step", "1"])
+    assert result.exit_code == 0
+    assert "served step 1/2" in result.output
+
+
+def test_sequence_wait_says_so_when_the_control_api_is_down(profile, runner, monkeypatch):
+    monkeypatch.setattr(cli, "_health", lambda: None)
+    result = runner.invoke(cli.cli, ["sequence", "wait", "ovr_a", "--step", "1"])
+    assert result.exit_code == 1
+    assert "cannot reach the control API" in result.output
+    assert "no sequence" not in result.output, "'could not read it' must not claim 'nothing here'"
+
+
+def test_sequence_wait_reports_losing_the_control_api_mid_wait(profile, runner, monkeypatch):
+    responses = [_health_with()(), None]
+    monkeypatch.setattr(cli, "_health", lambda: responses.pop(0) if len(responses) > 1 else responses[0])
+    result = runner.invoke(cli.cli, ["sequence", "wait", "ovr_a", "--step", "1", "--timeout", "0"])
+    assert result.exit_code == 1
+    assert "lost the control API" in result.output
+    assert "did not serve" not in result.output, "whether it served is unknown, and the message must not decide"
+
+
+def test_sequence_wait_ignores_an_event_from_an_earlier_run(profile, runner, monkeypatch):
+    """A reset clears the serve counter with the runtime entry, so a leftover /recent event from
+    the previous run must not satisfy the wait on its own."""
+    monkeypatch.setattr(cli, "_health", _health_with(runId="r2"))
+    monkeypatch.setattr(cli, "_get_json", lambda path, timeout=2: [
+        {"sequenceId": "ovr_a", "runId": "r1", "selectedStep": 1, "stepCount": 2,
+         "method": "GET", "path": "/api/items", "status": 200}])
+    result = runner.invoke(cli.cli, ["sequence", "wait", "ovr_a", "--step", "1", "--timeout", "0"])
+    assert result.exit_code == 1
+
+
+def test_sequence_wait_fails_fast_when_the_run_changes_mid_wait(profile, runner, monkeypatch):
+    """A reset mid-wait invalidates the baseline. Polling on regardless would burn the timeout and
+    then blame the sequence for not serving."""
+    monkeypatch.setattr(cli, "_health", _health_over({}, {"runId": "r2"}))
+    monkeypatch.setattr(cli, "_get_json", lambda _path, timeout=2: [])
+    result = runner.invoke(cli.cli, ["sequence", "wait", "ovr_a", "--step", "1"])
+    assert result.exit_code == 1
+    assert "was reset" in result.output
+
+
+def test_sequence_wait_fails_fast_when_the_rule_vanishes_mid_wait(profile, runner, monkeypatch):
+    monkeypatch.setattr(cli, "_health", _health_over({}, None))
+    monkeypatch.setattr(cli, "_get_json", lambda _path, timeout=2: [])
+    result = runner.invoke(cli.cli, ["sequence", "wait", "ovr_a", "--step", "1"])
+    assert result.exit_code == 1
+    assert "was removed" in result.output
+
+
+def test_status_json_carries_sequences(profile, runner, monkeypatch):
+    monkeypatch.setattr(cli, "_health", _health_with())
+    monkeypatch.setattr(netproxy, "active_service", lambda: "Wi-Fi")
+    monkeypatch.setattr(netproxy, "pac_status",
+                        lambda service: netproxy.PacStatus(netproxy.pac_url(), True, True))
+    result = runner.invoke(cli.cli, ["status", "--json"])
+    assert result.exit_code == 0
+    assert '"sequences"' in result.output and "ovr_a" in result.output

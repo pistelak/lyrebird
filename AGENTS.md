@@ -119,6 +119,37 @@ POST/PUT/PATCH/DELETE with a body must send
 `Content-Type: application/json` (**415** if not). Both exist to stop a web page you happen to have
 open from driving the proxy. `engine/README.md` has the endpoint list.
 
+## Scenarios that move between states
+
+A rule can hold a list of steps instead of one response — for "delete a row, refresh, it's gone", or
+"the first attempt fails and the retry succeeds". Two things about driving them.
+
+**Reset immediately before you trigger the action, not at startup.** Cursors are in memory and
+already reset when you `use` a session, but anything the app did in between — a launch fetch, a
+prefetch — may have moved them.
+
+```bash
+lyrebird --profile PATH sequence reset ovr_items_list
+# now trigger the UI action
+lyrebird --profile PATH sequence wait ovr_items_list --step 2 --timeout 30
+```
+
+**`wait-ready --match` cannot verify a sequence.** It returns on the *first* override to match and
+takes its baseline when the command starts, so it cannot express "step 1, then step 2", and it
+misses a transition when both steps land inside one poll. `sequence wait` waits for a named rule to
+serve a named step in the current run, and never burns its timeout on a question live state can
+already answer: a step already served in this run **succeeds immediately** (the serve counter is
+scoped to the run, so anything in it happened after your reset), and a run already past the step
+without ever serving it **fails immediately**, which is the usual symptom of the app making a
+request you did not expect.
+
+`status --json` carries `sequences[]` with `nextStep`, `exhausted`, `hasOverrun`, per-step serve
+counts in `serves`, and a `runId` that changes on every reset. `recent` shows which request took which step, and which request advanced
+what, so a scenario that went wrong can be read back rather than guessed at.
+
+If a rule advances when you did not expect it to, the fix is usually a narrower `match`, or an
+`advanceOn` so that only the mutating request moves the cursor and repeated reads do not.
+
 ## Working on a scenario without disturbing anyone
 
 A profile is shared state. If it belongs to a person or a team, do not edit their sessions.
@@ -142,7 +173,9 @@ so a typo surfaces immediately instead of as a scenario that mysteriously does n
 It is not the only thing that writes: `session rm` deletes a file, and `override add` replaces a
 rule with the same id. But it is the only one that discards everything at once, which is why it
 is the only one behind a flag — `clear` is easy to reach for while meaning "clear the traffic
-list", which is not what it does. Creating or importing a session that already exists is refused
+list", which is not what it does. An import that cannot be kept whole — an override that fails
+validation, or two sharing an id — is refused outright rather than partially applied, so a 200 from
+it means every rule you sent is installed. Creating or importing a session that already exists is refused
 rather than silently replacing it. If the profile is under version control that is your safety
 net; if not, take a copy before touching someone else's sessions.
 
@@ -153,6 +186,9 @@ net; if not, take a copy before touching someone else's sessions.
 | `wait-ready` times out with 0 requests | App wasn't relaunched, or the host isn't in `profile.json` |
 | Requests arrive but nothing matches | Path pattern wrong. `/recent` shows the real paths |
 | `patchSkipped` in `/recent` | `patch` needs a JSON response from a live upstream; use `replace` if there isn't one |
+| `overrun` in `/recent` | A sequence ran past its last step. Add steps, or set `onExhausted` |
+| `sequence wait` fails at once | The step already went by — reset, then trigger the action |
+| A sequence is one step ahead | Something else called the endpoint. Narrow `match`, or use `advanceOn` |
 | `up` fails on CA | No booted simulator. Boot one first |
 | 421 / 415 from the API | Missing `Host: 127.0.0.1:8088` or `Content-Type: application/json` — or just use the CLI |
 

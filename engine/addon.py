@@ -108,28 +108,85 @@ class Lyrebird:
         query = dict(flow.request.query)
         body_text = flow.request.get_text(strict=False) or ""
         override = self.store.find_override(flow.request.method, pathname, query, body_text)
-        if not override:
-            return
 
-        delay_ms = override.get("delayMs")
+        delay_ms = override.get("delayMs") if override else None
         if delay_ms:
             delay_ms = min(int(delay_ms), config.MAX_DELAY_MS)
             flow.metadata["mock_delay_ms"] = delay_ms  # await sleeps only this flow; other flows keep serving
+            # Awaited *before* the step is chosen. Selection and the response it produces are then
+            # one synchronous block, so nothing can interleave between picking a step and committing
+            # it — which is why sequences need no generation or staleness tracking. A per-step delay
+            # would break this, because you would have to pick the step first.
             await asyncio.sleep(delay_ms / 1000)
+            # The rules can move while we sleep: replaced, removed, or the whole session switched.
+            # Re-select so the answer comes from what is live when it is produced — the same instant
+            # the cursor is read. Holding the rule we captured before the sleep would serve the old
+            # definition and then advance the new one, so the replacement's first step never runs.
+            # The new rule's delay is deliberately not applied again: one request waits once.
+            override = self.store.find_override(flow.request.method, pathname, query, body_text)
 
-        if override.get("mode") == "replace":
-            status = int(override.get("status") or 200)
-            body = override.get("body")
+        if override is not None:
+            action, resolved, progress = self.store.resolve_override(override)
+            if progress is not None:
+                flow.metadata["mock_sequence"] = progress
+            self._answer(flow, action, resolved, override)
+            # Cursors move only after the response is chosen, so a request is answered from the
+            # state it arrived in — you never see your own write reflected in its own response.
+            self.store.bump_selected(override)
+
+        # Unconditional, and deliberately outside the block above: a request that no override
+        # answered — a DELETE going straight to the real backend — must still advance a rule that
+        # is watching for it. That is the whole point of an explicit `advanceOn`.
+        advanced = self.store.advance_matching(flow.request.method, pathname, query, body_text)
+        if advanced:
+            flow.metadata["mock_advanced"] = advanced
+
+    def _answer(self, flow: http.HTTPFlow, action: str, resolved: dict | None, override: dict) -> None:
+        if action == rules.PASS_THROUGH:
+            return   # sequence exhausted and told to stand aside: the real upstream answers
+        if action == rules.EXHAUSTED_ERROR:
+            flow.response = self._exhausted_response(flow, override)
+            flow.metadata["mock_matched"] = override["id"]   # an override did answer, with a 500
+            return
+        if resolved is None:
+            return
+
+        if resolved.get("mode") == "replace":
+            status = int(resolved.get("status") or 200)
+            body = resolved.get("body")
             bodyless = body is None or status in BODYLESS_STATUSES
-            headers = self._headers_with_default_content_type(override.get("headers"), json_body=not bodyless)
+            headers = self._headers_with_default_content_type(resolved.get("headers"), json_body=not bodyless)
             payload = b"" if bodyless else (body if isinstance(body, str) else json.dumps(body)).encode("utf-8")
             response = http.Response.make(status, payload, headers)
             if status in BODYLESS_STATUSES:
                 response.headers.pop("content-length", None)  # bodyless statuses must not carry a body/length
             flow.response = response
-            flow.metadata["mock_matched"] = override["id"]
-        elif override.get("mode") == "patch":
-            flow.metadata["mock_patch"] = override
+            flow.metadata["mock_matched"] = resolved["id"]
+        elif resolved.get("mode") == "patch":
+            flow.metadata["mock_patch"] = resolved
+
+    @staticmethod
+    def _exhausted_response(flow: http.HTTPFlow, override: dict) -> http.Response:
+        """The `error` exhaustion policy: say so loudly rather than serve a plausible answer.
+
+        A repeat of the last step would let an unplanned extra request pass for a successful one,
+        which is the failure mode this project exists to avoid. The body carries the numbers, so the
+        first question anyone asks ("why a 500?") is answered by the 500 itself.
+        """
+        progress = flow.metadata.get("mock_sequence") or {}
+        steps = len(rules.sequence_steps(override) or [])
+        body = {"error": {
+            "code": "SEQUENCE_EXHAUSTED",
+            "message": (
+                f"Lyrebird: sequence '{override['id']}' defines {steps} step(s) and has seen "
+                f"{progress.get('advanceEvents', steps)} advance event(s). Set "
+                f"sequence.onExhausted to 'repeatLast' or 'passThrough' if more requests are "
+                f"expected."
+            ),
+        }}
+        return http.Response.make(
+            500, json.dumps(body).encode("utf-8"), {"Content-Type": "application/json"}
+        )
 
     def responseheaders(self, flow: http.HTTPFlow) -> None:
         response = flow.response
@@ -169,6 +226,30 @@ class Lyrebird:
                 flow.metadata["mock_patch_skipped"] = "body_unavailable_or_not_json"
 
         self._record(flow, status, matched)
+
+    def error(self, flow: http.HTTPFlow) -> None:
+        """Record a sequence flow that failed before there was any response to record.
+
+        `_record` is otherwise reachable only from `response()`, so a request that never got one
+        leaves no trace. That matters most for an exhausted `passThrough`: it stands aside and sends
+        the request to the real upstream — which is frequently the very thing that is down, since
+        being down is why you were mocking it. Without this the overrun would be invisible in
+        `/recent`, and the operator would be looking for a rule that appeared never to fire.
+
+        Deliberately scoped to flows carrying sequence metadata. Recording *every* failed flow is a
+        worthwhile change, but a separate one: it would alter what `/recent` means for everybody.
+        """
+        # `mock_advanced` counts too: a request no override answered can still have moved a
+        # sequence, and if its upstream then fails the cursor has changed with nothing in /recent
+        # to explain why.
+        if not (flow.metadata.get("mock_sequence") or flow.metadata.get("mock_advanced")):
+            return
+        if not config.is_intercepted_host(flow.request.pretty_host):
+            return
+        # 0 is already how `response` reports "no status". `matched` is read from metadata the same
+        # way `response` reads it: an override that set a response before the flow died (a client
+        # that hung up mid-write) did answer, and recording None here would say nothing did.
+        self._record(flow, 0, flow.metadata.get("mock_matched"))
 
     # MARK: - Helpers
 
@@ -223,6 +304,21 @@ class Lyrebird:
         if skipped:
             entry["patchSkipped"] = skipped  # so a dropped patch never looks like "didn't match"
 
+        sequence = flow.metadata.get("mock_sequence")
+        if sequence:
+            # `sequenceId` is kept separate from `matched`, which means "an override answered this
+            # request". An exhausted passThrough answers nothing, so it has no `matched` — and
+            # `recent --matched` filters on that, which would hide the overrun from exactly the
+            # command used to check the scenario.
+            entry["sequenceId"] = sequence["sequenceId"]
+            entry["runId"] = sequence["runId"]
+            entry["selectedStep"] = sequence["selectedStep"]
+            entry["stepCount"] = sequence["stepCount"]
+            if sequence["overrun"]:
+                entry["overrun"] = True
+        advanced = flow.metadata.get("mock_advanced")
+        if advanced:
+            entry["advanced"] = advanced
 
         self.store.record_recent(entry)
 

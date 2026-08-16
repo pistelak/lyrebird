@@ -98,6 +98,55 @@ def _persistable(session: dict) -> dict:
     return {key: value for key, value in session.items() if not key.startswith("_")}
 
 
+# MARK: - Sequence runtime
+#
+# Cursors hang off the session under a leading underscore, which `_persistable` already strips and
+# `_clone` already copies through. So a cursor is never written to a profile, never survives a clone
+# or an import, and is scoped to its session without a second key — all from machinery that was
+# already here for `_problems`.
+
+def _runtime(session: dict) -> dict:
+    return session.setdefault("_sequenceRuntime", {})
+
+
+def _new_run_id(previous: str | None = None) -> str:
+    """A fresh run token, guaranteed different from the one it replaces.
+
+    Eight bytes rather than the three used for override ids, because this token is what stops a
+    retained event from an earlier run satisfying a `sequence wait`. The explicit inequality makes
+    "a reset always changes the run" a guarantee instead of a probability.
+    """
+    while True:
+        candidate = secrets.token_hex(8)
+        if candidate != previous:
+            return candidate
+
+
+def _rule_runtime(session: dict, override_id: str) -> dict:
+    """This rule's cursor and run token, created on first use.
+
+    `runId` is opaque and reissued whenever the cursor is reset, so a caller can tell "this event
+    belongs to the run I asked about" from "this is left over from a previous one". Deliberately not
+    an ordered counter: those collide across a proxy restart, which looks like continuity.
+
+    `overrunSeen` is sticky. It cannot be derived from the cursor, because a rule with an explicit
+    `advanceOn` does not move when it answers — so it can serve an exhausted response any number of
+    times while the cursor sits still, and live state would keep reporting no overrun while
+    `/recent` recorded one.
+
+    `serves` counts how many times each step (1-based) has been served this run, for the same
+    reason `overrunSeen` exists: for an `advanceOn` rule the cursor cannot record that a step was
+    served, and `/recent` is a bounded window, so under enough traffic the only durable evidence
+    that a serve happened is a counter kept where the serve happens.
+    """
+    runtime = _runtime(session)
+    entry = runtime.get(override_id)
+    if entry is None:
+        entry = {"cursor": 0, "runId": _new_run_id(), "overrunSeen": False, "serves": {}}
+        runtime[override_id] = entry
+    return entry
+
+
 class Store:
     def __init__(self) -> None:
         self.sessions: dict[str, dict] = {}
@@ -139,7 +188,8 @@ class Store:
             try:
                 state = json.loads(config.STATE_FILE.read_text(encoding="utf-8"))
                 if isinstance(state, dict) and state.get("active") in self.sessions:
-                    self.active_name = state["active"]
+                    # persist=False: reading the pointer must not rewrite it.
+                    self._activate(state["active"], persist=False)
             except (json.JSONDecodeError, OSError):
                 pass
         # Sessions are NOT rewritten on startup: a profile kept in git must stay clean until
@@ -158,12 +208,28 @@ class Store:
     def _persist_state(self) -> None:
         config.atomic_write(config.STATE_FILE, json.dumps({"active": self.active_name}, indent=2))
 
+    def _activate(self, name: str, *, persist: bool = True) -> None:
+        """The one place `active_name` changes.
+
+        Switching sessions clears the destination's cursors, so a scenario always begins at its
+        first step. This is a helper rather than a line repeated at each call site because there are
+        four of them — startup, the self-heal in `active_session`, `set_active` and
+        `delete_session` — and the last two are easy to miss: deleting the active session falls back
+        to `default` without going anywhere near `set_active`.
+        """
+        self.active_name = name
+        session = self.sessions.get(name)
+        if session is not None:
+            _runtime(session).clear()
+        if persist:
+            self._persist_state()
+
     # MARK: - Active session / overrides
 
     def active_session(self) -> dict:
         if self.active_name not in self.sessions:
-            self.active_name = "default"
             self.sessions.setdefault("default", _empty_session("default"))
+            self._activate("default", persist=False)
         return self.sessions[self.active_name]
 
     def active_overrides(self) -> list[dict]:
@@ -175,12 +241,17 @@ class Store:
     def add_override(self, payload: dict) -> dict:
         override = {"active": True, **rules.validate_override(payload)}
         override["id"] = override.get("id") or f"ovr_{secrets.token_hex(3)}"  # after the spread
+        session = self.active_session()
         overrides = self.active_overrides()
         existing = next((i for i, o in enumerate(overrides) if o.get("id") == override["id"]), None)
         if existing is not None:
             overrides[existing] = override
         else:
             overrides.append(override)
+        # The rule at this id is now a different rule; its old cursor describes steps that may no
+        # longer exist. Note this only fires for a caller that supplied an explicit id — an id-less
+        # `override add` mints a fresh random one and so replaces nothing.
+        _runtime(session).pop(override["id"], None)
         self._persist_session(self.active_name)
         return override
 
@@ -191,12 +262,138 @@ class Store:
         if len(remaining) == len(session["overrides"]):
             return False
         session["overrides"] = remaining
+        _runtime(session).pop(override_id, None)
         self._persist_session(self.active_name)
         return True
 
     def clear_overrides(self) -> None:
-        self.active_session()["overrides"] = []
+        session = self.active_session()
+        session["overrides"] = []
+        _runtime(session).clear()
         self._persist_session(self.active_name)
+
+    # MARK: - Sequences
+
+    def sequenced_overrides(self) -> list[dict]:
+        """Active sequenced rules in the active session.
+
+        Excludes `active: false`, matching what `find_override` already does — a disabled rule that
+        still advanced on the wire would be a rule doing something while switched off.
+        """
+        return [
+            override
+            for override in self.active_overrides()
+            if override.get("active", True) is not False
+            and rules.sequence_steps(override) is not None
+        ]
+
+    def resolve_override(self, override: dict) -> tuple[str, dict | None, dict | None]:
+        """What a matched rule should do for this request. Reads the cursor; never moves it.
+
+        Returns (action, effective override or None, progress or None). Progress is None for an
+        ordinary rule, so a caller can tell "no sequence here" from "a sequence that selected
+        nothing".
+        """
+        steps = rules.sequence_steps(override)
+        if steps is None:
+            return rules.APPLY, dict(override), None
+
+        entry = _rule_runtime(self.active_session(), override["id"])
+        cursor, count = entry["cursor"], len(steps)
+        action, view = rules.resolve_step(override, cursor)
+        if cursor >= count:
+            entry["overrunSeen"] = True   # sticky: the cursor alone cannot record this
+        else:
+            # Counted here and not in `bump_selected`, because this is the only path a winning
+            # rule takes regardless of trigger — an `advanceOn` rule serves without ever bumping.
+            entry["serves"][cursor + 1] = entry["serves"].get(cursor + 1, 0) + 1
+        progress = {
+            "sequenceId": override["id"],
+            "runId": entry["runId"],
+            "selectedStep": (cursor + 1) if cursor < count else None,
+            "stepCount": count,
+            "advanceEvents": cursor,   # for the exhaustion message; not recorded in /recent
+            # This request went past the planned steps — an event, distinct from the live
+            # `hasOverrun` below, which says one has happened at some point.
+            "overrun": cursor >= count,
+        }
+        return action, view, progress
+
+    def bump_selected(self, override: dict) -> None:
+        """Advance a rule whose trigger is `self`: it answered, so it moves.
+
+        A rule with an explicit `advanceOn` is untouched here — it moves only when its own matcher
+        sees a request, which is what makes repeated fetches idempotent.
+        """
+        steps = rules.sequence_steps(override)
+        if steps is None or rules.advance_matcher(override) is not None:
+            return
+        entry = _rule_runtime(self.active_session(), override["id"])
+        entry["cursor"] = rules.bumped(entry["cursor"], len(steps))
+
+    def advance_matching(
+        self, method: str, pathname: str, query: dict[str, str], body_text: str
+    ) -> list[str]:
+        """Advance every rule whose explicit `advanceOn` fits this request; return the ids moved."""
+        session = self.active_session()
+        advanced = []
+        for override in self.sequenced_overrides():
+            matcher = rules.advance_matcher(override)
+            if matcher is None:
+                continue
+            if not rules.matches_matcher(matcher, method, pathname, query, body_text):
+                continue
+            steps = rules.sequence_steps(override) or []
+            entry = _rule_runtime(session, override["id"])
+            entry["cursor"] = rules.bumped(entry["cursor"], len(steps))
+            advanced.append(override["id"])
+        return advanced
+
+    def sequence_states(self) -> list[dict]:
+        """Live state: what the next request would do, not what previous ones did."""
+        session = self.active_session()
+        states = []
+        for override in self.sequenced_overrides():
+            count = len(rules.sequence_steps(override) or [])
+            entry = _rule_runtime(session, override["id"])
+            cursor = entry["cursor"]
+            states.append({
+                "id": override["id"],
+                "runId": entry["runId"],
+                "advanceOn": "self" if rules.advance_matcher(override) is None else "match",
+                "nextStep": (cursor + 1) if cursor < count else None,
+                "stepCount": count,
+                "exhausted": cursor >= count,             # no planned step remains
+                "hasOverrun": entry["overrunSeen"],       # a request was actually served past it
+                # String keys, matching what any JSON round-trip would force anyway — a consumer
+                # must not need to know whether the payload came straight from the store.
+                "serves": {str(step): n for step, n in entry["serves"].items()},
+            })
+        return states
+
+    def reset_sequences(self, override_id: str | None = None) -> dict | None:
+        """Rewind sequences to their first step. None if `override_id` names no sequenced rule.
+
+        None rather than an empty result: "I reset nothing" and "there is no such rule" are
+        different answers, and a caller that cannot tell them apart will believe a typo worked.
+        """
+        session = self.active_session()
+        sequenced = {override["id"]: override for override in self.sequenced_overrides()}
+        if override_id is not None:
+            if override_id not in sequenced:
+                return None
+            targets = [override_id]
+        else:
+            targets = sorted(sequenced)
+
+        runtime = _runtime(session)
+        reset = {}
+        for target in targets:
+            previous = (runtime.pop(target, None) or {}).get("runId")   # dropping it is the rewind
+            entry = _rule_runtime(session, target)                      # recreate to report a token
+            entry["runId"] = _new_run_id(previous)
+            reset[target] = entry["runId"]
+        return {"session": self.active_name, "reset": reset}
 
     # MARK: - Sessions
 
@@ -233,8 +430,7 @@ class Store:
         if name not in self.sessions:
             return None
         previous = {"name": self.active_name, "overrideCount": len(self.active_overrides())}
-        self.active_name = name
-        self._persist_state()
+        self._activate(name)
         return previous
 
     def delete_session(self, name: str) -> bool:
@@ -243,8 +439,7 @@ class Store:
         path = _session_path(name)
         # Switch away BEFORE removing: set_active reads the outgoing session's override count.
         if self.active_name == name:
-            self.active_name = "default"
-            self._persist_state()
+            self._activate("default")
         del self.sessions[name]
         try:
             path.unlink()
@@ -260,6 +455,15 @@ class Store:
         return _persistable(session) if session else None
 
     def import_session(self, payload: dict) -> str | None:
+        """Raises ValidationError if anything in the payload could not be kept, and
+        FileExistsError if the name is taken — the same refusal `create_session` makes, because
+        silently replacing a session someone else may be using is a delete without a `delete`.
+
+        A file on disk is reported-and-dropped, because the file is in front of you and the proxy
+        must still start. An import is an API call at the boundary, and answering 200 to a payload
+        whose second override was silently discarded tells the caller their rule is installed when
+        it is not.
+        """
         session = payload.get("session", payload)
         if not rules.is_plain_object(session):
             return None
@@ -267,8 +471,12 @@ class Store:
             name = safe_component(session.get("name"), "session name")
         except UnsafeName:
             return None
+        if name in self.sessions:
+            raise FileExistsError(name)
         normalised = rules.normalise_session({**_empty_session(name), **session}, name)
-        normalised.pop("_problems", None)
+        problems = normalised.pop("_problems", [])
+        if problems:
+            raise rules.ValidationError("; ".join(problems))
         self.sessions[name] = normalised
         self._persist_session(name)
         return name

@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "name": "retry-then-succeed",
+  "notes": "sequence with no advanceOn, so the trigger is `self`: the cursor moves each time this rule answers. The first attempt to place an order fails with a 503, the second succeeds — the shape you need to exercise retry logic, which a fixed response cannot produce. A third attempt gets Lyrebird's own 500 saying the sequence is exhausted, because onExhausted defaults to `error`: repeating the last step would let an unplanned extra request pass for a successful one. Set it to repeatLast or passThrough if more requests are expected.",
+  "verified": false,
+  "overrides": [
+    {
+      "id": "ovr_create_order",
+      "match": {
+        "method": "POST",
+        "path": "/api/v1/orders"
+      },
+      "mode": "replace",
+      "sequence": {
+        "steps": [
+          {
+            "status": 503,
+            "body": {
+              "error": {
+                "code": "SERVICE_UNAVAILABLE",
+                "message": "Try again shortly."
+              }
+            }
+          },
+          {
+            "status": 201,
+            "body": {
+              "id": "ord_000001",
+              "status": "confirmed"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}
