@@ -37,6 +37,33 @@ There are two ways to answer a request:
 | **`replace`** | Answer locally with the response you configured. Never touches your backend — so it works offline, off-VPN, or for an endpoint nobody has built yet. |
 | **`patch`** | Let the real response come back, then change part of it. Good for flipping one field in a payload you otherwise want intact. |
 
+## Scenarios that move
+
+A backend can produce a state. What it can't produce on demand is a *transition* — delete a row and
+have the next refresh show it gone. A rule can hold a list of steps and a trigger that advances them:
+
+```json
+{
+  "match": { "method": "GET", "path": "/api/v1/items" },
+  "mode": "replace",
+  "sequence": {
+    "advanceOn": { "method": "DELETE", "path": "/api/v1/items/*" },
+    "steps": [
+      { "body": { "items": ["a", "b", "c"] } },
+      { "body": { "items": ["a", "c"] } }
+    ]
+  }
+}
+```
+
+Enter the screen — three items. Fetch it again, and again: still three, because the trigger is the
+`DELETE`, not the fetch. Delete one, refresh: two. Your screen's own fetch pattern stops mattering,
+which is what makes this reliable rather than fiddly.
+
+Leave `advanceOn` out and the steps advance on the rule's own calls instead — the first attempt
+fails, the second succeeds, for exercising retry logic. Run past the last step and Lyrebird says so
+with a `500` rather than quietly repeating itself.
+
 A `patch` that switches on a feature flag, keeping everything else the server said:
 
 ```json
@@ -164,7 +191,7 @@ the CA.
 ## More
 
 `bin/lyrebird` has `init`, `up`, `down`, `status`, `use`, `recent`, `override`, `session`,
-`wait-ready`, `trust-ca`, `untrust-ca` and `logs`. `bin/lb` is a shorter alias for it.
+`sequence`, `wait-ready`, `trust-ca`, `untrust-ca` and `logs`. `bin/lb` is a shorter alias for it.
 
 - [Engine guide](engine/README.md) — the full rule schema, matching order, control API, ports, tests
 - [Menu-bar app](menubar/README.md) — building and signing the SwiftUI client

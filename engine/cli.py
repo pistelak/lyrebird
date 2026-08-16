@@ -7,6 +7,8 @@
     lyrebird recent [--json] [--matched]  what came through, and which overrides answered
     lyrebird override add <json>          add a rule to the active session, no restart
     lyrebird session new <name>           create a scratch session (--clone-from X)
+    lyrebird sequence reset [id]          rewind response sequences to their first step
+    lyrebird sequence wait <id> --step N  block until a sequence serves a given step
     lyrebird status [--json]              show intercept state (honest about PAC on/off)
     lyrebird wait-ready [--match]         block until traffic arrives, or until a rule matches
     lyrebird trust-ca / untrust-ca        manage the simulator CA
@@ -431,6 +433,9 @@ def status(as_json: bool) -> None:
             "activeSession": (health or {}).get("activeSession"),
             "overrideCount": (health or {}).get("overrideCount"),
             "sessions": (health or {}).get("sessions", []),
+            # .get with a default: an older engine — or a test double — has no such key, and the
+            # exit code of `status` must not depend on this field existing.
+            "sequences": (health or {}).get("sequences", []),
             "simBundleId": (health or {}).get("simBundleId"),
             "profile": str(config.PROFILE_DIR),
             "service": service,
@@ -442,6 +447,12 @@ def status(as_json: bool) -> None:
         _banner(health, service)
         if health:
             click.echo(f"  sessions: {', '.join(health['sessions'])}")
+            for state in health.get("sequences", []):
+                position = (f"next step {state['nextStep']}/{state['stepCount']}"
+                            if state["nextStep"] else f"{RED}exhausted{R}")
+                overrun = f" {YELLOW}· overrun{R}" if state["hasOverrun"] else ""
+                trigger = "own calls" if state["advanceOn"] == "self" else "advanceOn"
+                click.echo(f"  sequence {state['id']}: {position} · {trigger}{overrun}")
             click.echo(f"  dashboard: {CONTROL}/")
         if service:
             pac = netproxy.pac_status(service)
@@ -485,7 +496,14 @@ def recent(as_json: bool, only_matched: bool, limit: int) -> None:
     for entry in entries:
         mark = f" → {entry['matched']}" if entry.get("matched") else ""
         skipped = f"  {YELLOW}patch skipped: {entry['patchSkipped']}{R}" if entry.get("patchSkipped") else ""
-        click.echo(f"  {entry['method']:6} {entry['status']}  {entry['path']}{mark}{skipped}")
+        step = ""
+        if entry.get("sequenceId"):
+            step = (f"  {DIM}[{entry['sequenceId']} step {entry['selectedStep']}/"
+                    f"{entry['stepCount']}]{R}" if entry.get("selectedStep")
+                    else f"  {YELLOW}[{entry['sequenceId']} overrun]{R}")
+        advanced = f"  {DIM}advanced {', '.join(entry['advanced'])}{R}" if entry.get("advanced") else ""
+        click.echo(f"  {entry['method']:6} {entry['status']}  {entry['path']}"
+                   f"{mark}{step}{advanced}{skipped}")
 
 
 @cli.group()
@@ -548,6 +566,137 @@ def session_rm(name: str) -> None:
     """Delete a session and its file."""
     _control(f"/__mock__/sessions/{name}", "DELETE")
     click.echo(f"✓ deleted {name}")
+
+
+@cli.group()
+def sequence() -> None:
+    """Inspect and rewind response sequences."""
+
+
+def _find_sequence(health: dict, override_id: str) -> dict | None:
+    for state in health.get("sequences", []):
+        if state.get("id") == override_id:
+            return state
+    return None
+
+
+@sequence.command(name="reset")
+@click.argument("override_id", metavar="[ID]", required=False)
+def sequence_reset(override_id: str | None) -> None:
+    """Rewind sequences in the active session to their first step.
+
+    With no ID, rewinds every sequence. Cursors are in-memory, so this is the only way to replay a
+    scenario without switching sessions.
+    """
+    result = _control("/__mock__/sequences/reset", "POST", {"id": override_id} if override_id else {})
+    reset = result.get("reset") or {}
+    if not reset:
+        click.echo(f"{DIM}no sequences in '{result.get('session')}' — nothing to reset{R}")
+        return
+    for name, run_id in reset.items():
+        click.echo(f"✓ reset {name} {DIM}(run {run_id}){R}")
+
+
+@sequence.command(name="wait")
+@click.argument("override_id")
+@click.option("--step", type=int, required=True, help="Which step to wait for (1-based).")
+@click.option("--timeout", default=30, help="Seconds to wait.")
+def sequence_wait(override_id: str, step: int, timeout: int) -> None:
+    """Block until a sequence serves a given step, in the run current when the wait began.
+
+    Both timeout-shaped mistakes are answered up front instead: a step already served this run
+    succeeds immediately (reset → trigger → wait is the documented order, and the action may land
+    before the wait starts), and a run already past the step without serving it fails immediately —
+    an agent that waits 30 seconds for either learns the wrong thing about why.
+    """
+    health = _health()
+    if health is None:
+        # "Could not read it" is a different claim from "there is nothing here".
+        click.echo(f"{RED}✗ cannot reach the control API — is the proxy up?{R}")
+        raise SystemExit(1)
+    state = _find_sequence(health, override_id)
+    if state is None:
+        click.echo(f"{RED}✗ no sequence '{override_id}' in the active session{R}")
+        raise SystemExit(1)
+    if not 1 <= step <= state["stepCount"]:
+        click.echo(f"{RED}✗ '{override_id}' has {state['stepCount']} step(s); "
+                   f"--step {step} is out of range{R}")
+        raise SystemExit(1)
+
+    run_id, next_step = state["runId"], state["nextStep"]
+    # A serve already recorded for this run IS the postcondition: the counter lives in the runtime
+    # entry a reset drops, so everything in it happened after the last reset. The documented
+    # workflow is reset → trigger the action → wait, and if the action lands before the wait
+    # starts, refusing (or timing out) would report failure on a transition that completed.
+    already = (state.get("serves") or {}).get(str(step), 0)
+    if already:
+        click.echo(f"✓ {override_id} served step {step}/{state['stepCount']} this run "
+                   f"({already}×, before the wait began)")
+        return
+
+    # Fail now, not at the deadline. This has to come from live state rather than the traffic
+    # buffer: /recent holds a bounded window, so the event may have been evicted while the fact
+    # that it happened is still true. Ordered after the serve check: a cursor past the step with
+    # no serve recorded means the run advanced over the step without ever serving it.
+    if next_step is None or next_step > step:
+        position = "exhausted" if next_step is None else f"now at step {next_step}"
+        click.echo(f"{RED}✗ '{override_id}' is already past step {step} ({position}) and never "
+                   f"served it this run.{R}\n"
+                   f"   Run `lyrebird sequence reset {override_id}` before triggering the action.")
+        raise SystemExit(1)
+
+    # The observation comes from the live serve counter, not /recent: /recent is a bounded window,
+    # so under enough traffic the serve could be evicted between polls — the wait would then time
+    # out on something that happened. The counter cannot be evicted, and a reset clears it with
+    # the runtime entry it lives in.
+    deadline = time.time() + timeout
+    unreachable = False
+    current: dict | None = None
+    while True:
+        current_health = _health()
+        if current_health is None:
+            unreachable = True   # transient until the deadline says otherwise; keep polling
+        else:
+            unreachable = False
+            current = _find_sequence(current_health, override_id)
+            if current is None or current.get("runId") != run_id:
+                what = "was removed" if current is None else "was reset"
+                click.echo(f"{RED}✗ '{override_id}' {what} while waiting; "
+                           f"this wait's baseline no longer applies.{R}")
+                raise SystemExit(1)
+            if (current.get("serves") or {}).get(str(step), 0):
+                detail = next((e for e in _get_json("/__mock__/recent", timeout=2) or []
+                               if e.get("sequenceId") == override_id and e.get("runId") == run_id
+                               and e.get("selectedStep") == step), None)
+                served = f"✓ {override_id} served step {step}/{current['stepCount']}"
+                if detail:
+                    click.echo(f"{served} for {detail['method']} {detail['path']} → {detail['status']}")
+                else:
+                    click.echo(served)   # the serve outlived its /recent entry; the counter is the proof
+                return
+            now_next = current.get("nextStep")
+            if now_next is None or now_next > step:
+                # Checked after the serve: a run that served the step and then advanced is a
+                # success, but one that advanced over it without serving can never satisfy this
+                # wait — burning the rest of the timeout would blame the wrong thing.
+                position = "exhausted" if now_next is None else f"now at step {now_next}"
+                click.echo(f"{RED}✗ '{override_id}' advanced past step {step} without serving it "
+                           f"({position}).{R}\n"
+                           f"   Something advanced the sequence that was not the request you were "
+                           f"waiting for; check `lyrebird recent`.")
+                raise SystemExit(1)
+        if time.time() >= deadline:
+            break
+        time.sleep(1)
+
+    if unreachable:
+        click.echo(f"{RED}✗ lost the control API while waiting — the proxy may have stopped; "
+                   f"whether step {step} was served is unknown.{R}")
+    else:
+        click.echo(f"{RED}✗ '{override_id}' did not serve step {step} within {timeout}s "
+                   f"(next step: {(current or state).get('nextStep')}).{R}\n"
+                   f"   Check `lyrebird recent` for what did arrive.")
+    raise SystemExit(1)
 
 
 @cli.command(name="wait-ready")

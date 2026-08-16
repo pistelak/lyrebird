@@ -90,13 +90,19 @@ and what the PAC advertises — those are deliberately separate settings.
 
 ## Admin API (`/__mock__/*`)
 
-- `GET /health` (reports `intercepting` / `proxyUp` / `pacEnabled` / `simBundleId`) · `GET /recent`
-  · `GET /catalog`
+- `GET /health` (reports `intercepting` / `proxyUp` / `pacEnabled` / `simBundleId` / `sequences`)
+  · `GET /recent` · `GET /catalog`
+- `POST /sequences/reset` — rewind every sequence in the active session, or one with `{"id": ...}`
 - `GET|POST /overrides`, `DELETE /overrides/{id}` — act on the **active session**
 - `DELETE /overrides` — **destructive**: deletes every override in the active session and rewrites
   its file. The only endpoint that does this; the dashboard button asks first.
 - `GET /sessions` · `POST /sessions` · `POST /sessions/save-active` · `PUT /sessions/active`
   · `GET /sessions/{name}/export` · `POST /sessions/import` · `DELETE /sessions/{name}`
+
+`POST /sessions/import` refuses (**400**) a payload it cannot keep whole — an override that fails
+validation, or two sharing an id — and persists nothing. A session *file* is instead
+reported-and-dropped at startup, because the file is in front of you and the proxy must still start;
+an import is an API call, and reporting success for a rule that was discarded is worse than refusing.
 - `GET /presets/{operationId}` · `GET|POST /presets/{operationId}/{name}`
 
 A `POST`, `PUT`, `PATCH` or `DELETE` carrying a body must send `Content-Type: application/json`,
@@ -144,11 +150,65 @@ Server-sent-event streams always pass through un-buffered, and bodies larger tha
 rather than buffer. When a patch cannot be applied, the reason appears as `patchSkipped` in
 `/recent` instead of the request silently looking unmatched.
 
+## Sequences
+
+A `replace` rule may answer differently as a scenario progresses. It holds a list of **steps** and a
+cursor; `advanceOn` decides what moves the cursor.
+
+```json
+{ "match": { "method": "GET", "path": "/api/v1/items" },
+  "mode": "replace",
+  "sequence": {
+    "advanceOn": { "method": "DELETE", "path": "/api/v1/items/*" },
+    "steps": [ { "body": { "items": ["a", "b", "c"] } },
+               { "body": { "items": ["a", "c"] } } ] } }
+```
+
+Omit `advanceOn` and it defaults to **`self`** — the cursor moves each time this rule answers, which
+is what you want for "the first attempt fails, the second succeeds". Give it a matcher and the rule
+becomes **idempotent**: repeated calls all return the current step, and only a request matching that
+matcher moves it on. That is what makes delete-then-refresh reliable, because a screen that fetches
+its list twice on appear no longer desynchronises the scenario.
+
+`self` is not the same as a matcher copied from `match`. Matching order picks the *most specific*
+rule, so a rule whose matcher fits a request may not be the rule that answered it — advancing on a
+match it lost would spend a step it never served, and every later request would be off by one.
+
+`advanceOn` takes the same vocabulary as `match` and is validated by the same code, but it must
+constrain at least a `method` or a `path`: a matcher with neither matches everything, so every
+request would advance the sequence.
+
+**A step is the response half of an override** — `status`, `headers`, `body`, and nothing else.
+Fields not set on a step are inherited from the rule, as a shallow overlay: a step's `headers`
+*replaces* the rule's rather than merging, `{}` clears them, and an explicit `null` clears any
+inherited field. `delayMs` belongs on the rule, not the step, so one delay applies to every step.
+
+| `onExhausted` | after the last step |
+|---|---|
+| `error` *(default)* | Lyrebird answers `500` naming the rule and the counts |
+| `repeatLast` | the last step answers again |
+| `passThrough` | the rule stands aside and the real upstream answers |
+
+The default is `error` on purpose: repeating the last step would let a request the scenario never
+planned for pass for a successful one.
+
+Cursors live in memory, never in the profile, and reset when the scenario restarts — switching
+session, editing the rule, or `lyrebird sequence reset`. `GET /__mock__/health` reports
+`sequences[]` with `nextStep`, `stepCount`, `exhausted`, `hasOverrun`, `serves` (how many times
+each step has been served this run, keyed by step number) and an opaque `runId` that changes on
+every reset. `/recent` records `sequenceId`, `selectedStep` and `advanced` per request —
+separately from `matched`, so an exhausted `passThrough` (which answers nothing) is still visible.
+
+Sequences are `replace`-only. A `patch` needs the upstream response, so it could not answer locally
+when exhausted, and a patch skipped by a streamed or non-JSON upstream would spend a step the app
+never saw.
+
 ## Sessions
 
 Named, saveable scenarios under `<profile>/sessions/`. One active session drives the proxy. The
-bundled examples are `enable-beta-export`, `orders-outage`, `slow-profile` and
-`checkout-edge-cases`.
+bundled examples are `enable-beta-export`, `orders-outage`, `slow-profile`, `checkout-edge-cases`,
+`remove-item-then-refresh` and `retry-then-succeed` — the last two demonstrate the two sequence
+triggers.
 
 ## Endpoint catalog
 

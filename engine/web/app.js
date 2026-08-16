@@ -39,7 +39,8 @@ async function refresh() {
   }
   renderBanner(health);
   renderSessions(sessions);
-  renderOverrides(overrides);
+  // Sequence position is live state, so it comes from health rather than from the override itself.
+  renderOverrides(overrides, new Map((health.sequences || []).map((s) => [s.id, s])));
   renderRecent(recent);
 }
 
@@ -73,7 +74,7 @@ function renderSessions(data) {
   }
 }
 
-function renderOverrides(overrides) {
+function renderOverrides(overrides, sequences = new Map()) {
   const list = el("overrides");
   list.replaceChildren();
   if (!overrides.length) {
@@ -100,7 +101,13 @@ function renderOverrides(overrides) {
       span("grow"),
     );
     if (override.delayMs) summary.append(span("returns", `⏱ ${override.delayMs} ms`));
-    summary.append(span("returns", summarizeReturn(override)));
+    const sequence = sequences.get(override.id);
+    if (sequence) {
+      summary.append(span("returns", sequence.nextStep
+        ? `step ${sequence.nextStep}/${sequence.stepCount}`
+        : `exhausted${sequence.hasOverrun ? " · overrun" : ""}`));
+    }
+    summary.append(span("returns", summarizeReturn(effectiveOverride(override, sequence))));
 
     const remove = document.createElement("button");
     remove.textContent = "✕";
@@ -115,7 +122,7 @@ function renderOverrides(overrides) {
 
     const body = document.createElement("pre");
     body.className = "body";
-    body.textContent = bodyPretty(override);
+    body.textContent = bodyPretty(effectiveOverride(override, sequence));
 
     details.append(summary, body);
     list.appendChild(details);
@@ -123,11 +130,28 @@ function renderOverrides(overrides) {
 }
 
 function summarizeReturn(override) {
+  if (override === null) return "pass-through";
   if (override.mode === "replace") return `replace → ${override.status || 200}`;
   return `patch${override.patchStrategy ? ` (${override.patchStrategy})` : ""}`;
 }
 
+// What the next matching request would actually get, mirroring the engine's step_view: parent
+// fields with the selected step's overlaid. Summarizing the parent rule instead showed
+// `replace → 200` while the live step answered 503.
+function effectiveOverride(override, sequence) {
+  const steps = override.sequence?.steps;
+  if (!sequence || !Array.isArray(steps) || !steps.length) return override;
+  const { sequence: _, ...parent } = override;
+  if (sequence.nextStep) return { ...parent, ...steps[sequence.nextStep - 1] };
+  const policy = override.sequence.onExhausted || "error";
+  if (policy === "repeatLast") return { ...parent, ...steps[steps.length - 1] };
+  if (policy === "passThrough") return null;
+  // The exhaustion error the engine answers with; the real message also carries the counts.
+  return { mode: "replace", status: 500, body: { error: { code: "SEQUENCE_EXHAUSTED" } } };
+}
+
 function bodyPretty(override) {
+  if (override === null) return "(pass-through — the real upstream answers)";
   if (override.mode === "replace") {
     if (override.body === undefined || override.body === null) return "(empty body)";
     return typeof override.body === "string" ? override.body : JSON.stringify(override.body, null, 2);
