@@ -468,7 +468,7 @@ def test_assert_answered_succeeds_on_an_answer_that_lands_mid_wait(profile, runn
     assert "2 request(s)" in result.output
 
 
-def test_assert_answered_rejects_a_negative_timeout(profile, runner, monkeypatch):
+def test_assert_answered_rejects_a_negative_timeout(profile, runner):
     result = runner.invoke(cli.cli, ["assert-answered", "ovr_a", "--timeout", "-1"])
     assert result.exit_code == 1
     assert "must not be negative" in result.output

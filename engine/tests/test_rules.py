@@ -406,28 +406,36 @@ def test_internal_runtime_keys_are_stripped_from_input(injected):
 # could have parted company. Validation checks these fields' types but not their emptiness, and a
 # saved session may carry `""` or `{}` — which the wire has always treated as "no constraint".
 
-@pytest.mark.parametrize("matcher,method,path,query,body", [
-    ({}, "GET", "/a", {}, ""),
-    ({"method": ""}, "POST", "/a", {}, ""),
-    ({"path": ""}, "GET", "/a", {}, ""),
-    ({"query": {}}, "GET", "/a", {}, ""),
-    ({"bodyContains": ""}, "GET", "/a", {}, ""),
-    ({"method": "get"}, "GET", "/a", {}, ""),
-    ({"method": "GET"}, "get", "/a", {}, ""),
-    ({"path": "/api/*/x"}, "GET", "/api/v1/x", {}, ""),
-    ({"query": {"page": 2}}, "GET", "/a", {"page": "2"}, ""),
-    ({"query": {"k": "v"}}, "GET", "/a", {"k": "v", "other": "z"}, ""),
-    ({"bodyContains": "id"}, "GET", "/a", {}, "the id here"),
-    ({"method": "POST"}, "GET", "/a", {}, ""),
-    ({"path": "/b"}, "GET", "/a", {}, ""),
-    ({"query": {"k": "v"}}, "GET", "/a", {}, ""),
-    ({"query": {"k": "v"}}, "GET", "/a", {"k": "w"}, ""),
-    ({"bodyContains": "id"}, "GET", "/a", {}, "nothing"),
+@pytest.mark.parametrize("matcher,method,path,query,body,expected", [
+    # Fields validation accepts but does not require to be non-empty. The wire has always read
+    # these as "no constraint", and a saved session may contain them.
+    ({}, "GET", "/a", {}, "", True),
+    ({"method": ""}, "POST", "/a", {}, "", True),
+    ({"path": ""}, "GET", "/a", {}, "", True),
+    ({"query": {}}, "GET", "/a", {}, "", True),
+    ({"bodyContains": ""}, "GET", "/a", {}, "", True),
+    # Method comparison is case-insensitive in both directions.
+    ({"method": "get"}, "GET", "/a", {}, "", True),
+    ({"method": "GET"}, "get", "/a", {}, "", True),
+    # `*` is the only wildcard; a rule may carry a non-string query value; extra parameters on the
+    # request are ignored.
+    ({"path": "/api/*/x"}, "GET", "/api/v1/x", {}, "", True),
+    ({"path": "/api/*/x"}, "GET", "/api/v1/y", {}, "", False),
+    ({"query": {"page": 2}}, "GET", "/a", {"page": "2"}, "", True),
+    ({"query": {"k": "v"}}, "GET", "/a", {"k": "v", "other": "z"}, "", True),
+    ({"bodyContains": "id"}, "GET", "/a", {}, "the id here", True),
+    ({"method": "POST"}, "GET", "/a", {}, "", False),
+    ({"path": "/b"}, "GET", "/a", {}, "", False),
+    ({"query": {"k": "v"}}, "GET", "/a", {}, "", False),
+    ({"query": {"k": "v"}}, "GET", "/a", {"k": "w"}, "", False),
+    ({"bodyContains": "id"}, "GET", "/a", {}, "nothing", False),
 ])
-def test_explaining_a_matcher_agrees_with_matching_it(matcher, method, path, query, body):
-    """The two must never part company: one decides on the wire, the other tells a person why."""
-    explained = rules.explain_matcher(matcher, method, path, query, body)
-    assert (explained is None) is rules.matches_matcher(matcher, method, path, query, body)
+def test_matching_semantics_are_pinned_field_by_field(matcher, method, path, query, body, expected):
+    """`matches_matcher` is `explain_matcher(...) is None`, so asserting only that the two agree
+    would be a tautology. These pin the *outcome* — which is what must not change now that every
+    match runs through the explainer."""
+    assert rules.matches_matcher(matcher, method, path, query, body) is expected
+    assert (rules.explain_matcher(matcher, method, path, query, body) is None) is expected
 
 
 @pytest.mark.parametrize("matcher,query,expected_field", [
