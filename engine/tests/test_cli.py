@@ -6,6 +6,7 @@ the user is left with a PAC pointing at a dead port and no indication why.
 """
 
 
+import json
 import os
 
 import pytest
@@ -14,6 +15,7 @@ from click.testing import CliRunner
 import cli
 import config
 import netproxy
+import rules
 
 
 @pytest.fixture
@@ -188,36 +190,45 @@ _BASE_SEQ = {"id": "ovr_a", "runId": "r1", "advanceOn": "self", "nextStep": 1, "
              "exhausted": False, "hasOverrun": False, "serves": {}}
 
 
-def _health_over(*states):
-    """Live state that moves under the poll: each call serves the next state, the last repeats.
+def _health_payload(**extra):
+    """The envelope every health response carries, so a double cannot pin a shape the API never
+    sends — and so a command that starts reading another field fails here rather than passing
+    against a payload that omitted it."""
+    return {"pid": 1, "sessions": ["default"], "activeSession": "default",
+            "overrideCount": 1, "simBundleId": None, "proxyPort": 8080,
+            "sequences": [], "answers": [], **extra}
 
-    `None` for a state means the rule is gone from the session."""
+
+def _polling(states, build):
+    """Live state that moves under the poll: each call serves the next state, the last repeats."""
     queue = list(states)
 
     def payload():
-        state = queue.pop(0) if len(queue) > 1 else queue[0]
-        sequences = [] if state is None else [{**_BASE_SEQ, **state}]
-        return {"pid": 1, "sessions": ["default"], "activeSession": "default",
-                "overrideCount": 1, "simBundleId": None, "proxyPort": 8080,
-                "sequences": sequences}
+        return build(queue.pop(0) if len(queue) > 1 else queue[0])
     return payload
+
+
+def _health_over(*states):
+    """Sequence state under the poll. `None` for a state means the rule is gone from the session."""
+    return _polling(states, lambda state: _health_payload(
+        sequences=[] if state is None else [{**_BASE_SEQ, **state}]))
 
 
 def _health_with(**state):
     return _health_over(state)
 
 
-def test_sequence_reset_names_what_it_rewound(profile, runner, monkeypatch):
+def test_reset_names_what_it_rewound(profile, runner, monkeypatch):
     monkeypatch.setattr(cli, "_control",
                         lambda *a, **k: {"session": "default", "reset": {"ovr_a": "abc123"}})
-    result = runner.invoke(cli.cli, ["sequence", "reset"])
+    result = runner.invoke(cli.cli, ["reset"])
     assert result.exit_code == 0
     assert "ovr_a" in result.output
 
 
-def test_sequence_reset_says_so_when_there_is_nothing_to_rewind(profile, runner, monkeypatch):
+def test_reset_says_so_when_there_is_nothing_to_rewind(profile, runner, monkeypatch):
     monkeypatch.setattr(cli, "_control", lambda *a, **k: {"session": "default", "reset": {}})
-    result = runner.invoke(cli.cli, ["sequence", "reset"])
+    result = runner.invoke(cli.cli, ["reset"])
     assert result.exit_code == 0
     assert "nothing to reset" in result.output
 
@@ -243,7 +254,7 @@ def test_sequence_wait_fails_at_once_when_the_step_already_passed(profile, runne
     result = runner.invoke(cli.cli, ["sequence", "wait", "ovr_a", "--step", "1", "--timeout", "30"])
     assert result.exit_code == 1
     assert "already past" in result.output
-    assert "sequence reset ovr_a" in result.output, "say how to fix it"
+    assert "reset ovr_a" in result.output, "say how to fix it"
 
 
 SERVED = {"sequenceId": "ovr_a", "runId": "r1", "selectedStep": 1, "stepCount": 2,
@@ -350,6 +361,17 @@ def test_sequence_wait_fails_fast_when_the_rule_vanishes_mid_wait(profile, runne
     assert "was removed" in result.output
 
 
+def test_status_json_carries_answer_counts(profile, runner, monkeypatch):
+    """AGENTS.md documents `answers` in `status --json`; it was in /health and never forwarded."""
+    monkeypatch.setattr(cli, "_health",
+                        _answers_over({"count": 2}))
+    monkeypatch.setattr(netproxy, "active_service", lambda: "Wi-Fi")
+    monkeypatch.setattr(netproxy, "pac_status",
+                        lambda service: netproxy.PacStatus(netproxy.pac_url(), True, True))
+    result = runner.invoke(cli.cli, ["status", "--json"])
+    assert json.loads(result.output)["answers"] == [{"id": "ovr_a", "active": True, "count": 2}]
+
+
 def test_status_json_carries_sequences(profile, runner, monkeypatch):
     monkeypatch.setattr(cli, "_health", _health_with())
     monkeypatch.setattr(netproxy, "active_service", lambda: "Wi-Fi")
@@ -358,3 +380,177 @@ def test_status_json_carries_sequences(profile, runner, monkeypatch):
     result = runner.invoke(cli.cli, ["status", "--json"])
     assert result.exit_code == 0
     assert '"sequences"' in result.output and "ovr_a" in result.output
+
+
+# MARK: - Proving a mock was in play
+#
+# A negative UI assertion passes whether or not the mock applied, so the suite needs a command that
+# fails. Every test below is a way that command could have reported success it had not earned.
+
+def _answers_over(*states):
+    """Answer counts under the poll, sharing the envelope with `_health_over`.
+
+    Each state overlays the defaults below; `None` means the rule is gone from the session."""
+    return _polling(states, lambda state: _health_payload(
+        answers=[] if state is None else [{"id": "ovr_a", "active": True, "count": 0, **state}]))
+
+
+def test_assert_answered_succeeds_when_the_rule_answered(profile, runner, monkeypatch):
+    monkeypatch.setattr(cli, "_health", _answers_over({"count": 3}))
+    result = runner.invoke(cli.cli, ["assert-answered", "ovr_a"])
+    assert result.exit_code == 0
+    assert "3 request(s)" in result.output
+
+
+def test_assert_answered_rejects_an_unknown_id_rather_than_reporting_zero(profile, runner, monkeypatch):
+    """A typo and a rule that never fired are different bugs with different fixes, and reading one
+    as the other is how you spend an afternoon on a matcher that was always correct."""
+    monkeypatch.setattr(cli, "_health", _answers_over({"count": 1}))
+    result = runner.invoke(cli.cli, ["assert-answered", "ovr_typo"])
+    assert result.exit_code == 1
+    assert "no rule 'ovr_typo'" in result.output
+    assert "has not answered" not in result.output
+
+
+def test_assert_answered_says_so_when_the_control_api_is_unreachable(profile, runner, monkeypatch):
+    """"I could not ask" is not "it answered nothing"."""
+    monkeypatch.setattr(cli, "_health", lambda: None)
+    result = runner.invoke(cli.cli, ["assert-answered", "ovr_a"])
+    assert result.exit_code == 1
+    assert "cannot reach the control API" in result.output
+
+
+def test_assert_answered_refuses_a_proxy_that_cannot_report_counts(profile, runner, monkeypatch):
+    """An engine too old to report counts must not be read as a rule that answered nothing — that
+    turns a restart into a debugging session."""
+    monkeypatch.setattr(cli, "_health", lambda: {"activeSession": "default", "sequences": []})
+    result = runner.invoke(cli.cli, ["assert-answered", "ovr_a"])
+    assert result.exit_code == 1
+    assert "does not report answer counts" in result.output
+
+
+def test_assert_answered_fails_at_once_for_an_inactive_rule(profile, runner, monkeypatch):
+    """Matching skips a disabled rule entirely, so waiting cannot help."""
+    monkeypatch.setattr(cli, "_health", _answers_over({"count": 0, "active": False}))
+    result = runner.invoke(cli.cli, ["assert-answered", "ovr_a", "--timeout", "30"])
+    assert result.exit_code == 1
+    assert "never answer" in result.output
+
+
+def test_assert_answered_lists_the_paths_that_did_arrive(profile, runner, monkeypatch):
+    """A count cannot tell "the app went somewhere else" from "the path pattern is wrong"; the
+    paths can."""
+    monkeypatch.setattr(cli, "_health", _answers_over({"count": 0}))
+    monkeypatch.setattr(cli, "_get_json", lambda *a, **k: [
+        {"method": "GET", "path": "/api/v2/items"},
+        {"method": "GET", "path": "/api/v2/items"},
+    ])
+    result = runner.invoke(cli.cli, ["assert-answered", "ovr_a"])
+    assert result.exit_code == 1
+    assert "/api/v2/items" in result.output
+    assert "explain-match" in result.output
+
+
+def test_assert_answered_names_an_empty_proxy_as_a_routing_problem(profile, runner, monkeypatch):
+    monkeypatch.setattr(cli, "_health", _answers_over({"count": 0}))
+    monkeypatch.setattr(cli, "_get_json", lambda *a, **k: [])
+    result = runner.invoke(cli.cli, ["assert-answered", "ovr_a"])
+    assert result.exit_code == 1
+    assert "relaunch the app" in result.output
+
+
+def test_assert_answered_succeeds_on_an_answer_that_lands_mid_wait(profile, runner, monkeypatch):
+    monkeypatch.setattr(cli, "_health",
+                        _answers_over({"count": 0}, {"count": 0}, {"count": 2}))
+    monkeypatch.setattr(cli.time, "sleep", lambda _seconds: None)
+    result = runner.invoke(cli.cli, ["assert-answered", "ovr_a", "--timeout", "30"])
+    assert result.exit_code == 0
+    assert "2 request(s)" in result.output
+
+
+def test_assert_answered_rejects_a_negative_timeout(profile, runner):
+    result = runner.invoke(cli.cli, ["assert-answered", "ovr_a", "--timeout", "-1"])
+    assert result.exit_code == 1
+    assert "must not be negative" in result.output
+
+
+# MARK: - explain-match
+
+_RULES = [
+    {"id": "ovr_broad", "mode": "replace", "match": {"method": "GET", "path": "/api/items"}},
+    {"id": "ovr_alpha", "mode": "replace",
+     "match": {"method": "GET", "path": "/api/items", "query": {"kind": "alpha"}}},
+    {"id": "ovr_other", "mode": "replace", "match": {"method": "GET", "path": "/api/orders"}},
+    {"id": "ovr_off", "active": False, "mode": "replace", "match": {"path": "/api/items"}},
+]
+
+
+def test_explain_match_names_the_winner_and_what_it_shadowed(profile, runner, monkeypatch):
+    """The over-match made visible: the broad rule answers alpha, beta and gamma alike, and nothing
+    in the tool used to say so until it had already happened."""
+    monkeypatch.setattr(cli, "_control", lambda *a, **k: _RULES)
+    result = runner.invoke(cli.cli, ["explain-match", "GET", "/api/items?kind=alpha"])
+    assert result.exit_code == 0
+    assert "ovr_alpha" in result.output
+    assert "also matched" in result.output and "ovr_broad" in result.output
+
+
+def test_explain_match_says_why_each_rule_missed(profile, runner, monkeypatch):
+    monkeypatch.setattr(cli, "_control", lambda *a, **k: _RULES)
+    result = runner.invoke(cli.cli, ["explain-match", "GET", "/api/items?kind=beta"])
+    assert result.exit_code == 0
+    assert "ovr_broad" in result.output
+    assert "rule wants 'alpha', request has 'beta'" in result.output
+
+
+def test_explain_match_exits_non_zero_when_nothing_is_selected(profile, runner, monkeypatch):
+    """Usable as a check in a script: a rule you cannot select is a rule that will never fire."""
+    monkeypatch.setattr(cli, "_control", lambda *a, **k: _RULES)
+    result = runner.invoke(cli.cli, ["explain-match", "POST", "/api/nothing"])
+    assert result.exit_code == 1
+    assert "no active rule" in result.output
+
+
+def test_explain_match_reports_an_inactive_rule_separately(profile, runner, monkeypatch):
+    """It matches and still cannot answer. Listing it among the misses would be a lie; leaving it
+    out entirely loses the answer to "why is my rule not firing?"."""
+    monkeypatch.setattr(cli, "_control", lambda *a, **k: _RULES)
+    result = runner.invoke(cli.cli, ["explain-match", "GET", "/api/items"])
+    assert "inactive" in result.output and "ovr_off" in result.output
+
+
+def test_explain_match_does_not_claim_a_patch_will_answer(profile, runner, monkeypatch):
+    """Whether a patch answers depends on the upstream content type, which no dry run can know."""
+    monkeypatch.setattr(cli, "_control",
+                        lambda *a, **k: [{"id": "p", "mode": "patch", "match": {"path": "/a"}}])
+    result = runner.invoke(cli.cli, ["explain-match", "GET", "/a"])
+    assert result.exit_code == 0
+    assert "is selected" in result.output
+    assert "only if the upstream response is JSON" in result.output
+
+
+def test_control_surfaces_the_apis_detail_not_just_its_slug(profile, runner, monkeypatch):
+    """The API sends the sentence that names the problem and a slug for it. Printing the slug is
+    how a supported matcher field ends up looking unsupported."""
+    import urllib.error
+
+    class _Body:
+        @staticmethod
+        def read():
+            return json.dumps({"error": "invalid_payload",
+                               "detail": "match: unknown field 'kind'"}).encode()
+
+    def raise_http(*_args, **_kwargs):
+        raise urllib.error.HTTPError("http://x", 400, "Bad Request", {}, _Body())  # type: ignore[arg-type]
+
+    monkeypatch.setattr(cli.urllib.request, "urlopen", raise_http)
+    result = runner.invoke(cli.cli, ["override", "add", '{"mode":"replace"}'])
+    assert result.exit_code == 1
+    assert "unknown field 'kind'" in result.output
+
+
+def test_override_add_help_lists_every_matcher_field(profile, runner):
+    """The capability that already existed but could not be found from the tool itself."""
+    result = runner.invoke(cli.cli, ["override", "add", "--help"])
+    for field in rules.MATCHER_FIELDS:
+        assert field in result.output

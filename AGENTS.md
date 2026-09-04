@@ -13,14 +13,16 @@ lyrebird --profile PATH up          # start; non-zero if it did not achieve inte
 lyrebird --profile PATH use NAME    # activate a saved scenario
 # relaunch the app under test
 lyrebird --profile PATH wait-ready --match --timeout 30
+lyrebird --profile PATH reset       # start a fresh run, immediately before the action you test
 # …do the work you came to do…
+lyrebird --profile PATH assert-answered ovr_x   # non-zero unless that rule actually answered
 lyrebird --profile PATH down        # restores the proxy settings that were there before
 ```
 
 Always pass `--profile` explicitly. `LYREBIRD_PROFILE` works too, but an explicit path is one less
 thing to be wrong about when something misbehaves later.
 
-## Five things worth knowing before you start
+## Six things worth knowing before you start
 
 **1. Exit codes mean the postcondition, not "the command ran."**
 
@@ -41,7 +43,26 @@ lyrebird --profile PATH wait-ready --match --timeout 30
 If it times out, it tells you how many requests *did* arrive, which distinguishes "the app isn't
 talking to us" from "your path pattern is wrong".
 
-**3. `status --json` is the state query.**
+**3. A green assertion is not proof your mock was in play.**
+
+`wait-ready --match` returns on the *first* rule to fire, which may not be yours. And a negative
+assertion — "this section is not shown" — passes identically whether your override applied or never
+matched, because the real backend usually produces the same screen. A suite like that can be testing
+nothing, and it stays green when a rule quietly stops matching.
+
+```bash
+lyrebird --profile PATH reset                    # draw the boundary…
+# trigger the action under test
+lyrebird --profile PATH assert-answered ovr_x    # …then assert the rule answered inside it
+```
+
+Non-zero unless that rule answered a request since the reset. `--timeout N` waits instead of
+sampling. Put the reset immediately before the action, not once at start-up: the app's launch
+fetches land in between, and an answer they produced would satisfy an assertion your test never
+earned. A rule that answered is counted where the answer is produced, so the evidence outlives its
+entry in `recent` and can never come from a rule that merely matched and lost.
+
+**4. `status --json` is the state query.**
 
 ```bash
 lyrebird --profile PATH status --json
@@ -53,6 +74,7 @@ lyrebird --profile PATH status --json
   "intercepting": true,
   "activeSession": "orders-outage",
   "overrideCount": 1,
+  "answers": [ { "id": "ovr_9a99bd", "active": true, "count": 3 } ],
   "sessions": ["default", "orders-outage"],
   "simBundleId": "com.example.Store",
   "profile": "/path/to/profile",
@@ -67,13 +89,13 @@ Exit code is 0 only when the proxy is up **and** intercepting, so
 format and nothing else — both forms exit the same way, so `lyrebird status && …` is safe to
 write either way round.
 
-**4. Relaunch the app after `up`, every time.**
+**5. Relaunch the app after `up`, every time.**
 
 `URLSession` caches the proxy configuration it saw at launch. An app that was already running will
 ignore Lyrebird completely, with no error anywhere — it will just quietly talk to the real backend.
 Set `simBundleId` in the profile and `up` handles it.
 
-**5. `down` is not optional.**
+**6. `down` is not optional.**
 
 It restores the proxy settings that were there before. Run it even on your failure paths. If your
 process is killed before it can, a watchdog restores them within a couple of seconds — but do not
@@ -97,6 +119,26 @@ Two options, and the second is usually the right one for an agent.
 ```
 
 Then `lyrebird use orders-outage`. Files are picked up when the proxy starts.
+
+**Check a rule before you launch anything.** `explain-match` answers, in a second, what otherwise
+costs a cold launch and a walk through the app:
+
+```bash
+lyrebird explain-match GET '/api/v1/orders/42'
+# → ovr_9a99bd is selected  (replace)
+#   also matched, ranked lower:
+#     ovr_all_orders  {"path": "/api/v1/*"}
+#   did not match:
+#     ovr_users       path: '/api/v1/users' does not match '/api/v1/orders/42'
+```
+
+It reports what would be *selected*, never what would be returned — a `patch` answers only if the
+upstream turns out to be JSON, and a sequence's step depends on run state this does not read. The
+"also matched" list is the one to read closely: those rules answer the same request whenever yours
+is not there, so a rule broad enough to appear in it is a rule quietly mocking its neighbours.
+
+That also splits the two things "nothing matched" runs together. If `explain-match` selects your
+rule and it still never fires, the rule is fine and the app did not make the request.
 
 **Or add one from the CLI,** which takes effect immediately with no restart:
 
@@ -129,10 +171,13 @@ already reset when you `use` a session, but anything the app did in between — 
 prefetch — may have moved them.
 
 ```bash
-lyrebird --profile PATH sequence reset ovr_items_list
+lyrebird --profile PATH reset ovr_items_list
 # now trigger the UI action
 lyrebird --profile PATH sequence wait ovr_items_list --step 2 --timeout 30
 ```
+
+`reset` with no id rewinds every rule in the active session. It is the same boundary
+`assert-answered` reads, so one reset serves both.
 
 **`wait-ready --match` cannot verify a sequence.** It returns on the *first* override to match and
 takes its baseline when the command starts, so it cannot express "step 1, then step 2", and it
@@ -144,7 +189,9 @@ without ever serving it **fails immediately**, which is the usual symptom of the
 request you did not expect.
 
 `status --json` carries `sequences[]` with `nextStep`, `exhausted`, `hasOverrun`, per-step serve
-counts in `serves`, and a `runId` that changes on every reset. `recent` shows which request took which step, and which request advanced
+counts in `serves`, and a `runId` that changes on every reset. It also carries `answers[]` — one
+entry per rule in the active session, with how many requests it has answered since the last reset,
+which is what `assert-answered` reads. `recent` shows which request took which step, and which request advanced
 what, so a scenario that went wrong can be read back rather than guessed at.
 
 If a rule advances when you did not expect it to, the fix is usually a narrower `match`, or an
@@ -164,6 +211,9 @@ lyrebird session rm agent-scratch
 
 `--clone-from` fails if the source does not exist rather than quietly giving you an empty session,
 so a typo surfaces immediately instead of as a scenario that mysteriously does nothing.
+
+`assert-answered` refuses an id it cannot find rather than reporting zero answers for it, for the
+same reason: a typo and a rule that never fired need completely different fixes.
 
 ## The destructive operations
 
@@ -188,6 +238,9 @@ net; if not, take a copy before touching someone else's sessions.
 | `patchSkipped` in `/recent` | `patch` needs a JSON response from a live upstream; use `replace` if there isn't one |
 | `overrun` in `/recent` | A sequence ran past its last step. Add steps, or set `onExhausted` |
 | `sequence wait` fails at once | The step already went by — reset, then trigger the action |
+| `assert-answered` fails but the screen looked right | The real backend served it. The rule never applied — that is the point of the command |
+| `assert-answered` lists paths you did not expect | The app went somewhere else; the matcher is probably fine |
+| A rule matches more screens than you meant | `explain-match` on a sibling request — if it selects your rule, it is too broad |
 | A sequence is one step ahead | Something else called the endpoint. Narrow `match`, or use `advanceOn` |
 | `up` fails on CA | No booted simulator. Boot one first |
 | 421 / 415 from the API | Missing `Host: 127.0.0.1:8088` or `Content-Type: application/json` — or just use the CLI |

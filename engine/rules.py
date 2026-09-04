@@ -32,6 +32,7 @@ import hashlib
 import json
 import re
 from collections.abc import Mapping, Sequence
+from functools import lru_cache
 from typing import Any, TypeGuard
 
 MAX_WILDCARDS = 10  # a bounded number of wildcards keeps the generated regex cheap to evaluate
@@ -46,7 +47,17 @@ VALID_EXHAUSTION_POLICIES = ("error", "repeatLast", "passThrough")
 # its own message because it has a right answer (put it on the parent).
 STEP_FIELDS = ("status", "headers", "body")
 SEQUENCE_FIELDS = ("steps", "advanceOn", "onExhausted")
-MATCHER_FIELDS = ("method", "path", "query", "bodyContains")
+
+# The matcher vocabulary, with what each field means. One dict rather than a tuple and a docstring
+# somewhere else, because three things are generated from it — validation, the "unknown field" error,
+# and the CLI help — and a capability nobody can discover is reported as a missing feature.
+MATCHER_FIELD_HELP = {
+    "method": "HTTP method, compared case-insensitively. Omit to match any method.",
+    "path": "Path without the query string. '*' is the only wildcard; everything else is literal.",
+    "query": "Query parameters that must all be present with these exact values. Others are ignored.",
+    "bodyContains": "A substring that must appear in the request body.",
+}
+MATCHER_FIELDS = tuple(MATCHER_FIELD_HELP)
 
 # The three outcomes of resolving a rule against its cursor. A discriminated action rather than an
 # "effective override" the caller reinterprets: exhaustion under `error` and `passThrough` has no
@@ -56,11 +67,17 @@ PASS_THROUGH = "passThrough"
 EXHAUSTED_ERROR = "error"
 
 
+@lru_cache(maxsize=512)
 def glob_to_regex(glob: str) -> re.Pattern:
     """`*` is the only special character; everything else is literal.
 
     Wildcard count is capped at validation time (see MAX_WILDCARDS) rather than here, so that
     matching semantics stay exactly as they were for already-saved sessions.
+
+    Cached because this runs once per rule per request and dominated that cost: the `re.sub` and
+    the f-string run before `re.compile` can reach its own internal cache. Keys are glob strings
+    from validated rules, so the key space is bounded by the number of rules; the explicit maxsize
+    keeps that true even for a profile someone edits in a loop.
     """
     escaped = re.sub(r"([.+?^${}()|\[\]\\])", r"\\\1", glob).replace("*", ".*")
     return re.compile(f"^{escaped}$")
@@ -71,15 +88,73 @@ def specificity(match: Mapping[str, Any]) -> tuple[int, int, int]:
 
     The constraint count is the tiebreaker that stops a generic rule from masking a rule on the
     same path that additionally pins the method, a query parameter or the body.
+
+    Every constraint is counted by the same truthiness `explain_matcher` matches by, so a field
+    that constrains nothing on the wire cannot add rank. `bodyContains` used to be counted with
+    `is not None`, which made `""` — a constraint the wire ignores — outrank an otherwise identical
+    rule and answer in its place.
+
+    That agreement is as far as the guarantee goes. Across *different* paths this is a heuristic,
+    not a subset proof: `/a/*` and `/*/b` overlap without either containing the other, and the
+    wildcard-then-length ordering simply picks one. It is a total order that is stable and
+    predictable, which is what a rule author needs; it is not a claim that the winner matches a
+    strictly smaller set of requests.
     """
     path = match.get("path") or "*"
     wildcards = path.count("*")
     constraints = (
         int(bool(match.get("method")))
         + len(match.get("query") or {})
-        + int(match.get("bodyContains") is not None)
+        + int(bool(match.get("bodyContains")))
     )
     return (wildcards, len(path), constraints)
+
+
+def explain_matcher(
+    matcher: Mapping[str, Any],
+    method: str,
+    pathname: str,
+    query: Mapping[str, str],
+    body_text: str,
+) -> str | None:
+    """Why this matcher does not fit the request, or None if it does.
+
+    The single matching primitive: `matches_matcher` is this function's verdict, so the reason shown
+    to a person and the decision made on the wire cannot disagree. `match` and `sequence.advanceOn`
+    share the same vocabulary and both come through here.
+
+    Fields are tested in the order a person reads them, and the *first* failure is the answer — a
+    list of every mismatch buries the one that matters, and the later checks are only meaningful once
+    the earlier ones pass.
+
+    Truthiness rather than `is not None` throughout, deliberately: validation checks these fields'
+    types but not their emptiness, so `""` and `{}` are already treated as "no constraint" on the
+    wire, and a saved session may contain them.
+    """
+    want_method = matcher.get("method")
+    if want_method and want_method.upper() != method.upper():
+        return f"method: rule wants {want_method.upper()}, request is {method.upper()}"
+
+    want_path = matcher.get("path")
+    if want_path and not glob_to_regex(want_path).match(pathname):
+        return f"path: {want_path!r} does not match {pathname!r}"
+
+    want_query = matcher.get("query")
+    if want_query:
+        for key, value in want_query.items():
+            # str(value): a rule may carry `{"page": 2}`, and query values off the wire are strings.
+            want = str(value)
+            if query.get(key) != want:
+                # "has no 'kind'" and "has 'beta'" send you to different places: the app is not
+                # sending the parameter at all, versus sending a different value.
+                have = f"has {query[key]!r}" if key in query else f"has no {key!r}"
+                return f"query.{key}: rule wants {want!r}, request {have}"
+
+    body_contains = matcher.get("bodyContains")
+    if body_contains and body_contains not in body_text:
+        return f"bodyContains: {body_contains!r} is not in the request body"
+
+    return None
 
 
 def matches_matcher(
@@ -89,31 +164,20 @@ def matches_matcher(
     query: Mapping[str, str],
     body_text: str,
 ) -> bool:
-    """Does a request satisfy one matcher?
+    """Does a request satisfy one matcher?"""
+    return explain_matcher(matcher, method, pathname, query, body_text) is None
 
-    The single matching primitive. `match` and `sequence.advanceOn` share the same vocabulary and
-    must agree on what it means, so both go through here rather than one of them being reimplemented
-    or wrapped in a synthetic override to reuse `matches`.
+
+def is_active(override: Mapping[str, Any]) -> bool:
+    """Is this rule one the engine will consider at all?
+
+    One spelling, because the encoding is not obvious — a missing key means active, and only a
+    literal `False` switches a rule off. It is read by matching, by the sequence and answer state
+    the store reports, and by `explain-match`, which exists to tell an operator why a rule did not
+    answer; those disagreeing would misfile a rule as inactive in the very command you run to find
+    out why it is not firing.
     """
-    want_method = matcher.get("method")
-    if want_method and want_method.upper() != method.upper():
-        return False
-
-    want_path = matcher.get("path")
-    if want_path and not glob_to_regex(want_path).match(pathname):
-        return False
-
-    want_query = matcher.get("query")
-    if want_query:
-        for key, value in want_query.items():
-            if query.get(key) != str(value):
-                return False
-
-    body_contains = matcher.get("bodyContains")
-    if body_contains and body_contains not in body_text:
-        return False
-
-    return True
+    return override.get("active", True) is not False
 
 
 def matches(
@@ -137,8 +201,7 @@ def find_override(
     candidates = [
         override
         for override in overrides
-        if override.get("active", True) is not False
-        and matches(override, method, pathname, query, body_text)
+        if is_active(override) and matches(override, method, pathname, query, body_text)
     ]
     if not candidates:
         return None
@@ -401,7 +464,12 @@ def validate_override(override: Any) -> dict:
     if override_id is not None and (not isinstance(override_id, str) or not override_id.strip()):
         raise ValidationError("id must be a non-empty string when present")
 
-    _validate_matcher(result.get("match") or {}, "match")
+    # Not `or {}`, and not `.get`: the first let a falsy non-object — `[]`, `""`, `0`, `false` —
+    # skip the object check below and then be read as an *absent* matcher on the wire, which is a
+    # rule that answers every intercepted request; the second cannot tell an explicit `null` from
+    # an omission. Omission is the one spelling of "no matcher"; a `match` that is present must be
+    # an object.
+    _validate_matcher(result["match"] if "match" in result else {}, "match")
 
     delay = result.get("delayMs")
     if delay is not None:
@@ -444,7 +512,7 @@ def normalise_session(session: Any, name: str) -> dict:
 
     # Underscore keys are ours: `_problems` below, and the sequence cursors the store hangs off the
     # session. `_persistable` strips them on the way out, so nothing we wrote can contain one — but
-    # a hand-edited or imported file can, and `_sequenceRuntime` reaching the store means either a
+    # a hand-edited or imported file can, and `_ruleRuntime` reaching the store means either a
     # crash inside a proxy hook or a scenario that quietly starts on step 2.
     result = {key: value for key, value in session.items() if not key.startswith("_")}
     result["name"] = name

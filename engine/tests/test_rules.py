@@ -394,7 +394,115 @@ def test_a_null_id_is_replaced_by_a_derived_one():
 @pytest.mark.parametrize("injected", ["bad", {"seq": {"cursor": 1, "runId": "x"}}])
 def test_internal_runtime_keys_are_stripped_from_input(injected):
     """Underscore keys are ours. `_persistable` strips them on the way out, so nothing we wrote can
-    contain one — but a hand-edited or imported file can, and `_sequenceRuntime` reaching the store
+    contain one — but a hand-edited or imported file can, and `_ruleRuntime` reaching the store
     means either a crash inside a proxy hook or a scenario that quietly starts on step 2."""
-    session = rules.normalise_session({"_sequenceRuntime": injected, "overrides": []}, "s")
-    assert "_sequenceRuntime" not in session
+    session = rules.normalise_session({"_ruleRuntime": injected, "overrides": []}, "s")
+    assert "_ruleRuntime" not in session
+
+
+# MARK: - Explaining a matcher
+#
+# `matches_matcher` is now `explain_matcher(...) is None`, so these pin the edges where the two
+# could have parted company. Validation checks these fields' types but not their emptiness, and a
+# saved session may carry `""` or `{}` — which the wire has always treated as "no constraint".
+
+@pytest.mark.parametrize("matcher,method,path,query,body,expected", [
+    # Fields validation accepts but does not require to be non-empty. The wire has always read
+    # these as "no constraint", and a saved session may contain them.
+    ({}, "GET", "/a", {}, "", True),
+    ({"method": ""}, "POST", "/a", {}, "", True),
+    ({"path": ""}, "GET", "/a", {}, "", True),
+    ({"query": {}}, "GET", "/a", {}, "", True),
+    ({"bodyContains": ""}, "GET", "/a", {}, "", True),
+    # Method comparison is case-insensitive in both directions.
+    ({"method": "get"}, "GET", "/a", {}, "", True),
+    ({"method": "GET"}, "get", "/a", {}, "", True),
+    # `*` is the only wildcard; a rule may carry a non-string query value; extra parameters on the
+    # request are ignored.
+    ({"path": "/api/*/x"}, "GET", "/api/v1/x", {}, "", True),
+    ({"path": "/api/*/x"}, "GET", "/api/v1/y", {}, "", False),
+    ({"query": {"page": 2}}, "GET", "/a", {"page": "2"}, "", True),
+    ({"query": {"k": "v"}}, "GET", "/a", {"k": "v", "other": "z"}, "", True),
+    ({"bodyContains": "id"}, "GET", "/a", {}, "the id here", True),
+    ({"method": "POST"}, "GET", "/a", {}, "", False),
+    ({"path": "/b"}, "GET", "/a", {}, "", False),
+    ({"query": {"k": "v"}}, "GET", "/a", {}, "", False),
+    ({"query": {"k": "v"}}, "GET", "/a", {"k": "w"}, "", False),
+    ({"bodyContains": "id"}, "GET", "/a", {}, "nothing", False),
+])
+def test_matching_semantics_are_pinned_field_by_field(matcher, method, path, query, body, expected):
+    """`matches_matcher` is `explain_matcher(...) is None`, so asserting only that the two agree
+    would be a tautology. These pin the *outcome* — which is what must not change now that every
+    match runs through the explainer."""
+    assert rules.matches_matcher(matcher, method, path, query, body) is expected
+    assert (rules.explain_matcher(matcher, method, path, query, body) is None) is expected
+
+
+@pytest.mark.parametrize("matcher,query,expected_field", [
+    ({"method": "POST", "path": "/b"}, {}, "method"),
+    ({"path": "/b", "query": {"k": "v"}}, {}, "path"),
+    ({"query": {"k": "v"}}, {"k": "w"}, "query.k"),
+    ({"bodyContains": "zzz"}, {}, "bodyContains"),
+])
+def test_the_reason_names_the_first_field_that_failed(matcher, query, expected_field):
+    """One reason, not a list: the later checks are only meaningful once the earlier ones pass, and
+    a list of every mismatch buries the one that matters."""
+    reason = rules.explain_matcher(matcher, "GET", "/a", query, "body")
+    assert reason is not None and reason.startswith(f"{expected_field}:")
+
+
+def test_a_missing_query_parameter_reads_differently_from_a_wrong_one():
+    """"has no 'kind'" and "has 'beta'" send you to different places — the app is not sending the
+    parameter at all, versus it is sending a different value."""
+    absent = rules.explain_matcher({"query": {"kind": "alpha"}}, "GET", "/a", {}, "")
+    wrong = rules.explain_matcher({"query": {"kind": "alpha"}}, "GET", "/a", {"kind": "beta"}, "")
+    assert absent is not None and "has no 'kind'" in absent
+    assert wrong is not None and "has 'beta'" in wrong
+
+
+def test_the_matcher_help_covers_exactly_the_accepted_fields():
+    """The CLI help is generated from MATCHER_FIELD_HELP and validation from MATCHER_FIELDS. If they
+    could drift, a documented field would be rejected or a supported one stay invisible."""
+    assert tuple(rules.MATCHER_FIELD_HELP) == rules.MATCHER_FIELDS
+
+
+@pytest.mark.parametrize("match", [[], "", 0, False, "/api/items", 7])
+def test_a_match_that_is_not_an_object_is_rejected(match):
+    """`or {}` used to let a falsy non-object through the object check, after which the wire read it
+    as an *absent* matcher — a rule that answers every intercepted request."""
+    with pytest.raises(rules.ValidationError, match="match must be a JSON object"):
+        rules.validate_override({"mode": "replace", "status": 200, "match": match})
+
+
+def test_an_absent_match_is_still_allowed():
+    """Absent is the documented spelling of "no matcher", and it is occasionally useful."""
+    assert rules.validate_override({"mode": "replace", "status": 200})["mode"] == "replace"
+    assert rules.validate_override({"mode": "replace", "status": 200, "match": {}})
+
+
+def test_an_empty_body_constraint_does_not_win_on_specificity():
+    """`bodyContains: ""` is ignored when matching, so counting it as a constraint let it outrank
+    an otherwise identical rule and answer in its place — "more specific" claiming a smaller set of
+    requests than it actually matches."""
+    generic = {"id": "generic", "mode": "replace", "match": {"path": "/api/items"}}
+    empty = {"id": "empty", "mode": "replace",
+             "match": {"path": "/api/items", "bodyContains": ""}}
+    assert rules.matches(generic, "GET", "/api/items", {}, "body")
+    assert rules.matches(empty, "GET", "/api/items", {}, "body")
+    winner = rules.find_override([generic, empty], "GET", "/api/items", {}, "body")
+    assert winner["id"] == "generic", "neither is more specific; order decides, not a phantom field"
+
+
+def test_a_real_body_constraint_still_wins_on_specificity():
+    generic = {"id": "generic", "mode": "replace", "match": {"path": "/api/items"}}
+    pinned = {"id": "pinned", "mode": "replace",
+              "match": {"path": "/api/items", "bodyContains": "kind"}}
+    winner = rules.find_override([generic, pinned], "GET", "/api/items", {}, "kind=alpha")
+    assert winner["id"] == "pinned"
+
+
+def test_an_explicit_null_match_is_rejected():
+    """`.get("match")` cannot tell `null` from omission, and the two are not the same claim: one
+    says "no matcher", the other says "here is my matcher" and hands over nothing."""
+    with pytest.raises(rules.ValidationError, match="match must be a JSON object"):
+        rules.validate_override({"mode": "replace", "status": 200, "match": None})

@@ -90,9 +90,10 @@ and what the PAC advertises — those are deliberately separate settings.
 
 ## Admin API (`/__mock__/*`)
 
-- `GET /health` (reports `intercepting` / `proxyUp` / `pacEnabled` / `simBundleId` / `sequences`)
-  · `GET /recent` · `GET /catalog`
-- `POST /sequences/reset` — rewind every sequence in the active session, or one with `{"id": ...}`
+- `GET /health` (reports `intercepting` / `proxyUp` / `pacEnabled` / `simBundleId` / `sequences` /
+  `answers`) · `GET /recent` · `GET /catalog`
+- `POST /reset` — start a fresh run in the active session: rewind sequence cursors and clear answer
+  counts, for every rule or one named with `{"id": ...}`
 - `GET|POST /overrides`, `DELETE /overrides/{id}` — act on the **active session**
 - `DELETE /overrides` — **destructive**: deletes every override in the active session and rewrites
   its file. The only endpoint that does this; the dashboard button asks first.
@@ -128,10 +129,24 @@ Only `mode` is required. `id` is derived from the rule when omitted and `active`
 so a hand-written session stays short — but an override with no `match` matches *every* request,
 so give it at least a path.
 
-`match` supports `{ method, path (with * wildcards), query?, bodyContains? }`. `delayMs` delays a
-matched response (that flow only). Most-specific wins: fewer wildcards first, then a longer path,
-then more constraints — so a rule that also pins a query parameter beats a generic rule on the
-same path.
+`match` supports these fields and no others — an unknown one is rejected rather than ignored,
+because a typo'd field is not a stricter matcher but a missing constraint:
+
+| field | |
+|---|---|
+| `method` | HTTP method, compared case-insensitively. Omit to match any method. |
+| `path` | Path without the query string. `*` is the only wildcard; everything else is literal. |
+| `query` | Query parameters that must all be present with these exact values. Others are ignored. |
+| `bodyContains` | A substring that must appear in the request body. |
+
+The same list generates `lyrebird override add --help`, so the CLI can never advertise a different
+vocabulary from the one validation accepts.
+
+`delayMs` delays a matched response (that flow only). Most-specific wins: fewer wildcards first,
+then a longer path, then more constraints — so a rule that also pins a query parameter beats a
+generic rule on the same path. `lyrebird explain-match METHOD PATH` shows which rule a given request
+would select and why each of the others would not, including the ones that matched and lost — which
+is how you find out a rule is answering for sibling screens before it does it silently.
 
 **`patchStrategy: "appendToArray"`** changes array handling for the *whole* recursive patch:
 wherever the upstream value and the patch value at the same JSON path are both arrays, Lyrebird
@@ -193,11 +208,28 @@ The default is `error` on purpose: repeating the last step would let a request t
 planned for pass for a successful one.
 
 Cursors live in memory, never in the profile, and reset when the scenario restarts — switching
-session, editing the rule, or `lyrebird sequence reset`. `GET /__mock__/health` reports
+session, editing the rule, or `lyrebird reset`. `GET /__mock__/health` reports
 `sequences[]` with `nextStep`, `stepCount`, `exhausted`, `hasOverrun`, `serves` (how many times
 each step has been served this run, keyed by step number) and an opaque `runId` that changes on
 every reset. `/recent` records `sequenceId`, `selectedStep` and `advanced` per request —
 separately from `matched`, so an exhausted `passThrough` (which answers nothing) is still visible.
+
+## Proving a rule was in play
+
+`GET /__mock__/health` also reports `answers[]`: one `{id, active, count}` per rule in the active
+session, counting the requests it has answered since the last `POST /reset`.
+
+The count is taken where the answer is produced — when a `replace` writes its response, and when a
+`patch` has actually merged into a JSON upstream — not when the request is recorded. That is what
+makes it trustworthy as a test assertion: a rule that matched but lost to a more specific one is
+never credited, a patch dropped for a non-JSON upstream is never credited, an exhausted
+`passThrough` is never credited, and a `replace` whose flow dies on the way back to the client still
+is, because it did answer. The evidence also outlives the request's entry in the bounded `/recent`
+buffer.
+
+`lyrebird assert-answered ID` exits non-zero unless that rule has answered since the reset, which is
+what lets a UI test fail when its mock never applied — a negative assertion ("this section is not
+shown") otherwise passes identically whether the override applied or never matched.
 
 Sequences are `replace`-only. A `patch` needs the upstream response, so it could not answer locally
 when exhausted, and a patch skipped by a streamed or non-JSON upstream would spend a step the app

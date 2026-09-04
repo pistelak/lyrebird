@@ -6,8 +6,10 @@
     lyrebird use <session>                switch active session (reports what it displaced)
     lyrebird recent [--json] [--matched]  what came through, and which overrides answered
     lyrebird override add <json>          add a rule to the active session, no restart
+    lyrebird explain-match <method> <path>  which rule would be selected, and why the rest were not
+    lyrebird assert-answered <id>         exit non-zero unless that rule answered this run
     lyrebird session new <name>           create a scratch session (--clone-from X)
-    lyrebird sequence reset [id]          rewind response sequences to their first step
+    lyrebird reset [id]                   start a fresh run: rewind sequences, clear answer counts
     lyrebird sequence wait <id> --step N  block until a sequence serves a given step
     lyrebird status [--json]              show intercept state (honest about PAC on/off)
     lyrebird wait-ready [--match]         block until traffic arrives, or until a rule matches
@@ -31,6 +33,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -39,6 +42,7 @@ import click
 
 import config
 import netproxy
+import rules
 
 MITMDUMP = config.ROOT / ".venv" / "bin" / "mitmdump"
 CONTROL = config.CONTROL_ORIGIN
@@ -92,7 +96,12 @@ def _control(path: str, method: str = "GET", payload: Any = None, timeout: float
             return json.loads(response.read().decode())
     except urllib.error.HTTPError as error:
         try:
-            detail = json.loads(error.read().decode()).get("error", error.reason)
+            # `detail` first: the API sends the sentence that names the problem ("match: unknown
+            # field 'kind' — a matcher may only carry method, path, query, bodyContains") and
+            # `error` only a slug for it. Printing the slug throws away the half that tells you
+            # what to do, which is how a supported matcher field ends up looking unsupported.
+            body = json.loads(error.read().decode())
+            detail = body.get("detail") or body.get("error") or error.reason
         except (ValueError, OSError):
             detail = error.reason
         click.echo(f"{RED}✗ {detail}{R}")
@@ -436,6 +445,7 @@ def status(as_json: bool) -> None:
             # .get with a default: an older engine — or a test double — has no such key, and the
             # exit code of `status` must not depend on this field existing.
             "sequences": (health or {}).get("sequences", []),
+            "answers": (health or {}).get("answers", []),
             "simBundleId": (health or {}).get("simBundleId"),
             "profile": str(config.PROFILE_DIR),
             "service": service,
@@ -511,15 +521,38 @@ def override() -> None:
     """Add or clear rules in the active session."""
 
 
-@override.command(name="add")
+# Built from the vocabulary itself, so the help cannot claim a different set of fields from the one
+# validation accepts. A matcher field nobody can discover is reported as a missing feature — and the
+# rule people write instead is a broader one that quietly answers for its neighbours.
+_ADD_HELP = """Add a rule to the active session. RULE is JSON, or - to read stdin.
+
+Takes effect immediately — no restart, and the session file is updated.
+
+\b
+    lyrebird override add '{"match":{"path":"/api/v1/orders/*"},"mode":"replace","status":500}'
+
+`match` accepts these fields, and only these:
+
+\b
+""" + "\n".join(
+    f"    {field:<13} {description}" for field, description in rules.MATCHER_FIELD_HELP.items()
+) + """
+
+Constrain a rule as tightly as the thing you are testing. Sibling screens served from one path are
+told apart by `query`, and a rule that leaves it out answers for all of them:
+
+\b
+    lyrebird override add '{"match":{"method":"GET","path":"/api/items","query":{"kind":"alpha"}},
+                            "mode":"replace","status":200,"body":{}}'
+
+`lyrebird explain-match GET '/api/items?kind=alpha'` shows which rule a request would select, and
+which others it would also have matched.
+"""
+
+
+@override.command(name="add", help=_ADD_HELP)
 @click.argument("rule")
 def override_add(rule: str) -> None:
-    """Add a rule to the active session. RULE is JSON, or - to read stdin.
-
-    Takes effect immediately — no restart, and the session file is updated.
-
-        lyrebird override add '{"match":{"path":"/api/v1/orders/*"},"mode":"replace","status":500}'
-    """
     raw = sys.stdin.read() if rule == "-" else rule
     try:
         payload = json.loads(raw)
@@ -580,23 +613,6 @@ def _find_sequence(health: dict, override_id: str) -> dict | None:
     return None
 
 
-@sequence.command(name="reset")
-@click.argument("override_id", metavar="[ID]", required=False)
-def sequence_reset(override_id: str | None) -> None:
-    """Rewind sequences in the active session to their first step.
-
-    With no ID, rewinds every sequence. Cursors are in-memory, so this is the only way to replay a
-    scenario without switching sessions.
-    """
-    result = _control("/__mock__/sequences/reset", "POST", {"id": override_id} if override_id else {})
-    reset = result.get("reset") or {}
-    if not reset:
-        click.echo(f"{DIM}no sequences in '{result.get('session')}' — nothing to reset{R}")
-        return
-    for name, run_id in reset.items():
-        click.echo(f"✓ reset {name} {DIM}(run {run_id}){R}")
-
-
 @sequence.command(name="wait")
 @click.argument("override_id")
 @click.option("--step", type=int, required=True, help="Which step to wait for (1-based).")
@@ -642,7 +658,7 @@ def sequence_wait(override_id: str, step: int, timeout: int) -> None:
         position = "exhausted" if next_step is None else f"now at step {next_step}"
         click.echo(f"{RED}✗ '{override_id}' is already past step {step} ({position}) and never "
                    f"served it this run.{R}\n"
-                   f"   Run `lyrebird sequence reset {override_id}` before triggering the action.")
+                   f"   Run `lyrebird reset {override_id}` before triggering the action.")
         raise SystemExit(1)
 
     # The observation comes from the live serve counter, not /recent: /recent is a bounded window,
@@ -697,6 +713,177 @@ def sequence_wait(override_id: str, step: int, timeout: int) -> None:
                    f"(next step: {(current or state).get('nextStep')}).{R}\n"
                    f"   Check `lyrebird recent` for what did arrive.")
     raise SystemExit(1)
+
+
+@cli.command()
+@click.argument("override_id", metavar="[ID]", required=False)
+def reset(override_id: str | None) -> None:
+    """Start a fresh run: rewind sequences to step 1 and clear answer counts.
+
+    With no ID, resets every rule in the active session. Run this immediately before the action you
+    are about to test, not once at start-up — the app's launch fetches land in between, and evidence
+    they leave behind would satisfy an `assert-answered` the test itself never earned.
+
+    Run state is in memory, so this is also the only way to replay a scenario without switching
+    sessions.
+    """
+    result = _control("/__mock__/reset", "POST", {"id": override_id} if override_id else {})
+    reset_ids = result.get("reset") or {}
+    if not reset_ids:
+        click.echo(f"{DIM}no rules in '{result.get('session')}' — nothing to reset{R}")
+        return
+    for name, run_id in reset_ids.items():
+        click.echo(f"✓ reset {name} {DIM}(run {run_id}){R}")
+
+
+@cli.command(name="assert-answered")
+@click.argument("override_id")
+@click.option("--timeout", default=0, help="Seconds to wait for the first answer (0 checks now).")
+def assert_answered(override_id: str, timeout: int) -> None:
+    """Exit non-zero unless that rule has answered a request since the last reset.
+
+    The assertion a test can make about its own setup. A negative UI assertion — "this section is
+    not shown" — passes identically whether the mock applied or never matched, because the real
+    backend usually produces the same screen. So a green suite can be testing nothing, and stays
+    green when a rule quietly stops matching. This is the command that fails instead.
+
+    The count is taken where the answer is produced, so it survives eviction from the traffic list
+    and can never be satisfied by a rule that merely matched and lost. `lyrebird reset` draws the
+    boundary: reset, trigger the action, assert.
+    """
+    if timeout < 0:
+        click.echo(f"{RED}✗ --timeout must not be negative{R}")
+        raise SystemExit(1)
+
+    deadline = time.time() + timeout
+    while True:
+        health = _health()
+        if health is None:
+            # Distinct from "it answered nothing": we could not ask. Falling through to the
+            # zero-answer message would send someone to debug a rule that may be perfectly fine.
+            click.echo(f"{RED}✗ cannot reach the control API — is the proxy up?{R}")
+            raise SystemExit(1)
+        if "answers" not in health:
+            click.echo(f"{RED}✗ this proxy does not report answer counts — restart it "
+                       f"(`lyrebird down && lyrebird up`) to pick up the current engine.{R}")
+            raise SystemExit(1)
+
+        state = next((s for s in health["answers"] if s.get("id") == override_id), None)
+        if state is None:
+            # A typo must not read as "it never fired": different bug, different fix.
+            active = health.get("activeSession")
+            click.echo(f"{RED}✗ no rule '{override_id}' in session '{active}'{R}")
+            raise SystemExit(1)
+        count = state.get("count", 0)
+        if count:
+            click.echo(f"✓ {override_id} answered {count} request(s) this run")
+            return
+        if not state.get("active", True):
+            # Waiting cannot help — matching skips a disabled rule entirely.
+            click.echo(f"{RED}✗ '{override_id}' is not active, so it can never answer.{R}")
+            raise SystemExit(1)
+        # A reset landing mid-wait is deliberately not special-cased: a count can only be observed
+        # falling if it was seen above zero first, and a count above zero has already returned. The
+        # wait simply runs out and says the rule has not answered this run, which is true.
+        if time.time() >= deadline:
+            break
+        time.sleep(1)
+
+    entries = _get_json("/__mock__/recent", timeout=2) or []
+    waited = f" within {timeout}s" if timeout else ""
+    click.echo(f"{RED}✗ '{override_id}' has not answered any request this run{waited}.{R}")
+    if not entries:
+        click.echo("   Nothing has reached the proxy at all — relaunch the app, and check the host "
+                   "is listed in your profile.")
+    else:
+        # The distinct paths, not the count: a count cannot tell "the app went somewhere else"
+        # from "the path pattern is wrong", and those have completely different fixes.
+        seen = list(dict.fromkeys(
+            f"{entry.get('method', '?'):6} {entry.get('path', '?')}" for entry in entries))
+        click.echo(f"   {len(entries)} request(s) in the recent buffer, on these paths:")
+        for line in seen[:5]:
+            click.echo(f"     {DIM}{line}{R}")
+        if len(seen) > 5:
+            click.echo(f"     {DIM}… and {len(seen) - 5} more{R}")
+        # The buffer is not scoped to the run, so these may predate the reset. Enough to tell
+        # "the app is not reaching us" from "it is, on other paths"; not enough to blame the rule.
+        click.echo("   `lyrebird explain-match <method> <path>` says which rule one of those "
+                   "would select, and why yours was not it.")
+    raise SystemExit(1)
+
+
+def _section(title: str, rows: list[tuple[str, str]]) -> None:
+    """One labelled block of `explain-match` output, or nothing if it has no rows."""
+    if not rows:
+        return
+    click.echo(f"  {title}:")
+    for name, note in rows:
+        click.echo(f"    {name:<16}{DIM}{note}{R}")
+
+
+@cli.command(name="explain-match")
+@click.argument("method")
+@click.argument("path")
+@click.option("--body", default="", help="Request body text, for rules using bodyContains.")
+@click.option("--json", "as_json", is_flag=True, help="Machine-readable output.")
+def explain_match(method: str, path: str, body: str, as_json: bool) -> None:
+    """Which rule a request would select, and why each of the others would not.
+
+    Answers at the keyboard what otherwise costs a cold launch and a walk through the app. It also
+    separates the two things "no match" collapses together: a rule this says would be selected, that
+    then never fires, means the app did not make the request you assumed it did.
+
+    PATH may carry a query string: `lyrebird explain-match GET '/api/items?kind=alpha'`.
+
+    It reports what would be *selected*, never what would be returned. A `patch` answers only if the
+    upstream response turns out to be JSON, and which step a sequence would serve depends on run
+    state this deliberately neither reads nor touches.
+    """
+    split = urllib.parse.urlsplit(path)
+    query = dict(urllib.parse.parse_qsl(split.query, keep_blank_values=True))
+    overrides = _control("/__mock__/overrides") or []
+    selected = rules.find_override(overrides, method, split.path, query, body)
+
+    report = []
+    for override in overrides:
+        reason = rules.explain_matcher(override.get("match") or {}, method, split.path, query, body)
+        report.append({
+            "id": override.get("id"),
+            "active": rules.is_active(override),
+            "matched": reason is None,
+            "reason": reason,
+            "selected": override is selected,
+            "match": override.get("match") or {},
+            "sequenced": rules.sequence_steps(override) is not None,
+        })
+
+    if as_json:
+        click.echo(json.dumps({"selected": (selected or {}).get("id"), "candidates": report},
+                              indent=2))
+        raise SystemExit(0 if selected else 1)
+
+    if selected is None:
+        click.echo(f"{RED}✗ no active rule would be selected for {method.upper()} {path}{R}")
+    else:
+        sequenced = next(c["sequenced"] for c in report if c["selected"])
+        click.echo(f"→ {BOLD}{selected['id']}{R} is selected  "
+                   f"{DIM}({'sequence' if sequenced else selected.get('mode')}){R}")
+        if selected.get("mode") == "patch":
+            click.echo(f"  {DIM}a patch answers only if the upstream response is JSON{R}")
+        elif sequenced:
+            click.echo(f"  {DIM}which step it serves depends on run state, not read here{R}")
+
+    # The over-match, made visible before it silently answers for a screen nobody is testing.
+    _section("also matched, ranked lower",
+           [(c["id"], json.dumps(c["match"]))
+            for c in report if c["matched"] and c["active"] and not c["selected"]])
+    _section("did not match",
+           [(c["id"], c["reason"]) for c in report if not c["matched"] and c["active"]])
+    _section("inactive",
+           [(c["id"], "would have matched" if c["matched"] else c["reason"])
+            for c in report if not c["active"]])
+
+    raise SystemExit(0 if selected else 1)
 
 
 @cli.command(name="wait-ready")

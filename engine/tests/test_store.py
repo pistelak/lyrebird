@@ -362,7 +362,7 @@ def test_sequence_cursors_never_reach_the_session_file(profile):
     subject.add_override({"id": "other", "mode": "replace", "status": 200})  # forces another write
 
     raw = (profile / "sessions" / "default.json").read_text(encoding="utf-8")
-    assert "_sequenceRuntime" not in raw
+    assert "_ruleRuntime" not in raw
     assert "runId" not in raw
 
 
@@ -371,7 +371,7 @@ def test_a_clone_starts_its_sequences_fresh(profile):
     subject.add_override(dict(SEQ))
     _advanced_once(subject)
     subject.create_session("copy", clone_from="default")
-    assert "_sequenceRuntime" not in subject.sessions["copy"]
+    assert "_ruleRuntime" not in subject.sessions["copy"]
 
 
 def test_switching_sessions_restarts_the_scenario(profile):
@@ -425,7 +425,7 @@ def test_reset_rewinds_and_issues_a_new_run_id(profile):
     before = subject.sequence_states()[0]["runId"]
     _advanced_once(subject)
 
-    result = subject.reset_sequences()
+    result = subject.reset_runtime()
     assert list(result["reset"]) == ["seq"]
     after = subject.sequence_states()[0]
     assert after["nextStep"] == 1
@@ -437,14 +437,21 @@ def test_resetting_an_unknown_id_is_distinguishable_from_resetting_nothing(profi
     worked."""
     subject = store.Store()
     subject.add_override(dict(SEQ))
-    assert subject.reset_sequences("nope") is None
-    assert subject.reset_sequences()["reset"] != {}
+    assert subject.reset_runtime("nope") is None
+    assert subject.reset_runtime()["reset"] != {}
 
 
-def test_resetting_a_session_with_no_sequences_reports_nothing_to_do(profile):
+def test_reset_covers_plain_rules_not_just_sequenced_ones(profile):
+    """Every rule carries run state now — an answer count — so a reset that skipped plain rules
+    would leave the one boundary a test can draw unavailable to exactly the rules that need it."""
     subject = store.Store()
     subject.add_override({"id": "plain", "mode": "replace", "status": 200})
-    assert subject.reset_sequences() == {"session": "default", "reset": {}}
+    assert list((subject.reset_runtime() or {})["reset"]) == ["plain"]
+
+
+def test_resetting_a_session_with_no_rules_reports_nothing_to_do(profile):
+    subject = store.Store()
+    assert subject.reset_runtime() == {"session": "default", "reset": {}}
 
 
 def test_a_served_overrun_is_reported_even_when_the_cursor_cannot_move(profile):
@@ -492,7 +499,7 @@ def test_reset_clears_the_serve_counts(profile):
     subject.add_override(dict(SEQ))
     _advanced_once(subject)
     assert subject.sequence_states()[0]["serves"] == {"1": 1}
-    subject.reset_sequences()
+    subject.reset_runtime()
     assert subject.sequence_states()[0]["serves"] == {}
 
 
@@ -502,7 +509,7 @@ def test_reset_clears_a_recorded_overrun(profile):
     for _ in range(3):
         _advanced_once(subject)
     assert subject.sequence_states()[0]["hasOverrun"] is True
-    subject.reset_sequences()
+    subject.reset_runtime()
     assert subject.sequence_states()[0]["hasOverrun"] is False
 
 
@@ -513,6 +520,76 @@ def test_reset_always_issues_a_different_run_id(profile):
     subject.add_override(dict(SEQ))
     seen = {subject.sequence_states()[0]["runId"]}
     for _ in range(20):
-        issued = subject.reset_sequences()["reset"]["seq"]
+        issued = subject.reset_runtime()["reset"]["seq"]
         assert issued not in seen
         seen.add(issued)
+
+
+# MARK: - Answer counts
+#
+# The evidence a test asserts on. Every failure below is one where the count would have said a mock
+# was in play when it was not — the exact defect the assertion exists to catch.
+
+def test_a_captured_slot_credits_nobody_after_the_session_is_switched(profile):
+    """A patch is selected in the request hook and only answers a round trip later, in the response
+    hook. Looking the rule up by id at that point would credit whatever rule the *now* active
+    session happens to file under that id — a different rule, in a different scenario."""
+    subject = store.Store()
+    subject.add_override({"id": "shared", "mode": "patch", "patch": {}})
+    slot = subject.answer_slot("shared")
+
+    subject.create_session("other")
+    subject.set_active("other")
+    subject.add_override({"id": "shared", "mode": "patch", "patch": {}})
+
+    store.credit(slot)   # the in-flight patch from the previous session lands now
+    assert subject.answer_states() == [{"id": "shared", "active": True, "count": 0}]
+
+
+def test_a_captured_slot_credits_nobody_after_the_rule_is_replaced(profile):
+    """Same shape, one session: `override add` on an existing id installs a different rule, and the
+    in-flight answer belongs to the definition that was consulted, not the one that replaced it."""
+    subject = store.Store()
+    subject.add_override({"id": "r", "mode": "patch", "patch": {}})
+    slot = subject.answer_slot("r")
+    subject.add_override({"id": "r", "mode": "replace", "status": 200})
+    store.credit(slot)
+    assert subject.answer_states() == [{"id": "r", "active": True, "count": 0}]
+
+
+def test_reading_answer_states_does_not_mint_run_state(profile):
+    """Asking how many answers a rule has must not create the runtime entry that a reset issues a
+    run id for — a question is not an event."""
+    subject = store.Store()
+    subject.add_override({"id": "untouched", "mode": "replace", "status": 200})
+    subject.answer_states()
+    assert store._runtime(subject.active_session()) == {}
+
+
+def test_switching_session_clears_answer_counts(profile):
+    subject = store.Store()
+    subject.add_override({"id": "a", "mode": "replace", "status": 200})
+    store.credit(subject.answer_slot("a"))
+    subject.create_session("scratch")
+    subject.set_active("scratch")
+    subject.set_active("default")
+    assert subject.answer_states() == [{"id": "a", "active": True, "count": 0}]
+
+
+def test_reset_clears_one_rules_answer_count_and_leaves_the_others(profile):
+    subject = store.Store()
+    subject.add_override({"id": "a", "mode": "replace", "status": 200})
+    subject.add_override({"id": "b", "mode": "replace", "status": 200})
+    store.credit(subject.answer_slot("a"))
+    store.credit(subject.answer_slot("b"))
+    subject.reset_runtime("a")
+    assert subject.answer_states() == [{"id": "a", "active": True, "count": 0},
+                                       {"id": "b", "active": True, "count": 1}]
+
+
+def test_answer_states_report_an_inactive_rule_as_inactive(profile):
+    """A rule that is switched off can never answer, so a wait on it should fail at once rather
+    than burn its timeout."""
+    subject = store.Store()
+    subject.add_override({"id": "off", "active": False, "mode": "replace", "status": 200})
+    assert subject.answer_states() == [{"id": "off", "active": False, "count": 0}]
