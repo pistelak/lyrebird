@@ -190,19 +190,28 @@ _BASE_SEQ = {"id": "ovr_a", "runId": "r1", "advanceOn": "self", "nextStep": 1, "
              "exhausted": False, "hasOverrun": False, "serves": {}}
 
 
-def _health_over(*states):
-    """Live state that moves under the poll: each call serves the next state, the last repeats.
+def _health_payload(**extra):
+    """The envelope every health response carries, so a double cannot pin a shape the API never
+    sends — and so a command that starts reading another field fails here rather than passing
+    against a payload that omitted it."""
+    return {"pid": 1, "sessions": ["default"], "activeSession": "default",
+            "overrideCount": 1, "simBundleId": None, "proxyPort": 8080,
+            "sequences": [], "answers": [], **extra}
 
-    `None` for a state means the rule is gone from the session."""
+
+def _polling(states, build):
+    """Live state that moves under the poll: each call serves the next state, the last repeats."""
     queue = list(states)
 
     def payload():
-        state = queue.pop(0) if len(queue) > 1 else queue[0]
-        sequences = [] if state is None else [{**_BASE_SEQ, **state}]
-        return {"pid": 1, "sessions": ["default"], "activeSession": "default",
-                "overrideCount": 1, "simBundleId": None, "proxyPort": 8080,
-                "sequences": sequences}
+        return build(queue.pop(0) if len(queue) > 1 else queue[0])
     return payload
+
+
+def _health_over(*states):
+    """Sequence state under the poll. `None` for a state means the rule is gone from the session."""
+    return _polling(states, lambda state: _health_payload(
+        sequences=[] if state is None else [{**_BASE_SEQ, **state}]))
 
 
 def _health_with(**state):
@@ -367,13 +376,16 @@ def test_status_json_carries_sequences(profile, runner, monkeypatch):
 # A negative UI assertion passes whether or not the mock applied, so the suite needs a command that
 # fails. Every test below is a way that command could have reported success it had not earned.
 
-def _answered(count, *, override_id="ovr_a", active=True, session="default"):
-    return lambda: {"activeSession": session,
-                    "answers": [{"id": override_id, "active": active, "count": count}]}
+def _answers_over(*states):
+    """Answer counts under the poll, sharing the envelope with `_health_over`.
+
+    Each state overlays the defaults below; `None` means the rule is gone from the session."""
+    return _polling(states, lambda state: _health_payload(
+        answers=[] if state is None else [{"id": "ovr_a", "active": True, "count": 0, **state}]))
 
 
 def test_assert_answered_succeeds_when_the_rule_answered(profile, runner, monkeypatch):
-    monkeypatch.setattr(cli, "_health", _answered(3))
+    monkeypatch.setattr(cli, "_health", _answers_over({"count": 3}))
     result = runner.invoke(cli.cli, ["assert-answered", "ovr_a"])
     assert result.exit_code == 0
     assert "3 request(s)" in result.output
@@ -382,7 +394,7 @@ def test_assert_answered_succeeds_when_the_rule_answered(profile, runner, monkey
 def test_assert_answered_rejects_an_unknown_id_rather_than_reporting_zero(profile, runner, monkeypatch):
     """A typo and a rule that never fired are different bugs with different fixes, and reading one
     as the other is how you spend an afternoon on a matcher that was always correct."""
-    monkeypatch.setattr(cli, "_health", _answered(1))
+    monkeypatch.setattr(cli, "_health", _answers_over({"count": 1}))
     result = runner.invoke(cli.cli, ["assert-answered", "ovr_typo"])
     assert result.exit_code == 1
     assert "no rule 'ovr_typo'" in result.output
@@ -408,7 +420,7 @@ def test_assert_answered_refuses_a_proxy_that_cannot_report_counts(profile, runn
 
 def test_assert_answered_fails_at_once_for_an_inactive_rule(profile, runner, monkeypatch):
     """Matching skips a disabled rule entirely, so waiting cannot help."""
-    monkeypatch.setattr(cli, "_health", _answered(0, active=False))
+    monkeypatch.setattr(cli, "_health", _answers_over({"count": 0, "active": False}))
     result = runner.invoke(cli.cli, ["assert-answered", "ovr_a", "--timeout", "30"])
     assert result.exit_code == 1
     assert "never answer" in result.output
@@ -417,7 +429,7 @@ def test_assert_answered_fails_at_once_for_an_inactive_rule(profile, runner, mon
 def test_assert_answered_lists_the_paths_that_did_arrive(profile, runner, monkeypatch):
     """A count cannot tell "the app went somewhere else" from "the path pattern is wrong"; the
     paths can."""
-    monkeypatch.setattr(cli, "_health", _answered(0))
+    monkeypatch.setattr(cli, "_health", _answers_over({"count": 0}))
     monkeypatch.setattr(cli, "_get_json", lambda *a, **k: [
         {"method": "GET", "path": "/api/v2/items"},
         {"method": "GET", "path": "/api/v2/items"},
@@ -429,7 +441,7 @@ def test_assert_answered_lists_the_paths_that_did_arrive(profile, runner, monkey
 
 
 def test_assert_answered_names_an_empty_proxy_as_a_routing_problem(profile, runner, monkeypatch):
-    monkeypatch.setattr(cli, "_health", _answered(0))
+    monkeypatch.setattr(cli, "_health", _answers_over({"count": 0}))
     monkeypatch.setattr(cli, "_get_json", lambda *a, **k: [])
     result = runner.invoke(cli.cli, ["assert-answered", "ovr_a"])
     assert result.exit_code == 1
@@ -437,8 +449,8 @@ def test_assert_answered_names_an_empty_proxy_as_a_routing_problem(profile, runn
 
 
 def test_assert_answered_succeeds_on_an_answer_that_lands_mid_wait(profile, runner, monkeypatch):
-    counts = iter([0, 0, 2])
-    monkeypatch.setattr(cli, "_health", lambda: _answered(next(counts))())
+    monkeypatch.setattr(cli, "_health",
+                        _answers_over({"count": 0}, {"count": 0}, {"count": 2}))
     monkeypatch.setattr(cli.time, "sleep", lambda _seconds: None)
     result = runner.invoke(cli.cli, ["assert-answered", "ovr_a", "--timeout", "30"])
     assert result.exit_code == 0

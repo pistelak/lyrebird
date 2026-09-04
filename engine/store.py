@@ -167,7 +167,7 @@ def credit(slot: dict) -> None:
     switch therefore credits nobody, instead of crediting whatever rule in the new session happens to
     share its id.
     """
-    slot["answers"] = slot.get("answers", 0) + 1
+    slot["answers"] += 1   # `_rule_runtime` is the only maker of a slot, and it always seeds this
 
 
 class Store:
@@ -306,7 +306,7 @@ class Store:
         return [
             override
             for override in self.active_overrides()
-            if override.get("active", True) is not False
+            if rules.is_active(override)
             and rules.sequence_steps(override) is not None
         ]
 
@@ -353,7 +353,7 @@ class Store:
         return [
             {
                 "id": override["id"],
-                "active": override.get("active", True) is not False,
+                "active": rules.is_active(override),
                 # Read, never create: asking how many answers a rule has must not mint runtime state
                 # for a rule that has never been near a request.
                 "count": (runtime.get(override["id"]) or {}).get("answers", 0),
@@ -425,7 +425,7 @@ class Store:
         assert — unavailable to exactly the rules that need it most.
         """
         session = self.active_session()
-        known = {override["id"]: override for override in self.active_overrides()}
+        known = {override["id"] for override in self.active_overrides()}
         if override_id is not None:
             if override_id not in known:
                 return None

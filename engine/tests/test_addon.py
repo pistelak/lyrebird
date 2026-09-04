@@ -463,7 +463,7 @@ def test_a_patch_is_not_credited_until_it_has_actually_merged(hosts, profile):
                                  content=b'{"a": 1}')
     subject.response(flow)
     assert _answers(subject) == {"p": 1}
-    assert json.loads(flow.response.get_text()) == {"a": 1, "extra": True}
+    assert _body(flow) == {"a": 1, "extra": True}
 
 
 def test_a_skipped_patch_is_never_credited(hosts, profile):

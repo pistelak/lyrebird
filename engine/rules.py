@@ -32,6 +32,7 @@ import hashlib
 import json
 import re
 from collections.abc import Mapping, Sequence
+from functools import lru_cache
 from typing import Any, TypeGuard
 
 MAX_WILDCARDS = 10  # a bounded number of wildcards keeps the generated regex cheap to evaluate
@@ -66,11 +67,17 @@ PASS_THROUGH = "passThrough"
 EXHAUSTED_ERROR = "error"
 
 
+@lru_cache(maxsize=512)
 def glob_to_regex(glob: str) -> re.Pattern:
     """`*` is the only special character; everything else is literal.
 
     Wildcard count is capped at validation time (see MAX_WILDCARDS) rather than here, so that
     matching semantics stay exactly as they were for already-saved sessions.
+
+    Cached because this runs once per rule per request and dominated that cost: the `re.sub` and
+    the f-string run before `re.compile` can reach its own internal cache. Keys are glob strings
+    from validated rules, so the key space is bounded by the number of rules; the explicit maxsize
+    keeps that true even for a profile someone edits in a loop.
     """
     escaped = re.sub(r"([.+?^${}()|\[\]\\])", r"\\\1", glob).replace("*", ".*")
     return re.compile(f"^{escaped}$")
@@ -125,10 +132,12 @@ def explain_matcher(
     if want_query:
         for key, value in want_query.items():
             # str(value): a rule may carry `{"page": 2}`, and query values off the wire are strings.
-            if key not in query:
-                return f"query.{key}: rule wants {str(value)!r}, request has no {key!r}"
-            if query[key] != str(value):
-                return f"query.{key}: rule wants {str(value)!r}, request has {query[key]!r}"
+            want = str(value)
+            if query.get(key) != want:
+                # "has no 'kind'" and "has 'beta'" send you to different places: the app is not
+                # sending the parameter at all, versus sending a different value.
+                have = f"has {query[key]!r}" if key in query else f"has no {key!r}"
+                return f"query.{key}: rule wants {want!r}, request {have}"
 
     body_contains = matcher.get("bodyContains")
     if body_contains and body_contains not in body_text:
@@ -146,6 +155,18 @@ def matches_matcher(
 ) -> bool:
     """Does a request satisfy one matcher?"""
     return explain_matcher(matcher, method, pathname, query, body_text) is None
+
+
+def is_active(override: Mapping[str, Any]) -> bool:
+    """Is this rule one the engine will consider at all?
+
+    One spelling, because the encoding is not obvious — a missing key means active, and only a
+    literal `False` switches a rule off. It is read by matching, by the sequence and answer state
+    the store reports, and by `explain-match`, which exists to tell an operator why a rule did not
+    answer; those disagreeing would misfile a rule as inactive in the very command you run to find
+    out why it is not firing.
+    """
+    return override.get("active", True) is not False
 
 
 def matches(
@@ -169,8 +190,7 @@ def find_override(
     candidates = [
         override
         for override in overrides
-        if override.get("active", True) is not False
-        and matches(override, method, pathname, query, body_text)
+        if is_active(override) and matches(override, method, pathname, query, body_text)
     ]
     if not candidates:
         return None

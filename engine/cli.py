@@ -797,19 +797,27 @@ def assert_answered(override_id: str, timeout: int) -> None:
     else:
         # The distinct paths, not the count: a count cannot tell "the app went somewhere else"
         # from "the path pattern is wrong", and those have completely different fixes.
-        seen: list[str] = []
-        for entry in entries:
-            line = f"{entry.get('method', '?'):6} {entry.get('path', '?')}"
-            if line not in seen:
-                seen.append(line)
+        seen = list(dict.fromkeys(
+            f"{entry.get('method', '?'):6} {entry.get('path', '?')}" for entry in entries))
         click.echo(f"   {len(entries)} request(s) in the recent buffer, on these paths:")
         for line in seen[:5]:
             click.echo(f"     {DIM}{line}{R}")
         if len(seen) > 5:
             click.echo(f"     {DIM}… and {len(seen) - 5} more{R}")
-        click.echo("   Traffic is arriving, so the rule is the suspect — "
-                   "`lyrebird explain-match <method> <path>` says why it was not selected.")
+        # The buffer is not scoped to the run, so these may predate the reset. Enough to tell
+        # "the app is not reaching us" from "it is, on other paths"; not enough to blame the rule.
+        click.echo("   `lyrebird explain-match <method> <path>` says which rule one of those "
+                   "would select, and why yours was not it.")
     raise SystemExit(1)
+
+
+def _section(title: str, rows: list[tuple[str, str]]) -> None:
+    """One labelled block of `explain-match` output, or nothing if it has no rows."""
+    if not rows:
+        return
+    click.echo(f"  {title}:")
+    for name, note in rows:
+        click.echo(f"    {name:<16}{DIM}{note}{R}")
 
 
 @cli.command(name="explain-match")
@@ -840,7 +848,7 @@ def explain_match(method: str, path: str, body: str, as_json: bool) -> None:
         reason = rules.explain_matcher(override.get("match") or {}, method, split.path, query, body)
         report.append({
             "id": override.get("id"),
-            "active": override.get("active", True) is not False,
+            "active": rules.is_active(override),
             "matched": reason is None,
             "reason": reason,
             "selected": override is selected,
@@ -856,7 +864,7 @@ def explain_match(method: str, path: str, body: str, as_json: bool) -> None:
     if selected is None:
         click.echo(f"{RED}✗ no active rule would be selected for {method.upper()} {path}{R}")
     else:
-        sequenced = rules.sequence_steps(selected) is not None
+        sequenced = next(c["sequenced"] for c in report if c["selected"])
         click.echo(f"→ {BOLD}{selected['id']}{R} is selected  "
                    f"{DIM}({'sequence' if sequenced else selected.get('mode')}){R}")
         if selected.get("mode") == "patch":
@@ -864,20 +872,13 @@ def explain_match(method: str, path: str, body: str, as_json: bool) -> None:
         elif sequenced:
             click.echo(f"  {DIM}which step it serves depends on run state, not read here{R}")
 
-    def _lines(title: str, rows: list[tuple[str, str]]) -> None:
-        if not rows:
-            return
-        click.echo(f"  {title}:")
-        for name, note in rows:
-            click.echo(f"    {name:<16}{DIM}{note}{R}")
-
     # The over-match, made visible before it silently answers for a screen nobody is testing.
-    _lines("also matched, less specific",
+    _section("also matched, less specific",
            [(c["id"], json.dumps(c["match"]))
             for c in report if c["matched"] and c["active"] and not c["selected"]])
-    _lines("did not match",
+    _section("did not match",
            [(c["id"], c["reason"]) for c in report if not c["matched"] and c["active"]])
-    _lines("inactive",
+    _section("inactive",
            [(c["id"], "would have matched" if c["matched"] else c["reason"])
             for c in report if not c["active"]])
 
