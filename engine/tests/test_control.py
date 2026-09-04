@@ -244,6 +244,15 @@ def test_health_reports_answer_counts_per_rule(profile):
     assert body["answers"] == [], "an empty session has no rules to report on"
 
 
+def test_health_carries_a_rules_answer_count_over_the_wire(profile):
+    """The store and addon tests prove the count is right; this proves it survives to the HTTP
+    boundary, which is the only place `assert-answered` can read it from."""
+    seed(profile)
+    status, _, body = call(profile, "GET", "/__mock__/health")
+    assert status == 200
+    assert body["answers"] == [{"id": "ovr_seq", "active": True, "count": 0}]
+
+
 def test_the_reset_route_stays_behind_the_guard(profile):
     """A new route is a new way in. `_guard` is global, and this pins that it stays that way."""
     status, _, body = call(profile, "POST", "/__mock__/reset",

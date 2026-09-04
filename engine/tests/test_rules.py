@@ -478,3 +478,31 @@ def test_an_absent_match_is_still_allowed():
     """Absent is the documented spelling of "no matcher", and it is occasionally useful."""
     assert rules.validate_override({"mode": "replace", "status": 200})["mode"] == "replace"
     assert rules.validate_override({"mode": "replace", "status": 200, "match": {}})
+
+
+def test_an_empty_body_constraint_does_not_win_on_specificity():
+    """`bodyContains: ""` is ignored when matching, so counting it as a constraint let it outrank
+    an otherwise identical rule and answer in its place — "more specific" claiming a smaller set of
+    requests than it actually matches."""
+    generic = {"id": "generic", "mode": "replace", "match": {"path": "/api/items"}}
+    empty = {"id": "empty", "mode": "replace",
+             "match": {"path": "/api/items", "bodyContains": ""}}
+    assert rules.matches(generic, "GET", "/api/items", {}, "body")
+    assert rules.matches(empty, "GET", "/api/items", {}, "body")
+    winner = rules.find_override([generic, empty], "GET", "/api/items", {}, "body")
+    assert winner["id"] == "generic", "neither is more specific; order decides, not a phantom field"
+
+
+def test_a_real_body_constraint_still_wins_on_specificity():
+    generic = {"id": "generic", "mode": "replace", "match": {"path": "/api/items"}}
+    pinned = {"id": "pinned", "mode": "replace",
+              "match": {"path": "/api/items", "bodyContains": "kind"}}
+    winner = rules.find_override([generic, pinned], "GET", "/api/items", {}, "kind=alpha")
+    assert winner["id"] == "pinned"
+
+
+def test_an_explicit_null_match_is_rejected():
+    """`.get("match")` cannot tell `null` from omission, and the two are not the same claim: one
+    says "no matcher", the other says "here is my matcher" and hands over nothing."""
+    with pytest.raises(rules.ValidationError, match="match must be a JSON object"):
+        rules.validate_override({"mode": "replace", "status": 200, "match": None})

@@ -563,3 +563,12 @@ def test_a_patch_landing_after_its_rule_is_replaced_credits_nobody(hosts, profil
                                  content=b'{"b": 2}')
     subject.response(flow)
     assert _answers(subject) == {"r": 0}
+
+
+def test_a_repeated_last_step_is_credited_like_any_other_answer(hosts, profile):
+    """`repeatLast` answers from the rule, so each repeat is an answer — a test asserting the mock
+    was in play must not stop counting the moment the sequence runs out of planned steps."""
+    subject = _retry_subject("repeatLast")
+    for _ in range(4):        # two planned steps, then two repeats of the last
+        run_request(subject, _flow())
+    assert _answers(subject) == {"ovr_retry": 4}

@@ -88,13 +88,18 @@ def specificity(match: Mapping[str, Any]) -> tuple[int, int, int]:
 
     The constraint count is the tiebreaker that stops a generic rule from masking a rule on the
     same path that additionally pins the method, a query parameter or the body.
+
+    Every field is counted by the same truthiness `explain_matcher` matches by, so "more specific"
+    here always means "matches a strictly smaller set of requests". `bodyContains` used to be
+    counted with `is not None`, which made `""` — a constraint the wire ignores — outrank an
+    otherwise identical rule and answer in its place.
     """
     path = match.get("path") or "*"
     wildcards = path.count("*")
     constraints = (
         int(bool(match.get("method")))
         + len(match.get("query") or {})
-        + int(match.get("bodyContains") is not None)
+        + int(bool(match.get("bodyContains")))
     )
     return (wildcards, len(path), constraints)
 
@@ -453,12 +458,12 @@ def validate_override(override: Any) -> dict:
     if override_id is not None and (not isinstance(override_id, str) or not override_id.strip()):
         raise ValidationError("id must be a non-empty string when present")
 
-    # Not `or {}`: that let a falsy non-object — `[]`, `""`, `0`, `false` — skip the object
-    # check below and then be read as an *absent* matcher on the wire, which is a rule that
-    # answers every intercepted request. Absent is the only spelling of "no matcher"; anything
-    # present must be an object.
-    match = result.get("match")
-    _validate_matcher({} if match is None else match, "match")
+    # Not `or {}`, and not `.get`: the first let a falsy non-object — `[]`, `""`, `0`, `false` —
+    # skip the object check below and then be read as an *absent* matcher on the wire, which is a
+    # rule that answers every intercepted request; the second cannot tell an explicit `null` from
+    # an omission. Omission is the one spelling of "no matcher"; a `match` that is present must be
+    # an object.
+    _validate_matcher(result["match"] if "match" in result else {}, "match")
 
     delay = result.get("delayMs")
     if delay is not None:
