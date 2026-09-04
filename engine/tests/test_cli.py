@@ -554,3 +554,27 @@ def test_override_add_help_lists_every_matcher_field(profile, runner):
     result = runner.invoke(cli.cli, ["override", "add", "--help"])
     for field in rules.MATCHER_FIELDS:
         assert field in result.output
+
+
+def _status_network(monkeypatch):
+    monkeypatch.setattr(netproxy, "active_service", lambda: "Wi-Fi")
+    monkeypatch.setattr(netproxy, "pac_status",
+                        lambda service: netproxy.PacStatus(netproxy.pac_url(), True, True))
+
+
+def test_status_json_says_null_when_the_engine_cannot_report(profile, runner, monkeypatch):
+    """A proxy still running from before these fields existed cannot answer the question. Reporting
+    `[]` would say "nothing has answered", which is a different claim from "I could not ask"."""
+    monkeypatch.setattr(cli, "_health", lambda: {"activeSession": "default", "sessions": []})
+    _status_network(monkeypatch)
+    payload = json.loads(runner.invoke(cli.cli, ["status", "--json"]).output)
+    assert payload["answers"] is None and payload["sequences"] is None
+
+
+def test_status_json_says_empty_when_the_engine_reports_nothing_to_show(profile, runner, monkeypatch):
+    """The other half of the distinction: a current engine sends one entry per rule, so an empty
+    list is a real state and must not be confused with the case above."""
+    monkeypatch.setattr(cli, "_health", _health_payload)
+    _status_network(monkeypatch)
+    payload = json.loads(runner.invoke(cli.cli, ["status", "--json"]).output)
+    assert payload["answers"] == [] and payload["sequences"] == []

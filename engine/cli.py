@@ -442,10 +442,14 @@ def status(as_json: bool) -> None:
             "activeSession": (health or {}).get("activeSession"),
             "overrideCount": (health or {}).get("overrideCount"),
             "sessions": (health or {}).get("sessions", []),
-            # .get with a default: an older engine — or a test double — has no such key, and the
-            # exit code of `status` must not depend on this field existing.
-            "sequences": (health or {}).get("sequences", []),
-            "answers": (health or {}).get("answers", []),
+            # `null` when the running engine did not supply the field, never `[]`. A current
+            # engine always sends both, with one entry per rule — so `[]` is a real state ("no
+            # rules here") and a missing key is a capability signal ("this proxy cannot tell
+            # you"). Defaulting to `[]` collapsed those into the claim that nothing has answered,
+            # which is the shape this file exists to avoid. The exit code is computed separately
+            # and still does not depend on either field existing.
+            "sequences": (health or {}).get("sequences"),
+            "answers": (health or {}).get("answers"),
             "simBundleId": (health or {}).get("simBundleId"),
             "profile": str(config.PROFILE_DIR),
             "service": service,

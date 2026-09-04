@@ -191,7 +191,13 @@ request you did not expect.
 `status --json` carries `sequences[]` with `nextStep`, `exhausted`, `hasOverrun`, per-step serve
 counts in `serves`, and a `runId` that changes on every reset. It also carries `answers[]` — one
 entry per rule in the active session, with how many requests it has answered since the last reset,
-which is what `assert-answered` reads. `recent` shows which request took which step, and which request advanced
+which is what `assert-answered` reads.
+
+Both are `null`, not `[]`, when the running proxy did not report them — a proxy started from an
+engine older than the field, or one that is not up at all. An empty list means "the engine answered,
+and there is nothing to show"; `null` means "it could not tell you", which is a different thing to
+act on. If you pipe this into `jq '.answers[]'`, handle the null rather than reading it as zero
+answers; `lyrebird down && lyrebird up` clears the version-skew case. `recent` shows which request took which step, and which request advanced
 what, so a scenario that went wrong can be read back rather than guessed at.
 
 If a rule advances when you did not expect it to, the fix is usually a narrower `match`, or an
