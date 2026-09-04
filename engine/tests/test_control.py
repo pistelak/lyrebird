@@ -15,7 +15,8 @@ import control
 import store
 
 
-def call(profile, method, path, *, headers=None, json_body=None, raw_body=None, content_type=None):
+def call(profile, method, path, *, headers=None, json_body=None, raw_body=None, content_type=None,
+         prepare=None):
     """One request against a fresh control app on a throwaway profile.
 
     TestClient is already an async context manager, so there is no start/close bookkeeping to
@@ -23,7 +24,10 @@ def call(profile, method, path, *, headers=None, json_body=None, raw_body=None, 
     """
     (profile / "profile.json").write_text('{"hosts": []}', encoding="utf-8")
     config.reload_profile()
-    app = control.make_app(store.Store(), lambda: {"proxyUp": True})
+    subject = store.Store()
+    if prepare is not None:
+        prepare(subject)   # the store is built in here, so a test that needs live state seeds it here
+    app = control.make_app(subject, lambda: {"proxyUp": True})
 
     sent = {"Host": config.CONTROL_HOST_HEADER, **(headers or {})}
     body = raw_body if raw_body is not None else (json.dumps(json_body) if json_body is not None else None)
@@ -248,9 +252,10 @@ def test_health_carries_a_rules_answer_count_over_the_wire(profile):
     """The store and addon tests prove the count is right; this proves it survives to the HTTP
     boundary, which is the only place `assert-answered` can read it from."""
     seed(profile)
-    status, _, body = call(profile, "GET", "/__mock__/health")
+    status, _, body = call(profile, "GET", "/__mock__/health",
+                           prepare=lambda s: store.credit(s.answer_slot("ovr_seq")))
     assert status == 200
-    assert body["answers"] == [{"id": "ovr_seq", "active": True, "count": 0}]
+    assert body["answers"] == [{"id": "ovr_seq", "active": True, "count": 1}]
 
 
 def test_the_reset_route_stays_behind_the_guard(profile):

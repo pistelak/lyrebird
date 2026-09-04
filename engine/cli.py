@@ -874,7 +874,7 @@ def explain_match(method: str, path: str, body: str, as_json: bool) -> None:
             click.echo(f"  {DIM}which step it serves depends on run state, not read here{R}")
 
     # The over-match, made visible before it silently answers for a screen nobody is testing.
-    _section("also matched, less specific",
+    _section("also matched, ranked lower",
            [(c["id"], json.dumps(c["match"]))
             for c in report if c["matched"] and c["active"] and not c["selected"]])
     _section("did not match",

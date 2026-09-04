@@ -126,7 +126,7 @@ costs a cold launch and a walk through the app:
 ```bash
 lyrebird explain-match GET '/api/v1/orders/42'
 # → ovr_9a99bd is selected  (replace)
-#   also matched, less specific:
+#   also matched, ranked lower:
 #     ovr_all_orders  {"path": "/api/v1/*"}
 #   did not match:
 #     ovr_users       path: '/api/v1/users' does not match '/api/v1/orders/42'

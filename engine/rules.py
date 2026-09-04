@@ -89,10 +89,16 @@ def specificity(match: Mapping[str, Any]) -> tuple[int, int, int]:
     The constraint count is the tiebreaker that stops a generic rule from masking a rule on the
     same path that additionally pins the method, a query parameter or the body.
 
-    Every field is counted by the same truthiness `explain_matcher` matches by, so "more specific"
-    here always means "matches a strictly smaller set of requests". `bodyContains` used to be
-    counted with `is not None`, which made `""` — a constraint the wire ignores — outrank an
-    otherwise identical rule and answer in its place.
+    Every constraint is counted by the same truthiness `explain_matcher` matches by, so a field
+    that constrains nothing on the wire cannot add rank. `bodyContains` used to be counted with
+    `is not None`, which made `""` — a constraint the wire ignores — outrank an otherwise identical
+    rule and answer in its place.
+
+    That agreement is as far as the guarantee goes. Across *different* paths this is a heuristic,
+    not a subset proof: `/a/*` and `/*/b` overlap without either containing the other, and the
+    wildcard-then-length ordering simply picks one. It is a total order that is stable and
+    predictable, which is what a rule author needs; it is not a claim that the winner matches a
+    strictly smaller set of requests.
     """
     path = match.get("path") or "*"
     wildcards = path.count("*")
