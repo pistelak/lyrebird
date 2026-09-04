@@ -98,15 +98,16 @@ def _persistable(session: dict) -> dict:
     return {key: value for key, value in session.items() if not key.startswith("_")}
 
 
-# MARK: - Sequence runtime
+# MARK: - Rule runtime
 #
-# Cursors hang off the session under a leading underscore, which `_persistable` already strips and
-# `_clone` already copies through. So a cursor is never written to a profile, never survives a clone
-# or an import, and is scoped to its session without a second key — all from machinery that was
-# already here for `_problems`.
+# Per-rule state that must never reach a profile: sequence cursors, and the count of requests each
+# rule has answered. It hangs off the session under a leading underscore, which `_persistable`
+# already strips — so it is never written to a profile, never survives a clone or an import, and is
+# scoped to its session without a second key, all from machinery that was already here for
+# `_problems`.
 
 def _runtime(session: dict) -> dict:
-    return session.setdefault("_sequenceRuntime", {})
+    return session.setdefault("_ruleRuntime", {})
 
 
 def _new_run_id(previous: str | None = None) -> str:
@@ -138,13 +139,35 @@ def _rule_runtime(session: dict, override_id: str) -> dict:
     reason `overrunSeen` exists: for an `advanceOn` rule the cursor cannot record that a step was
     served, and `/recent` is a bounded window, so under enough traffic the only durable evidence
     that a serve happened is a counter kept where the serve happens.
+
+    `answers` is that same argument for rules of every kind, sequenced or not: how many requests this
+    rule has answered since the run began. It is what lets a test assert that its mock was actually
+    in play, rather than inferring it from a screen the un-mocked backend would have produced too.
     """
     runtime = _runtime(session)
     entry = runtime.get(override_id)
     if entry is None:
-        entry = {"cursor": 0, "runId": _new_run_id(), "overrunSeen": False, "serves": {}}
+        entry = {"cursor": 0, "runId": _new_run_id(), "overrunSeen": False, "serves": {}, "answers": 0}
         runtime[override_id] = entry
     return entry
+
+
+def credit(slot: dict) -> None:
+    """Record that the rule owning `slot` answered a request.
+
+    A free function taking the slot, not a `Store` method taking an id, because the two answer paths
+    learn the truth at different moments. A `replace` answers inside the request hook and can credit
+    at once; a `patch` is only an answer once it has merged into a real upstream response, one hook
+    and a network round trip later — and by then the session may have been switched or the rule
+    replaced.
+
+    Holding the slot rather than the id is what makes that safe. `_activate` clears the runtime
+    container and `add_override`/`reset_runtime` pop from it, so a slot captured before any of those
+    is orphaned: crediting it mutates a dict nothing can reach. A patch that lands after a session
+    switch therefore credits nobody, instead of crediting whatever rule in the new session happens to
+    share its id.
+    """
+    slot["answers"] = slot.get("answers", 0) + 1
 
 
 class Store:
@@ -319,6 +342,25 @@ class Store:
         }
         return action, view, progress
 
+    def answer_slot(self, override_id: str) -> dict:
+        """The runtime entry to credit when this rule answers. See `credit`."""
+        return _rule_runtime(self.active_session(), override_id)
+
+    def answer_states(self) -> list[dict]:
+        """How many requests each rule in the active session has answered this run."""
+        session = self.active_session()
+        runtime = _runtime(session)
+        return [
+            {
+                "id": override["id"],
+                "active": override.get("active", True) is not False,
+                # Read, never create: asking how many answers a rule has must not mint runtime state
+                # for a rule that has never been near a request.
+                "count": (runtime.get(override["id"]) or {}).get("answers", 0),
+            }
+            for override in self.active_overrides()
+        ]
+
     def bump_selected(self, override: dict) -> None:
         """Advance a rule whose trigger is `self`: it answered, so it moves.
 
@@ -371,20 +413,25 @@ class Store:
             })
         return states
 
-    def reset_sequences(self, override_id: str | None = None) -> dict | None:
-        """Rewind sequences to their first step. None if `override_id` names no sequenced rule.
+    def reset_runtime(self, override_id: str | None = None) -> dict | None:
+        """Start a fresh run: rewind sequence cursors and clear answer counts. None if `override_id`
+        names no rule in the active session.
 
         None rather than an empty result: "I reset nothing" and "there is no such rule" are
         different answers, and a caller that cannot tell them apart will believe a typo worked.
+
+        Scoped to every rule, not just sequenced ones, because every rule now carries runtime state.
+        Refusing to reset a plain rule would leave the one boundary a test can draw — reset, trigger,
+        assert — unavailable to exactly the rules that need it most.
         """
         session = self.active_session()
-        sequenced = {override["id"]: override for override in self.sequenced_overrides()}
+        known = {override["id"]: override for override in self.active_overrides()}
         if override_id is not None:
-            if override_id not in sequenced:
+            if override_id not in known:
                 return None
             targets = [override_id]
         else:
-            targets = sorted(sequenced)
+            targets = sorted(known)
 
         runtime = _runtime(session)
         reset = {}

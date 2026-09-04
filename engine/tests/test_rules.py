@@ -394,7 +394,65 @@ def test_a_null_id_is_replaced_by_a_derived_one():
 @pytest.mark.parametrize("injected", ["bad", {"seq": {"cursor": 1, "runId": "x"}}])
 def test_internal_runtime_keys_are_stripped_from_input(injected):
     """Underscore keys are ours. `_persistable` strips them on the way out, so nothing we wrote can
-    contain one — but a hand-edited or imported file can, and `_sequenceRuntime` reaching the store
+    contain one — but a hand-edited or imported file can, and `_ruleRuntime` reaching the store
     means either a crash inside a proxy hook or a scenario that quietly starts on step 2."""
-    session = rules.normalise_session({"_sequenceRuntime": injected, "overrides": []}, "s")
-    assert "_sequenceRuntime" not in session
+    session = rules.normalise_session({"_ruleRuntime": injected, "overrides": []}, "s")
+    assert "_ruleRuntime" not in session
+
+
+# MARK: - Explaining a matcher
+#
+# `matches_matcher` is now `explain_matcher(...) is None`, so these pin the edges where the two
+# could have parted company. Validation checks these fields' types but not their emptiness, and a
+# saved session may carry `""` or `{}` — which the wire has always treated as "no constraint".
+
+@pytest.mark.parametrize("matcher,method,path,query,body", [
+    ({}, "GET", "/a", {}, ""),
+    ({"method": ""}, "POST", "/a", {}, ""),
+    ({"path": ""}, "GET", "/a", {}, ""),
+    ({"query": {}}, "GET", "/a", {}, ""),
+    ({"bodyContains": ""}, "GET", "/a", {}, ""),
+    ({"method": "get"}, "GET", "/a", {}, ""),
+    ({"method": "GET"}, "get", "/a", {}, ""),
+    ({"path": "/api/*/x"}, "GET", "/api/v1/x", {}, ""),
+    ({"query": {"page": 2}}, "GET", "/a", {"page": "2"}, ""),
+    ({"query": {"k": "v"}}, "GET", "/a", {"k": "v", "other": "z"}, ""),
+    ({"bodyContains": "id"}, "GET", "/a", {}, "the id here"),
+    ({"method": "POST"}, "GET", "/a", {}, ""),
+    ({"path": "/b"}, "GET", "/a", {}, ""),
+    ({"query": {"k": "v"}}, "GET", "/a", {}, ""),
+    ({"query": {"k": "v"}}, "GET", "/a", {"k": "w"}, ""),
+    ({"bodyContains": "id"}, "GET", "/a", {}, "nothing"),
+])
+def test_explaining_a_matcher_agrees_with_matching_it(matcher, method, path, query, body):
+    """The two must never part company: one decides on the wire, the other tells a person why."""
+    explained = rules.explain_matcher(matcher, method, path, query, body)
+    assert (explained is None) is rules.matches_matcher(matcher, method, path, query, body)
+
+
+@pytest.mark.parametrize("matcher,query,expected_field", [
+    ({"method": "POST", "path": "/b"}, {}, "method"),
+    ({"path": "/b", "query": {"k": "v"}}, {}, "path"),
+    ({"query": {"k": "v"}}, {"k": "w"}, "query.k"),
+    ({"bodyContains": "zzz"}, {}, "bodyContains"),
+])
+def test_the_reason_names_the_first_field_that_failed(matcher, query, expected_field):
+    """One reason, not a list: the later checks are only meaningful once the earlier ones pass, and
+    a list of every mismatch buries the one that matters."""
+    reason = rules.explain_matcher(matcher, "GET", "/a", query, "body")
+    assert reason is not None and reason.startswith(f"{expected_field}:")
+
+
+def test_a_missing_query_parameter_reads_differently_from_a_wrong_one():
+    """"has no 'kind'" and "has 'beta'" send you to different places — the app is not sending the
+    parameter at all, versus it is sending a different value."""
+    absent = rules.explain_matcher({"query": {"kind": "alpha"}}, "GET", "/a", {}, "")
+    wrong = rules.explain_matcher({"query": {"kind": "alpha"}}, "GET", "/a", {"kind": "beta"}, "")
+    assert absent is not None and "has no 'kind'" in absent
+    assert wrong is not None and "has 'beta'" in wrong
+
+
+def test_the_matcher_help_covers_exactly_the_accepted_fields():
+    """The CLI help is generated from MATCHER_FIELD_HELP and validation from MATCHER_FIELDS. If they
+    could drift, a documented field would be rejected or a supported one stay invisible."""
+    assert tuple(rules.MATCHER_FIELD_HELP) == rules.MATCHER_FIELDS

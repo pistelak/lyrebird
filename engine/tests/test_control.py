@@ -174,31 +174,31 @@ def test_health_reports_an_empty_list_when_nothing_is_sequenced(profile):
 
 def test_reset_reports_what_it_rewound(profile):
     seed(profile)
-    status, _, body = call(profile, "POST", "/__mock__/sequences/reset", json_body={})
+    status, _, body = call(profile, "POST", "/__mock__/reset", json_body={})
     assert status == 200
     assert list(body["reset"]) == ["ovr_seq"]
 
 
-def test_resetting_an_unknown_sequence_is_a_404(profile):
+def test_resetting_an_unknown_rule_is_a_404(profile):
     """Not a 200 with an empty result: a typo must not look like a successful rewind."""
     seed(profile)
-    status, _, body = call(profile, "POST", "/__mock__/sequences/reset", json_body={"id": "nope"})
+    status, _, body = call(profile, "POST", "/__mock__/reset", json_body={"id": "nope"})
     assert status == 404
-    assert body["error"] == "unknown_sequence"
+    assert body["error"] == "unknown_override"
 
 
 def test_a_non_string_reset_id_is_a_bad_request_not_a_crash(profile):
     """A list would reach a dict lookup and raise TypeError, which `_guard` does not translate — it
     catches ValueError — so this would otherwise surface as a 500 describing nothing."""
     seed(profile)
-    status, _, body = call(profile, "POST", "/__mock__/sequences/reset", json_body={"id": []})
+    status, _, body = call(profile, "POST", "/__mock__/reset", json_body={"id": []})
     assert status == 400
     assert body["error"] == "id_must_be_a_non_empty_string"
 
 
 def test_reset_is_still_behind_the_content_type_guard(profile):
     seed(profile)
-    status, _, _ = call(profile, "POST", "/__mock__/sequences/reset",
+    status, _, _ = call(profile, "POST", "/__mock__/reset",
                         raw_body="{}", content_type="text/plain")
     assert status == 415
 
@@ -234,3 +234,19 @@ def test_importing_overrides_that_are_not_a_list_is_refused(profile):
         "session": {"name": "imp", "overrides": {"keep": {"mode": "replace"}}}})
     assert status == 400
     assert "overrides must be a list" in body["detail"]
+
+
+# MARK: - Answer evidence
+
+def test_health_reports_answer_counts_per_rule(profile):
+    status, _, body = call(profile, "GET", "/__mock__/health")
+    assert status == 200
+    assert body["answers"] == [], "an empty session has no rules to report on"
+
+
+def test_the_reset_route_stays_behind_the_guard(profile):
+    """A new route is a new way in. `_guard` is global, and this pins that it stays that way."""
+    status, _, body = call(profile, "POST", "/__mock__/reset",
+                           headers={"Host": "evil.example.com"}, json_body={})
+    assert status == 421
+    assert body["error"] == "bad_host"

@@ -132,6 +132,9 @@ def make_app(store: Store, meta_provider: Callable[[], dict[str, Any]]) -> web.A
             "overrideCount": len(store.active_overrides()),
             "sessions": list(store.sessions.keys()),
             "sequences": store.sequence_states(),
+            # Named for what it holds, not for the objects it describes: `overrides` would read as
+            # the rules themselves, which is what GET /overrides returns.
+            "answers": store.answer_states(),
             **meta_provider(),
         })
 
@@ -170,11 +173,14 @@ def make_app(store: Store, meta_provider: Callable[[], dict[str, Any]]) -> web.A
                                      status=404)
         return web.json_response({"removed": request.match_info["id"]})
 
-    # MARK: - Sequences
+    # MARK: - Run state
 
-    @routes.post("/__mock__/sequences/reset")
-    async def sequences_reset(request: web.Request) -> web.StreamResponse:
-        """Rewind sequences in the active session. No body resets all; {"id": ...} resets one."""
+    @routes.post("/__mock__/reset")
+    async def runtime_reset(request: web.Request) -> web.StreamResponse:
+        """Start a fresh run in the active session: rewind sequence cursors and clear answer counts.
+
+        No body resets every rule; {"id": ...} resets one.
+        """
         body = await _safe_json(request)
         override_id = body.get("id")
         if override_id is not None and (not isinstance(override_id, str) or not override_id):
@@ -182,9 +188,9 @@ def make_app(store: Store, meta_provider: Callable[[], dict[str, Any]]) -> web.A
             # raise TypeError, which `_guard` does not translate — it catches ValueError — so a
             # caller sending {"id": []} would get a 500 describing nothing.
             return web.json_response({"error": "id_must_be_a_non_empty_string"}, status=400)
-        result = store.reset_sequences(override_id)
+        result = store.reset_runtime(override_id)
         if result is None:
-            return web.json_response({"error": "unknown_sequence", "id": override_id}, status=404)
+            return web.json_response({"error": "unknown_override", "id": override_id}, status=404)
         return web.json_response(result)
 
     # MARK: - Sessions

@@ -19,7 +19,7 @@ from mitmproxy import ctx, http
 import config
 import netproxy
 import rules
-from store import Store
+from store import Store, credit
 
 # mitmproxy's ctx.log is deprecated (it warns and delegates); mitmproxy 12 routes stdlib logging
 # into its own event log, so this reaches the same place without polluting the log with warnings.
@@ -142,11 +142,19 @@ class Lyrebird:
             flow.metadata["mock_advanced"] = advanced
 
     def _answer(self, flow: http.HTTPFlow, action: str, resolved: dict | None, override: dict) -> None:
+        """Produce the answer, and record that this rule gave it.
+
+        Crediting happens here rather than at `_record`, because this is the only place that knows
+        an answer was actually produced. `_record` runs a hook later, by which time a session switch
+        or an `override add` may have replaced the rule this id names — and a flow that dies before
+        its response hook never reaches `_record` at all, though the override certainly answered it.
+        """
         if action == rules.PASS_THROUGH:
-            return   # sequence exhausted and told to stand aside: the real upstream answers
+            return   # sequence exhausted and told to stand aside: the real upstream answers, not us
         if action == rules.EXHAUSTED_ERROR:
             flow.response = self._exhausted_response(flow, override)
             flow.metadata["mock_matched"] = override["id"]   # an override did answer, with a 500
+            credit(self.store.answer_slot(override["id"]))
             return
         if resolved is None:
             return
@@ -162,8 +170,14 @@ class Lyrebird:
                 response.headers.pop("content-length", None)  # bodyless statuses must not carry a body/length
             flow.response = response
             flow.metadata["mock_matched"] = resolved["id"]
+            credit(self.store.answer_slot(resolved["id"]))
         elif resolved.get("mode") == "patch":
             flow.metadata["mock_patch"] = resolved
+            # Not credited yet: a patch has answered nothing until it merges into a real upstream
+            # response, which `response()` decides. The *slot* is captured now rather than looked up
+            # then, so a patch that lands after the session was switched credits the rule that was
+            # actually consulted — see `store.credit`.
+            flow.metadata["mock_answer_slot"] = self.store.answer_slot(resolved["id"])
 
     @staticmethod
     def _exhausted_response(flow: http.HTTPFlow, override: dict) -> http.Response:
@@ -222,6 +236,9 @@ class Lyrebird:
             if self._apply_patch(flow.response, pending):
                 matched = pending["id"]
                 status = flow.response.status_code
+                slot = flow.metadata.get("mock_answer_slot")
+                if slot is not None:
+                    credit(slot)   # now, and only now, has the patch answered anything
             else:
                 flow.metadata["mock_patch_skipped"] = "body_unavailable_or_not_json"
 
@@ -236,13 +253,18 @@ class Lyrebird:
         being down is why you were mocking it. Without this the overrun would be invisible in
         `/recent`, and the operator would be looking for a rule that appeared never to fire.
 
-        Deliberately scoped to flows carrying sequence metadata. Recording *every* failed flow is a
-        worthwhile change, but a separate one: it would alter what `/recent` means for everybody.
+        Scoped to flows Lyrebird did something to. Recording *every* failed flow is a worthwhile
+        change, but a separate one: it would alter what `/recent` means for everybody.
         """
+        # `mock_matched` is here so that `/recent` and the answer counts cannot disagree: a `replace`
+        # is credited the moment it produces a response, so a flow that dies on the way back to the
+        # client would otherwise show a rule with answers and no traffic to account for them.
         # `mock_advanced` counts too: a request no override answered can still have moved a
         # sequence, and if its upstream then fails the cursor has changed with nothing in /recent
         # to explain why.
-        if not (flow.metadata.get("mock_sequence") or flow.metadata.get("mock_advanced")):
+        if not (flow.metadata.get("mock_sequence")
+                or flow.metadata.get("mock_advanced")
+                or flow.metadata.get("mock_matched")):
             return
         if not config.is_intercepted_host(flow.request.pretty_host):
             return

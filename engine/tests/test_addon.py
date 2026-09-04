@@ -283,7 +283,7 @@ def test_a_reset_during_the_delay_is_honoured(hosts, profile):
         flow = _flow()
         task = asyncio.create_task(subject.request(flow))
         await asyncio.sleep(0.01)              # let it reach the sleep
-        subject.store.reset_sequences()
+        subject.store.reset_runtime()
         await task
         return flow
 
@@ -417,3 +417,105 @@ def test_a_failed_advance_only_request_still_reaches_recent(hosts, profile):
     entry = subject.store.recent_list()[0]
     assert entry["advanced"] == ["ovr_list"]
     assert entry["status"] == 0
+
+
+# MARK: - Crediting the rule that answered
+#
+# Counted where the answer is produced, not where it is recorded. Everything below is a case where
+# recording-time counting gave the wrong answer: a rule credited for a response it never produced,
+# or a response produced and never credited.
+
+def _answers(subject):
+    return {state["id"]: state["count"] for state in subject.store.answer_states()}
+
+
+def test_a_replace_is_credited_once(hosts, profile):
+    subject = addon.Lyrebird()
+    subject.store.add_override({"id": "o", "mode": "replace", "status": 200,
+                                "match": {"path": "/api/v1/orders/*"}})
+    run_request(subject, _flow())
+    assert _answers(subject) == {"o": 1}
+
+
+def test_a_rule_that_matched_but_lost_is_never_credited(hosts, profile):
+    """`find_override` returns only the most specific match, so a rule whose matcher fits the
+    request may not be the rule that answered it."""
+    subject = addon.Lyrebird()
+    subject.store.add_override({"id": "broad", "mode": "replace", "status": 200,
+                                "match": {"path": "/api/v1/*"}})
+    subject.store.add_override({"id": "narrow", "mode": "replace", "status": 201,
+                                "match": {"path": "/api/v1/orders/1"}})
+    run_request(subject, _flow())
+    assert _answers(subject) == {"broad": 0, "narrow": 1}
+
+
+def test_a_patch_is_not_credited_until_it_has_actually_merged(hosts, profile):
+    """A patch that is selected has answered nothing yet — the upstream may turn out to be a
+    stream, or not JSON, in which case the request is served by the real backend."""
+    subject = addon.Lyrebird()
+    subject.store.add_override({"id": "p", "mode": "patch", "match": {"path": "/api/v1/orders/*"},
+                                "patch": {"extra": True}})
+    flow = _flow()
+    run_request(subject, flow)
+    assert _answers(subject) == {"p": 0}, "selected is not answered"
+
+    flow.response = tutils.tresp(headers=((b"content-type", b"application/json"),),
+                                 content=b'{"a": 1}')
+    subject.response(flow)
+    assert _answers(subject) == {"p": 1}
+    assert json.loads(flow.response.get_text()) == {"a": 1, "extra": True}
+
+
+def test_a_skipped_patch_is_never_credited(hosts, profile):
+    """`patchSkipped` means the real backend answered. Crediting it would report a mock in play for
+    a screen that was served live — the precise thing an assertion exists to rule out."""
+    subject = addon.Lyrebird()
+    subject.store.add_override({"id": "p", "mode": "patch", "match": {"path": "/api/v1/orders/*"},
+                                "patch": {"extra": True}})
+    flow = _flow()
+    run_request(subject, flow)
+    flow.response = tutils.tresp(headers=((b"content-type", b"text/html"),), content=b"<html>")
+    subject.responseheaders(flow)
+    subject.response(flow)
+    assert flow.metadata["mock_patch_skipped"] == "not_json"
+    assert _answers(subject) == {"p": 0}
+
+
+def test_an_exhausted_pass_through_is_never_credited(hosts, profile):
+    """It stands aside on purpose: the real upstream answers, so the rule answered nothing."""
+    subject = addon.Lyrebird()
+    subject.store.add_override({
+        "id": "seq", "mode": "replace", "match": {"path": "/api/v1/orders/*"},
+        "sequence": {"onExhausted": "passThrough", "steps": [{"status": 200}]}})
+    run_request(subject, _flow())
+    overrun = _flow()
+    run_request(subject, overrun)
+    assert overrun.response is None
+    assert _answers(subject) == {"seq": 1}, "the first request answered; the overrun did not"
+
+
+def test_an_exhausted_error_is_credited_because_it_did_answer(hosts, profile):
+    """Lyrebird's own 500 is still an answer from that rule, and the test that gets it should be
+    told the mock was in play — it explains the 500."""
+    subject = addon.Lyrebird()
+    subject.store.add_override({
+        "id": "seq", "mode": "replace", "match": {"path": "/api/v1/orders/*"},
+        "sequence": {"steps": [{"status": 200}]}})
+    run_request(subject, _flow())
+    overrun = _flow()
+    run_request(subject, overrun)
+    assert overrun.response.status_code == 500
+    assert _answers(subject) == {"seq": 2}
+
+
+def test_a_replace_whose_flow_dies_is_credited_and_recorded(hosts, profile):
+    """The override produced the response; the client hanging up does not un-answer it. It must
+    also reach /recent, or a rule shows answers with no traffic to account for them."""
+    subject = addon.Lyrebird()
+    subject.store.add_override({"id": "o", "mode": "replace", "status": 200,
+                                "match": {"path": "/api/v1/orders/*"}})
+    flow = _flow()
+    run_request(subject, flow)
+    subject.error(flow)
+    assert _answers(subject) == {"o": 1}
+    assert [entry["matched"] for entry in subject.store.recent_list()] == ["o"]

@@ -46,7 +46,17 @@ VALID_EXHAUSTION_POLICIES = ("error", "repeatLast", "passThrough")
 # its own message because it has a right answer (put it on the parent).
 STEP_FIELDS = ("status", "headers", "body")
 SEQUENCE_FIELDS = ("steps", "advanceOn", "onExhausted")
-MATCHER_FIELDS = ("method", "path", "query", "bodyContains")
+
+# The matcher vocabulary, with what each field means. One dict rather than a tuple and a docstring
+# somewhere else, because three things are generated from it — validation, the "unknown field" error,
+# and the CLI help — and a capability nobody can discover is reported as a missing feature.
+MATCHER_FIELD_HELP = {
+    "method": "HTTP method, compared case-insensitively. Omit to match any method.",
+    "path": "Path without the query string. '*' is the only wildcard; everything else is literal.",
+    "query": "Query parameters that must all be present with these exact values. Others are ignored.",
+    "bodyContains": "A substring that must appear in the request body.",
+}
+MATCHER_FIELDS = tuple(MATCHER_FIELD_HELP)
 
 # The three outcomes of resolving a rule against its cursor. A discriminated action rather than an
 # "effective override" the caller reinterprets: exhaustion under `error` and `passThrough` has no
@@ -82,6 +92,51 @@ def specificity(match: Mapping[str, Any]) -> tuple[int, int, int]:
     return (wildcards, len(path), constraints)
 
 
+def explain_matcher(
+    matcher: Mapping[str, Any],
+    method: str,
+    pathname: str,
+    query: Mapping[str, str],
+    body_text: str,
+) -> str | None:
+    """Why this matcher does not fit the request, or None if it does.
+
+    The single matching primitive: `matches_matcher` is this function's verdict, so the reason shown
+    to a person and the decision made on the wire cannot disagree. `match` and `sequence.advanceOn`
+    share the same vocabulary and both come through here.
+
+    Fields are tested in the order a person reads them, and the *first* failure is the answer — a
+    list of every mismatch buries the one that matters, and the later checks are only meaningful once
+    the earlier ones pass.
+
+    Truthiness rather than `is not None` throughout, deliberately: validation checks these fields'
+    types but not their emptiness, so `""` and `{}` are already treated as "no constraint" on the
+    wire, and a saved session may contain them.
+    """
+    want_method = matcher.get("method")
+    if want_method and want_method.upper() != method.upper():
+        return f"method: rule wants {want_method.upper()}, request is {method.upper()}"
+
+    want_path = matcher.get("path")
+    if want_path and not glob_to_regex(want_path).match(pathname):
+        return f"path: {want_path!r} does not match {pathname!r}"
+
+    want_query = matcher.get("query")
+    if want_query:
+        for key, value in want_query.items():
+            # str(value): a rule may carry `{"page": 2}`, and query values off the wire are strings.
+            if key not in query:
+                return f"query.{key}: rule wants {str(value)!r}, request has no {key!r}"
+            if query[key] != str(value):
+                return f"query.{key}: rule wants {str(value)!r}, request has {query[key]!r}"
+
+    body_contains = matcher.get("bodyContains")
+    if body_contains and body_contains not in body_text:
+        return f"bodyContains: {body_contains!r} is not in the request body"
+
+    return None
+
+
 def matches_matcher(
     matcher: Mapping[str, Any],
     method: str,
@@ -89,31 +144,8 @@ def matches_matcher(
     query: Mapping[str, str],
     body_text: str,
 ) -> bool:
-    """Does a request satisfy one matcher?
-
-    The single matching primitive. `match` and `sequence.advanceOn` share the same vocabulary and
-    must agree on what it means, so both go through here rather than one of them being reimplemented
-    or wrapped in a synthetic override to reuse `matches`.
-    """
-    want_method = matcher.get("method")
-    if want_method and want_method.upper() != method.upper():
-        return False
-
-    want_path = matcher.get("path")
-    if want_path and not glob_to_regex(want_path).match(pathname):
-        return False
-
-    want_query = matcher.get("query")
-    if want_query:
-        for key, value in want_query.items():
-            if query.get(key) != str(value):
-                return False
-
-    body_contains = matcher.get("bodyContains")
-    if body_contains and body_contains not in body_text:
-        return False
-
-    return True
+    """Does a request satisfy one matcher?"""
+    return explain_matcher(matcher, method, pathname, query, body_text) is None
 
 
 def matches(
@@ -444,7 +476,7 @@ def normalise_session(session: Any, name: str) -> dict:
 
     # Underscore keys are ours: `_problems` below, and the sequence cursors the store hangs off the
     # session. `_persistable` strips them on the way out, so nothing we wrote can contain one — but
-    # a hand-edited or imported file can, and `_sequenceRuntime` reaching the store means either a
+    # a hand-edited or imported file can, and `_ruleRuntime` reaching the store means either a
     # crash inside a proxy hook or a scenario that quietly starts on step 2.
     result = {key: value for key, value in session.items() if not key.startswith("_")}
     result["name"] = name
