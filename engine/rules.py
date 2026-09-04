@@ -453,7 +453,12 @@ def validate_override(override: Any) -> dict:
     if override_id is not None and (not isinstance(override_id, str) or not override_id.strip()):
         raise ValidationError("id must be a non-empty string when present")
 
-    _validate_matcher(result.get("match") or {}, "match")
+    # Not `or {}`: that let a falsy non-object — `[]`, `""`, `0`, `false` — skip the object
+    # check below and then be read as an *absent* matcher on the wire, which is a rule that
+    # answers every intercepted request. Absent is the only spelling of "no matcher"; anything
+    # present must be an object.
+    match = result.get("match")
+    _validate_matcher({} if match is None else match, "match")
 
     delay = result.get("delayMs")
     if delay is not None:

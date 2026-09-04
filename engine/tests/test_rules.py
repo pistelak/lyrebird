@@ -456,3 +456,17 @@ def test_the_matcher_help_covers_exactly_the_accepted_fields():
     """The CLI help is generated from MATCHER_FIELD_HELP and validation from MATCHER_FIELDS. If they
     could drift, a documented field would be rejected or a supported one stay invisible."""
     assert tuple(rules.MATCHER_FIELD_HELP) == rules.MATCHER_FIELDS
+
+
+@pytest.mark.parametrize("match", [[], "", 0, False, "/api/items", 7])
+def test_a_match_that_is_not_an_object_is_rejected(match):
+    """`or {}` used to let a falsy non-object through the object check, after which the wire read it
+    as an *absent* matcher — a rule that answers every intercepted request."""
+    with pytest.raises(rules.ValidationError, match="match must be a JSON object"):
+        rules.validate_override({"mode": "replace", "status": 200, "match": match})
+
+
+def test_an_absent_match_is_still_allowed():
+    """Absent is the documented spelling of "no matcher", and it is occasionally useful."""
+    assert rules.validate_override({"mode": "replace", "status": 200})["mode"] == "replace"
+    assert rules.validate_override({"mode": "replace", "status": 200, "match": {}})

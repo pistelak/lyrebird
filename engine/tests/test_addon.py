@@ -519,3 +519,47 @@ def test_a_replace_whose_flow_dies_is_credited_and_recorded(hosts, profile):
     subject.error(flow)
     assert _answers(subject) == {"o": 1}
     assert [entry["matched"] for entry in subject.store.recent_list()] == ["o"]
+
+
+def test_a_replacement_installed_during_a_delay_is_the_rule_credited(hosts, profile):
+    """The delayed path re-selects after the sleep. Crediting a slot captured before it would
+    report an answer for the rule that was displaced and never served."""
+    subject = addon.Lyrebird()
+    subject.store.add_override(_replaceable([201, 202]))
+    flow = _mid_flight(subject, lambda: subject.store.add_override(_replaceable([501, 502])))
+    assert flow.response.status_code == 501
+    assert _answers(subject) == {"s": 1}, "credited once, to the definition that actually answered"
+
+
+def test_a_patch_landing_after_a_session_switch_credits_nobody(hosts, profile):
+    """The whole reason the slot is captured rather than looked up by id: session B has its own
+    rule under the same id, and it never saw this request."""
+    subject = addon.Lyrebird()
+    subject.store.add_override({"id": "shared", "mode": "patch",
+                                "match": {"path": "/api/v1/orders/*"}, "patch": {"a": 1}})
+    flow = _flow()
+    run_request(subject, flow)
+
+    subject.store.create_session("other")
+    subject.store.set_active("other")
+    subject.store.add_override({"id": "shared", "mode": "patch",
+                                "match": {"path": "/api/v1/orders/*"}, "patch": {"a": 1}})
+
+    flow.response = tutils.tresp(headers=((b"content-type", b"application/json"),),
+                                 content=b'{"b": 2}')
+    subject.response(flow)
+    assert _answers(subject) == {"shared": 0}, "session B's rule never answered this request"
+
+
+def test_a_patch_landing_after_its_rule_is_replaced_credits_nobody(hosts, profile):
+    subject = addon.Lyrebird()
+    subject.store.add_override({"id": "r", "mode": "patch",
+                                "match": {"path": "/api/v1/orders/*"}, "patch": {"a": 1}})
+    flow = _flow()
+    run_request(subject, flow)
+    subject.store.add_override({"id": "r", "mode": "patch",
+                                "match": {"path": "/api/v1/orders/*"}, "patch": {"a": 2}})
+    flow.response = tutils.tresp(headers=((b"content-type", b"application/json"),),
+                                 content=b'{"b": 2}')
+    subject.response(flow)
+    assert _answers(subject) == {"r": 0}

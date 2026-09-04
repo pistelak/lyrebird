@@ -445,6 +445,7 @@ def status(as_json: bool) -> None:
             # .get with a default: an older engine — or a test double — has no such key, and the
             # exit code of `status` must not depend on this field existing.
             "sequences": (health or {}).get("sequences", []),
+            "answers": (health or {}).get("answers", []),
             "simBundleId": (health or {}).get("simBundleId"),
             "profile": str(config.PROFILE_DIR),
             "service": service,
