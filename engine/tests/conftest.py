@@ -6,10 +6,9 @@ import tempfile
 
 import pytest
 
-# config resolves paths and reads profile.json at import, and load_profile raises SystemExit on a
-# malformed profile. Without this, a contributor whose own ~/.config/lyrebird/profile.json is
-# broken gets a suite that dies during collection, blaming their config for our test run.
-# Pointed at a directory that does not exist, the import takes the "no profile" branch.
+# config resolves its paths at import from the environment. Pointed at a directory that does not
+# exist, nothing a test does by accident — a bare `configure()`, a `reload_profile()` — can reach
+# a contributor's real ~/.config/lyrebird, and the state directory keeps every write in a temp tree.
 os.environ.setdefault("LYREBIRD_PROFILE", os.path.join(tempfile.gettempdir(), "lyrebird-tests-absent"))
 os.environ.setdefault("LYREBIRD_STATE_DIR", os.path.join(tempfile.gettempdir(), "lyrebird-tests-state"))
 

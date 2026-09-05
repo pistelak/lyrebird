@@ -591,3 +591,11 @@ def test_health_reports_an_unreadable_pac_instead_of_dying(profile, monkeypatch)
     assert meta["proxyUp"] is True
     assert meta["intercepting"] is False
     assert "networksetup" in meta["pacError"]
+
+
+def test_the_addon_refuses_to_load_on_a_malformed_profile(profile):
+    """The proxy is the thing that intercepts, so it is the thing that must not start on a profile
+    it cannot read — a SystemExit here kills mitmdump at startup, which `up` reports."""
+    (profile / "profile.json").write_text("{not json", encoding="utf-8")
+    with pytest.raises(SystemExit):
+        addon.Lyrebird()

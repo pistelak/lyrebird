@@ -34,7 +34,8 @@ Select one with `--profile PATH` (wins) or `LYREBIRD_PROFILE`; the default is
 `hosts` are **exact hostnames** — `api.example.com` does not imply `sub.api.example.com`. An empty
 list means *intercept nothing*: the engine honours it, and `up` refuses to start on it, because
 there would be nothing for `up` to achieve. A malformed profile aborts rather than falling back to
-a default.
+a default — when `up` or the proxy reads it. `down`, `status` and `logs` never parse the profile,
+so a broken one cannot stop you restoring the network.
 
 Sessions you save go into the profile — that is what it is for. Everything the tool
 writes for its own purposes stays out, in the macOS directory that matches how long the file

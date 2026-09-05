@@ -52,6 +52,10 @@ def proxy_options() -> dict:
 
 class Lyrebird:
     def __init__(self) -> None:
+        # The addon is what intercepts, so it is what needs the hosts. Loud on a malformed
+        # profile: the SystemExit kills mitmdump at startup, which `up` reports with the log's
+        # last lines rather than starting a proxy that intercepts nothing.
+        config.reload_profile()
         self.store = Store()
         self.started_at = datetime.now(UTC).isoformat()
         self._control_started = False

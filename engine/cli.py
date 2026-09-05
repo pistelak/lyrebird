@@ -178,6 +178,12 @@ def _spawn_watchdog(service: str) -> int:
 
 
 def _require_profile() -> None:
+    """Read the profile, for the one command that needs its contents.
+
+    `up` is where a malformed profile aborts. Every other command — `down` above all — works from
+    runtime state and the live API, so a broken profile.json cannot stop you restoring the network.
+    """
+    config.reload_profile()
     if not config.PROFILE.exists:
         raise SystemExit(
             f"{RED}no profile at {config.PROFILE_DIR}{R}\n"
@@ -204,10 +210,10 @@ def _require_profile() -> None:
               help="Profile directory (overrides $LYREBIRD_PROFILE).")
 def cli(profile: str | None) -> None:
     if profile:
-        resolved = str(Path(profile).expanduser().resolve())
-        os.environ["LYREBIRD_PROFILE"] = resolved
-        config.configure(resolved)
-        config.reload_profile()
+        # Paths only; `_require_profile` reads the contents. Not exported into os.environ: the two
+        # child processes get it from `_child_env`, and a process-wide side effect from an
+        # argument parser is what made an in-process test leak its profile into the next one.
+        config.configure(profile)
 
 
 @cli.command()

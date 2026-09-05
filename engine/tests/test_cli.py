@@ -434,6 +434,49 @@ def test_status_fails_when_the_proxy_is_up_but_the_pac_is_off(profile, runner, m
     assert runner.invoke(cli.cli, ["status"]).exit_code == 1
 
 
+def test_importing_the_cli_does_not_parse_the_profile(profile, tmp_path):
+    """Regression, in a fresh process because an in-process test imports `config` before it can
+    arrange anything: a malformed *default* profile used to raise SystemExit during import, before
+    Click had seen `--profile` or the subcommand. `logs` never needs the profile; it must run
+    whether the default one is broken or the selected one is."""
+    import subprocess
+    import sys
+
+    broken = tmp_path / "broken"
+    broken.mkdir()
+    (broken / "profile.json").write_text("{not json", encoding="utf-8")
+    env = {**os.environ, "LYREBIRD_PROFILE": str(broken), "LYREBIRD_STATE_DIR": str(tmp_path / "state")}
+
+    for args in (["--profile", str(profile), "logs"], ["logs"]):
+        result = subprocess.run([sys.executable, str(config.ROOT / "cli.py"), *args],
+                                capture_output=True, text=True, env=env, check=False)
+        assert result.returncode == 0, f"{args}: {result.stderr}"
+        assert "(no log)" in result.stdout, f"{args}: {result.stdout!r}"
+
+
+def test_down_does_not_need_a_readable_profile(profile, runner, monkeypatch):
+    """`down` restores the network from runtime state and the live API. A broken profile.json is
+    the kind of thing you are trying to recover from, not a reason to be stuck."""
+    (profile / "profile.json").write_text("{not json", encoding="utf-8")
+    monkeypatch.setattr(cli, "_health", lambda: None)
+    monkeypatch.setattr(netproxy, "active_service", lambda: None)
+
+    result = runner.invoke(cli.cli, ["--profile", str(profile), "down"])
+
+    assert result.exit_code == 0, result.output
+    assert "nothing to stop" in result.output
+
+
+def test_up_still_aborts_loudly_on_a_malformed_profile(profile, runner):
+    """Moving the read out of import must not soften it: `up` is where a bad profile is refused."""
+    (profile / "profile.json").write_text("{not json", encoding="utf-8")
+
+    result = runner.invoke(cli.cli, ["up"])
+
+    assert result.exit_code != 0
+    assert "could not read" in result.output
+
+
 def test_up_refuses_a_profile_with_no_hosts_before_starting_anything(profile, runner, monkeypatch):
     """With no hosts `up` used to trust the CA, install a DIRECT-only PAC, relaunch the app, print
     INTERCEPT ACTIVE and exit 0 — every step a success, nothing intercepted."""
