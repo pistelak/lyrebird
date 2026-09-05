@@ -3,7 +3,7 @@
 There are two seams, deliberately kept apart:
 
 * the **profile** (``--profile`` / ``LYREBIRD_PROFILE``) — your data, and safe to keep in version
-  control: which hosts to intercept, saved sessions, presets.
+  control: which hosts to intercept and saved sessions.
 * **tool-owned files**, which macOS wants in three different places and which differ in what may
   destroy them: durable state and the CA in ``~/Library/Application Support/Lyrebird``, the
   regenerable catalog in ``~/Library/Caches/com.lyrebird.Lyrebird``, and the proxy log in
@@ -107,7 +107,6 @@ def _default_log_root() -> Path:
 PROFILE_DIR: Path
 PROFILE_FILE: Path
 SESSIONS_DIR: Path
-PRESETS_DIR: Path
 STATE_ROOT: Path
 CACHE_ROOT: Path
 LOG_ROOT: Path
@@ -124,7 +123,7 @@ def configure(profile: str | None = None) -> None:
     # Module-level rebinding is the point: every module reads these as `config.X`, and the CLI
     # re-resolves them once at startup before anything else imports them. Threading a settings
     # object through the addon, store, control server and CLI would buy nothing here.
-    global PROFILE_DIR, PROFILE_FILE, SESSIONS_DIR, PRESETS_DIR
+    global PROFILE_DIR, PROFILE_FILE, SESSIONS_DIR
     global STATE_ROOT, CACHE_ROOT, LOG_ROOT, STATE_FILE, CATALOG_FILE, LOG_FILE, PROFILE_FINGERPRINT
 
     raw = profile or os.environ.get("LYREBIRD_PROFILE")
@@ -134,7 +133,6 @@ def configure(profile: str | None = None) -> None:
     PROFILE_DIR = (Path(raw).expanduser() if raw else _default_profile()).resolve()
     PROFILE_FILE = PROFILE_DIR / "profile.json"
     SESSIONS_DIR = PROFILE_DIR / "sessions"
-    PRESETS_DIR = PROFILE_DIR / "presets"
 
     state_env = os.environ.get("LYREBIRD_STATE_DIR")
     if state_env:

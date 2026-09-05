@@ -24,8 +24,7 @@ A **profile** is a directory holding everything specific to your API:
 ```
 my-app/
 ├── profile.json     # { "schemaVersion": 1, "hosts": [...], "simBundleId": "com.example.Store" }
-├── sessions/*.json
-└── presets/
+└── sessions/*.json
 ```
 
 Select one with `--profile PATH` (wins) or `LYREBIRD_PROFILE`; the default is
@@ -36,7 +35,7 @@ Select one with `--profile PATH` (wins) or `LYREBIRD_PROFILE`; the default is
 list means *intercept nothing*, and a malformed profile aborts rather than falling back to a
 default.
 
-Sessions and presets you save go into the profile — that is what it is for. Everything the tool
+Sessions you save go into the profile — that is what it is for. Everything the tool
 writes for its own purposes stays out, in the macOS directory that matches how long the file
 deserves to live:
 
@@ -104,7 +103,6 @@ and what the PAC advertises — those are deliberately separate settings.
 validation, or two sharing an id — and persists nothing. A session *file* is instead
 reported-and-dropped at startup, because the file is in front of you and the proxy must still start;
 an import is an API call, and reporting success for a rule that was discarded is worse than refusing.
-- `GET /presets/{operationId}` · `GET|POST /presets/{operationId}/{name}`
 
 A `POST`, `PUT`, `PATCH` or `DELETE` carrying a body must send `Content-Type: application/json`,
 and the `Host` header must be a loopback name with the control port. Cross-origin requests are

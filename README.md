@@ -141,7 +141,7 @@ cost the most time.
 
 ## Profiles
 
-Your hosts, sessions and presets live in a **profile** directory, outside this repo. The default is
+Your hosts and sessions live in a **profile** directory, outside this repo. The default is
 `~/.config/lyrebird`; use another with `bin/lyrebird --profile /path/to/profile up`.
 
 Because a profile is plain JSON, you can keep it in its own repository and review scenarios the way

@@ -28,21 +28,6 @@ def test_reasonable_names_are_accepted(name):
     assert store.safe_component(name) == name
 
 
-def test_preset_operation_id_cannot_escape(profile):
-    subject = make_store(profile)
-    with pytest.raises(store.UnsafeName):
-        subject.save_preset("../../..", "pwn", {})
-
-
-def test_preset_read_cannot_escape(profile):
-    """Containment must cover reads and listings, not only writes."""
-    subject = make_store(profile)
-    with pytest.raises(store.UnsafeName):
-        subject.get_preset("..", "profile")
-    with pytest.raises(store.UnsafeName):
-        subject.list_presets("..")
-
-
 # MARK: - Sessions
 
 def test_deleting_the_active_session_switches_to_default(profile):

@@ -108,7 +108,7 @@ def test_pac_advertises_the_proxy_host_not_the_control_host(hosts):
 
 # MARK: - Default locations
 #
-# Profiles are configuration and belong in ~/.config, as do the sessions and presets you save into
+# Profiles are configuration and belong in ~/.config, as do the sessions you save into
 # one. Nothing the tool writes for its own purposes does, and the three places it writes differ in
 # what may destroy them: state and the CA must survive, the catalog may be discarded, the log is
 # for a person to read.

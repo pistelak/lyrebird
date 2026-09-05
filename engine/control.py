@@ -255,24 +255,6 @@ def make_app(store: Store, meta_provider: Callable[[], dict[str, Any]]) -> web.A
             return web.json_response({"error": "cannot_delete", "name": name}, status=400)
         return web.json_response({"deleted": name})
 
-    # MARK: - Presets
-
-    @routes.get("/__mock__/presets/{operationId}")
-    async def presets_list(request: web.Request) -> web.StreamResponse:
-        return web.json_response(store.list_presets(request.match_info["operationId"]))
-
-    @routes.get("/__mock__/presets/{operationId}/{name}")
-    async def presets_get(request: web.Request) -> web.StreamResponse:
-        body = store.get_preset(request.match_info["operationId"], request.match_info["name"])
-        if body is None:
-            return web.json_response({"error": "unknown_preset"}, status=404)
-        return web.json_response(body)
-
-    @routes.post("/__mock__/presets/{operationId}/{name}")
-    async def presets_save(request: web.Request) -> web.StreamResponse:
-        store.save_preset(request.match_info["operationId"], request.match_info["name"], await _safe_json(request))
-        return web.json_response({"saved": f"{request.match_info['operationId']}/{request.match_info['name']}"})
-
     app.add_routes(routes)
     return app
 
