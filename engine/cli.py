@@ -162,9 +162,6 @@ def _relaunch(bundle_id: str) -> tuple[bool, str]:
         return True, bundle_id
     raw = (result.stderr or result.stdout or "launch failed").strip()
     if "failed to launch" in raw or "not find" in raw.lower():
-        if bundle_id == "com.example.Store":
-            return False, ("com.example.Store is the example placeholder — set simBundleId in "
-                           f"{config.PROFILE_FILE} to your app's bundle id")
         return False, f"{bundle_id} is not installed in the booted simulator"
     return False, raw.splitlines()[0]
 
