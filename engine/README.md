@@ -95,7 +95,7 @@ and what the PAC advertises — those are deliberately separate settings.
 - `GET|POST /overrides`, `DELETE /overrides/{id}` — act on the **active session**
 - `DELETE /overrides` — **destructive**: deletes every override in the active session and rewrites
   its file. The only endpoint that does this; the dashboard button asks first.
-- `GET /sessions` · `POST /sessions` · `POST /sessions/save-active` · `PUT /sessions/active`
+- `GET /sessions` · `POST /sessions` · `PUT /sessions/active`
   · `GET /sessions/{name}/export` · `POST /sessions/import` · `DELETE /sessions/{name}`
 
 `POST /sessions/import` refuses (**400**) a payload it cannot keep whole — an override that fails

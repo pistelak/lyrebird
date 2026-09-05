@@ -206,14 +206,6 @@ def make_app(store: Store, meta_provider: Callable[[], dict[str, Any]]) -> web.A
             return web.json_response({"error": "session_exists", "name": body["name"]}, status=409)
         return web.json_response({"created": body["name"]})
 
-    @routes.post("/__mock__/sessions/save-active")
-    async def sessions_save_active(request: web.Request) -> web.StreamResponse:
-        body = await _safe_json(request)
-        if not body.get("name"):
-            return web.json_response({"error": "name_required"}, status=400)
-        store.save_active_as(body["name"], body.get("notes", ""), body.get("verified", False))
-        return web.json_response({"saved": body["name"]})
-
     @routes.put("/__mock__/sessions/active")
     async def sessions_activate(request: web.Request) -> web.StreamResponse:
         body = await _safe_json(request)

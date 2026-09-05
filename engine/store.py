@@ -519,14 +519,6 @@ class Store:
         self._persist_session(name)
         return name
 
-    def save_active_as(self, name: str, notes: str = "", verified: bool = False) -> None:
-        name = safe_component(name, "session name")
-        snapshot = _clone(self.active_session(), name)
-        snapshot["notes"] = notes
-        snapshot["verified"] = verified
-        self.sessions[name] = snapshot
-        self._persist_session(name)
-
     # MARK: - Recent
 
     def record_recent(self, entry: dict) -> None:
