@@ -792,6 +792,17 @@ def test_explain_match_names_the_winner_and_what_it_shadowed(profile, runner, mo
     assert "also matched" in result.output and "ovr_broad" in result.output
 
 
+def test_explain_match_reads_a_repeated_query_key_the_way_the_wire_does(profile, runner, monkeypatch):
+    """mitmproxy's MultiDict returns the first value; `dict(parse_qsl(...))` kept the last. For
+    `?kind=beta&kind=alpha` the proxy selects on beta while this command explained alpha — a
+    selection it then swore would happen."""
+    monkeypatch.setattr(cli, "_control", lambda *a, **k: _RULES)
+    result = runner.invoke(cli.cli, ["explain-match", "GET", "/api/items?kind=beta&kind=alpha"])
+    assert result.exit_code == 0
+    assert "rule wants 'alpha', request has 'beta'" in result.output
+    assert "ovr_alpha is selected" not in result.output
+
+
 def test_explain_match_says_why_each_rule_missed(profile, runner, monkeypatch):
     monkeypatch.setattr(cli, "_control", lambda *a, **k: _RULES)
     result = runner.invoke(cli.cli, ["explain-match", "GET", "/api/items?kind=beta"])

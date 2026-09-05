@@ -923,7 +923,12 @@ def explain_match(method: str, path: str, body: str, as_json: bool) -> None:
     state this deliberately neither reads nor touches.
     """
     split = urllib.parse.urlsplit(path)
-    query = dict(urllib.parse.parse_qsl(split.query, keep_blank_values=True))
+    # First value wins for a repeated key, as it does on the wire: the addon builds its query from
+    # mitmproxy's MultiDict, whose lookup returns the first. `dict(parse_qsl(...))` keeps the last,
+    # and for `?kind=alpha&kind=beta` this command then explained a selection the proxy never made.
+    query: dict[str, str] = {}
+    for key, value in urllib.parse.parse_qsl(split.query, keep_blank_values=True):
+        query.setdefault(key, value)
     overrides = _control("/__mock__/overrides") or []
     selected = rules.find_override(overrides, method, split.path, query, body)
 
