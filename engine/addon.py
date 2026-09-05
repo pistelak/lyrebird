@@ -2,8 +2,8 @@
 
 Loaded via `mitmdump -s addon.py`. Only the hosts configured in the active profile are intercepted
 (mitmproxy `allow_hosts`); everything else is blind-tunnelled. Server-sent-event streams always
-pass through un-buffered, and mitmproxy's own `stream_large_bodies` cap streams anything bigger
-than MAX_BUFFER_BYTES, so a long-poll or a large download never stalls behind us.
+pass through un-buffered, and mitmproxy's own `stream_large_bodies` cap (STREAM_LARGE_BODIES)
+streams anything bigger, so a long-poll or a large download never stalls behind us.
 """
 
 from __future__ import annotations
@@ -26,7 +26,6 @@ from store import Store, credit
 _log = logging.getLogger("lyrebird")
 
 BODYLESS_STATUSES = (204, 304)   # must not carry a body or a Content-Length
-MAX_BUFFER_BYTES = 512 * 1024
 # mitmproxy's stream_large_bodies option is a size *string* ("Understands k/m/g"), not an int.
 STREAM_LARGE_BODIES = "512k"
 

@@ -162,9 +162,6 @@ def _relaunch(bundle_id: str) -> tuple[bool, str]:
         return True, bundle_id
     raw = (result.stderr or result.stdout or "launch failed").strip()
     if "failed to launch" in raw or "not find" in raw.lower():
-        if bundle_id == "com.example.Store":
-            return False, ("com.example.Store is the example placeholder — set simBundleId in "
-                           f"{config.PROFILE_FILE} to your app's bundle id")
         return False, f"{bundle_id} is not installed in the booted simulator"
     return False, raw.splitlines()[0]
 
@@ -331,7 +328,7 @@ def _up_locked(bundle_id: str | None) -> None:
                    f"   xcrun simctl terminate booted <bundleid> && xcrun simctl launch booted <bundleid>\n"
                    f"   (or set simBundleId in profile.json)")
 
-    _banner(_health(), service)
+    _banner(_health(), service, netproxy.intercepting(service))
 
     # Exit non-zero unless the whole point of `up` was achieved. Reporting a warning and returning 0
     # meant a script — or an agent — could believe it was mocking when nothing was intercepted.
@@ -433,12 +430,17 @@ def status(as_json: bool) -> None:
     """
     health = _health()
     service = config.read_runtime().get("service") or netproxy.active_service()
+    # One observation of the PAC feeds the output and the exit code alike. Reading it once for
+    # the banner, again for the JSON field and a third time for the exit status let a PAC that
+    # flips in between produce output that contradicts the exit code — a `status` whose text says
+    # one thing and whose `$?` says another is worse than either being wrong.
+    pac = netproxy.pac_status(service) if service else None
+    intercepting = pac is not None and pac.enabled and pac.ours
 
     if as_json:
-        pac = netproxy.pac_status(service) if service else None
         click.echo(json.dumps({
             "proxyUp": health is not None,
-            "intercepting": netproxy.intercepting(service),
+            "intercepting": intercepting,
             "activeSession": (health or {}).get("activeSession"),
             "overrideCount": (health or {}).get("overrideCount"),
             "sessions": (health or {}).get("sessions", []),
@@ -458,7 +460,7 @@ def status(as_json: bool) -> None:
         }, indent=2))
     else:
         click.echo(f"{DIM}profile: {config.PROFILE_DIR}{R}")
-        _banner(health, service)
+        _banner(health, service, intercepting)
         if health:
             click.echo(f"  sessions: {', '.join(health['sessions'])}")
             for state in health.get("sequences", []):
@@ -468,13 +470,12 @@ def status(as_json: bool) -> None:
                 trigger = "own calls" if state["advanceOn"] == "self" else "advanceOn"
                 click.echo(f"  sequence {state['id']}: {position} · {trigger}{overrun}")
             click.echo(f"  dashboard: {CONTROL}/")
-        if service:
-            pac = netproxy.pac_status(service)
+        if pac is not None:
             state = "enabled" if pac.enabled else f"{RED}DISABLED{R}"
             owner = "" if pac.ours or not pac.url else " · not ours"
             click.echo(f"  PAC on '{service}': {pac.url or '(none)'} · {state}{owner}")
 
-    raise SystemExit(0 if health is not None and netproxy.intercepting(service) else 1)
+    raise SystemExit(0 if health is not None and intercepting else 1)
 
 
 @cli.command()
@@ -998,11 +999,13 @@ def _tail_log(lines: int) -> str:
     return "\n".join(config.LOG_FILE.read_text(errors="replace").splitlines()[-lines:])
 
 
-def _banner(health: dict | None, service: str | None) -> None:
+def _banner(health: dict | None, service: str | None, intercepting: bool) -> None:
+    """Takes the PAC verdict rather than reading it, so the caller's one observation is the one
+    shown."""
     if health is None:
         click.echo(f"{DIM}⚪ proxy not reachable{R}")
         return
-    if netproxy.intercepting(service):
+    if intercepting:
         click.echo(f"{BOLD}{RED}🔴 INTERCEPT ACTIVE{R}  "
                    f"session {BOLD}{health['activeSession']}{R} · "
                    f"{health['overrideCount']} override(s) · proxy :{health['proxyPort']} · PAC on {service}")

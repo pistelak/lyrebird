@@ -108,10 +108,9 @@ def test_pac_advertises_the_proxy_host_not_the_control_host(hosts):
 
 # MARK: - Default locations
 #
-# Profiles are configuration and belong in ~/.config, as do the sessions and presets you save into
-# one. Nothing the tool writes for its own purposes does, and the three places it writes differ in
-# what may destroy them: state and the CA must survive, the catalog may be discarded, the log is
-# for a person to read.
+# Profiles are configuration and belong in ~/.config, as do the sessions you save into
+# one. Nothing the tool writes for its own purposes does, and the two places it writes differ in
+# what may destroy them: state and the CA must survive, the log is for a person to read.
 
 def test_default_profile_lives_in_config_home(monkeypatch):
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
@@ -124,17 +123,16 @@ def test_default_profile_honours_xdg_config_home(monkeypatch):
 
 
 def test_each_default_root_is_the_macos_directory_for_its_lifetime():
-    """Not cosmetic: `tmutil` excludes Caches and Logs from Time Machine and includes Application
-    Support, so the directory a file lands in decides whether it is backed up forever."""
+    """Not cosmetic: `tmutil` excludes Logs from Time Machine and includes Application Support,
+    so the directory a file lands in decides whether it is backed up forever."""
     roots = {
         "Application Support/Lyrebird": config._default_state_root(),
-        "Caches/com.lyrebird.Lyrebird": config._default_cache_root(),
         "Logs/Lyrebird": config._default_log_root(),
     }
     for expected, root in roots.items():
         assert str(root).endswith(f"Library/{expected}"), f"{root} is not Library/{expected}"
         assert "/.config" not in str(root)
-    assert len(set(roots.values())) == 3, "the three roots must be distinct"
+    assert len(set(roots.values())) == 2, "the two roots must be distinct"
 
 
 def test_configure_wires_each_path_to_its_own_root(monkeypatch, tmp_path):
@@ -143,23 +141,22 @@ def test_configure_wires_each_path_to_its_own_root(monkeypatch, tmp_path):
     config.configure(str(tmp_path / "profile"))
 
     assert config.STATE_FILE.is_relative_to(config._default_state_root())
-    assert config.CATALOG_FILE.is_relative_to(config._default_cache_root())
     assert config.LOG_FILE.is_relative_to(config._default_log_root())
 
 
-def test_state_dir_override_collapses_all_three(monkeypatch, tmp_path):
+def test_state_dir_override_collapses_both(monkeypatch, tmp_path):
     """One variable has to relocate everything, or the tests leak into a real Library directory."""
     monkeypatch.setenv("LYREBIRD_STATE_DIR", str(tmp_path / "elsewhere"))
     config.configure()
 
-    for path in (config.STATE_FILE, config.CATALOG_FILE, config.LOG_FILE,
+    for path in (config.STATE_FILE, config.LOG_FILE,
                  config.runtime_file(), config.lock_file(), config.mitmproxy_confdir()):
         assert config.STATE_ROOT in path.parents, f"{path} escaped the override"
 
 
 def test_state_paths_stay_out_of_the_profile(profile):
     """A profile kept in git must never have runtime files written into it."""
-    for path in (config.STATE_FILE, config.CATALOG_FILE, config.LOG_FILE,
+    for path in (config.STATE_FILE, config.LOG_FILE,
                  config.runtime_file(), config.lock_file(), config.mitmproxy_confdir()):
         assert config.PROFILE_DIR not in path.parents, f"{path} is inside the profile"
 

@@ -1,9 +1,9 @@
-"""In-memory session/override/preset store, persisted as JSON under the active profile.
+"""In-memory session/override store, persisted as JSON under the active profile.
 
 Single-loop safety: mitmproxy runs one asyncio loop, and the aiohttp control server runs on that
 same loop, so flow-hook reads and control-API writes are serialised — no locking required.
 
-Every name that becomes a path component (session name, preset name, operation id) is validated
+Every name that becomes a path component (a session name) is validated
 and the resolved path is checked for containment before any read, write, listing or unlink. These
 names arrive from an unauthenticated local HTTP API, so they are treated as untrusted input.
 """
@@ -17,7 +17,6 @@ import secrets
 from collections import deque
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
 
 import config
 import rules
@@ -62,14 +61,6 @@ def _contained(parent: Path, *parts: str) -> Path:
 
 def _session_path(name: str) -> Path:
     return _contained(config.SESSIONS_DIR, f"{safe_component(name, 'session name')}.json")
-
-
-def _preset_path(operation_id: str, name: str) -> Path:
-    return _contained(
-        config.PRESETS_DIR,
-        safe_component(operation_id, "operation id"),
-        f"{safe_component(name, 'preset name')}.json",
-    )
 
 
 def _clone(source: dict, name: str) -> dict:
@@ -527,35 +518,6 @@ class Store:
         self.sessions[name] = normalised
         self._persist_session(name)
         return name
-
-    def save_active_as(self, name: str, notes: str = "", verified: bool = False) -> None:
-        name = safe_component(name, "session name")
-        snapshot = _clone(self.active_session(), name)
-        snapshot["notes"] = notes
-        snapshot["verified"] = verified
-        self.sessions[name] = snapshot
-        self._persist_session(name)
-
-    # MARK: - Presets
-
-    def list_presets(self, operation_id: str) -> list[str]:
-        directory = _contained(config.PRESETS_DIR, safe_component(operation_id, "operation id"))
-        if not directory.is_dir():
-            return []
-        return sorted(path.stem for path in directory.glob("*.json"))
-
-    def get_preset(self, operation_id: str, name: str) -> Any | None:
-        path = _preset_path(operation_id, name)
-        if not path.is_file():
-            return None
-        try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            return None
-
-    def save_preset(self, operation_id: str, name: str, body: Any) -> None:
-        path = _preset_path(operation_id, name)
-        config.atomic_write(path, json.dumps(body, indent=2))
 
     # MARK: - Recent
 

@@ -124,7 +124,6 @@ def make_app(store: Store, meta_provider: Callable[[], dict[str, Any]]) -> web.A
     # MARK: - Health / status
 
     @routes.get("/__mock__/health")
-    @routes.get("/__mock__/status")
     async def health(_request: web.Request) -> web.StreamResponse:
         return web.json_response({
             "ok": True,
@@ -141,12 +140,6 @@ def make_app(store: Store, meta_provider: Callable[[], dict[str, Any]]) -> web.A
     @routes.get("/__mock__/recent")
     async def recent(_request: web.Request) -> web.StreamResponse:
         return web.json_response(store.recent_list())
-
-    @routes.get("/__mock__/catalog")
-    async def catalog(_request: web.Request) -> web.StreamResponse:
-        if config.CATALOG_FILE.is_file():
-            return web.json_response(json.loads(config.CATALOG_FILE.read_text(encoding="utf-8")))
-        return web.json_response([])
 
     # MARK: - Overrides (act on the active session)
 
@@ -212,14 +205,6 @@ def make_app(store: Store, meta_provider: Callable[[], dict[str, Any]]) -> web.A
             return web.json_response({"error": "session_exists", "name": body["name"]}, status=409)
         return web.json_response({"created": body["name"]})
 
-    @routes.post("/__mock__/sessions/save-active")
-    async def sessions_save_active(request: web.Request) -> web.StreamResponse:
-        body = await _safe_json(request)
-        if not body.get("name"):
-            return web.json_response({"error": "name_required"}, status=400)
-        store.save_active_as(body["name"], body.get("notes", ""), body.get("verified", False))
-        return web.json_response({"saved": body["name"]})
-
     @routes.put("/__mock__/sessions/active")
     async def sessions_activate(request: web.Request) -> web.StreamResponse:
         body = await _safe_json(request)
@@ -254,24 +239,6 @@ def make_app(store: Store, meta_provider: Callable[[], dict[str, Any]]) -> web.A
         if not store.delete_session(name):
             return web.json_response({"error": "cannot_delete", "name": name}, status=400)
         return web.json_response({"deleted": name})
-
-    # MARK: - Presets
-
-    @routes.get("/__mock__/presets/{operationId}")
-    async def presets_list(request: web.Request) -> web.StreamResponse:
-        return web.json_response(store.list_presets(request.match_info["operationId"]))
-
-    @routes.get("/__mock__/presets/{operationId}/{name}")
-    async def presets_get(request: web.Request) -> web.StreamResponse:
-        body = store.get_preset(request.match_info["operationId"], request.match_info["name"])
-        if body is None:
-            return web.json_response({"error": "unknown_preset"}, status=404)
-        return web.json_response(body)
-
-    @routes.post("/__mock__/presets/{operationId}/{name}")
-    async def presets_save(request: web.Request) -> web.StreamResponse:
-        store.save_preset(request.match_info["operationId"], request.match_info["name"], await _safe_json(request))
-        return web.json_response({"saved": f"{request.match_info['operationId']}/{request.match_info['name']}"})
 
     app.add_routes(routes)
     return app
