@@ -1,6 +1,6 @@
 """macOS network-service + PAC helpers, shared by the CLI (supervisor) and the addon (honest status).
 
-Kept in one place so `lyrebird status`, the watchdog, and the dashboard banner all agree on whether
+Kept in one place so `lyrebird status`, the watchdog, and `/health` all agree on whether
 the PAC is *actually* routing configured-host traffic to us — not just whether the proxy process is
 alive.
 

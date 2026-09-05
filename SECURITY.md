@@ -32,7 +32,7 @@ on this repository, rather than opening a public issue.
 
 ## The control API
 
-The admin API and dashboard are **unauthenticated** and bound to loopback. Loopback alone is not
+The admin API is **unauthenticated** and bound to loopback. Loopback alone is not
 sufficient protection, because a web page you visit can issue cross-origin requests to
 `127.0.0.1`, and DNS rebinding can make a hostile origin appear same-origin. Three checks close
 that:
@@ -58,7 +58,7 @@ control API and drive the proxy. If that matters in your environment, do not run
   status, which override matched, and any delay or patch-skip note. Nothing it keeps contains a
   request or response body.
 - **Your profile is private data.** Sessions can contain real payloads captured from a real backend,
-  and `/proxy.pac` contains every hostname you intercept. Before attaching dashboard screenshots,
+  and `/proxy.pac` contains every hostname you intercept. Before attaching
   `/recent`, `/overrides`, `/sessions` output or a PAC file to a public issue, check what is in
   them. Session files written by Lyrebird are `0600`; the examples `lyrebird init` copies keep the
   mode they ship with (`0644`) until something rewrites them.

@@ -83,8 +83,4 @@ enum Control {
         _ = await shell("/usr/bin/xcrun", ["simctl", "terminate", "booted", bundleId])
         return await shell("/usr/bin/xcrun", ["simctl", "launch", "booted", bundleId])
     }
-
-    static func openDashboard(_ url: URL) async {
-        _ = await shell("/usr/bin/open", [url.absoluteString])
-    }
 }

@@ -79,8 +79,7 @@ lyrebird --profile PATH status --json
   "simBundleId": "com.example.Store",
   "profile": "/path/to/profile",
   "service": "Wi-Fi",
-  "pac": { "url": "http://127.0.0.1:8088/proxy.pac", "enabled": true, "ours": true },
-  "dashboard": "http://127.0.0.1:8088"
+  "pac": { "url": "http://127.0.0.1:8088/proxy.pac", "enabled": true, "ours": true }
 }
 ```
 

@@ -1,4 +1,4 @@
-"""Embedded control server: admin API + dashboard + PAC file.
+"""Embedded control server: admin API + PAC file.
 
 Runs on the mitmproxy asyncio loop (started from addon.running), so it shares the Store instance
 with the interception hooks without any cross-process contract.
@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from pathlib import Path
 from typing import Any
 
 from aiohttp import web
@@ -24,7 +23,7 @@ from aiohttp.typedefs import Handler
 import config
 from store import Store, UnsafeName
 
-_CSP = "default-src 'self'; script-src 'self'; style-src 'self'; frame-ancestors 'none'"
+_CSP = "default-src 'none'; frame-ancestors 'none'"
 _BODY_METHODS = ("POST", "PUT", "PATCH", "DELETE")
 
 
@@ -67,15 +66,6 @@ async def _guard(request: web.Request, handler: Handler) -> web.StreamResponse:
     return response
 
 
-def _mime_for(path: Path) -> str:
-    return {
-        ".html": "text/html",
-        ".js": "text/javascript",
-        ".css": "text/css",
-        ".json": "application/json",
-    }.get(path.suffix, "application/octet-stream")
-
-
 async def _safe_json(request: web.Request) -> dict:
     """Raises on a body that is present but unusable — `_guard` turns that into a 400.
 
@@ -97,25 +87,7 @@ def make_app(store: Store, meta_provider: Callable[[], dict[str, Any]]) -> web.A
     app = web.Application(middlewares=[_guard])
     routes = web.RouteTableDef()
 
-    # MARK: - Dashboard + PAC
-
-    def _serve_file(name: str) -> web.StreamResponse:
-        path = config.WEB_DIR / name
-        if not path.is_file():
-            return web.Response(status=404, text=f"{name} not found")
-        return web.Response(body=path.read_bytes(), content_type=_mime_for(path), charset="utf-8")
-
-    @routes.get("/")
-    async def index(_request: web.Request) -> web.StreamResponse:
-        return _serve_file("index.html")
-
-    @routes.get("/app.js")
-    async def app_js(_request: web.Request) -> web.StreamResponse:
-        return _serve_file("app.js")
-
-    @routes.get("/styles.css")
-    async def styles(_request: web.Request) -> web.StreamResponse:
-        return _serve_file("styles.css")
+    # MARK: - PAC
 
     @routes.get("/proxy.pac")
     async def pac(_request: web.Request) -> web.StreamResponse:

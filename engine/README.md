@@ -5,9 +5,9 @@ simulator's traffic through a local [mitmproxy](https://mitmproxy.org) via a hos
 CA trusted in the simulator, then applies per-endpoint overrides from a saved **session**.
 
 One `mitmdump` process with an embedded control server does the work, plus a small watchdog that
-restores your proxy settings if it dies. Rules live in memory, so a change made in the dashboard
-or API takes effect instantly. Only the hosts listed in
-your profile are routed through the proxy — all other Mac traffic stays DIRECT.
+restores your proxy settings if it dies. Rules live in memory, so a change made through the API
+takes effect instantly. Only the hosts listed in your profile are routed through the proxy — all
+other Mac traffic stays DIRECT.
 
 ## Install (once)
 
@@ -69,8 +69,6 @@ seconds if the proxy dies and makes a best-effort attempt to put your previous p
 back, so a crash is unlikely to strand the Mac pointing at a dead port. There is no idle self-shutdown. After `up`, **relaunch the simulator app** (URLSession caches
 the proxy config), or set `simBundleId` in the profile and Lyrebird relaunches it for you.
 
-Dashboard: <http://127.0.0.1:8088/>. Everything the dashboard does is on the admin API below.
-
 > **First run:** `up` generates Lyrebird's CA under
 > `~/Library/Application Support/Lyrebird/mitmproxy/` and trusts it in the **booted** simulator.
 > Boot the simulator first. Re-run `lyrebird trust-ca` after erasing one.
@@ -80,7 +78,7 @@ Dashboard: <http://127.0.0.1:8088/>. Everything the dashboard does is on the adm
 | Port | What | Env override |
 |------|------|--------------|
 | 8080 | mitmproxy (traffic) — the PAC sends configured hosts here | `LYREBIRD_PROXY_PORT` |
-| 8088 | control API + dashboard + `/proxy.pac` | `LYREBIRD_CONTROL_PORT` |
+| 8088 | control API + `/proxy.pac` | `LYREBIRD_CONTROL_PORT` |
 
 The control API always binds 127.0.0.1; it is unauthenticated, so that is not configurable. Use
 `LYREBIRD_PROXY_LISTEN_HOST` / `LYREBIRD_PROXY_ADVERTISED_HOST` to change where the *proxy* binds
@@ -94,7 +92,7 @@ and what the PAC advertises — those are deliberately separate settings.
   counts, for every rule or one named with `{"id": ...}`
 - `GET|POST /overrides`, `DELETE /overrides/{id}` — act on the **active session**
 - `DELETE /overrides` — **destructive**: deletes every override in the active session and rewrites
-  its file. The only endpoint that does this; the dashboard button asks first.
+  its file. The only endpoint that does this.
 - `GET /sessions` · `POST /sessions` · `PUT /sessions/active`
   · `GET /sessions/{name}/export` · `POST /sessions/import` · `DELETE /sessions/{name}`
 
@@ -242,9 +240,8 @@ triggers.
 ## Files
 
 `../bin/lyrebird` (launcher) → `cli.py` (supervisor: CA + PAC + watchdog) · `addon.py` (mitmproxy
-addon) · `rules.py` (match/patch/validate, unit-tested) · `control.py` (aiohttp API + dashboard) ·
-`store.py` · `netproxy.py` · `config.py` (paths, ports, host scoping) · `web/`
-(dashboard) · `examples/`.
+addon) · `rules.py` (match/patch/validate, unit-tested) · `control.py` (aiohttp API) ·
+`store.py` · `netproxy.py` · `config.py` (paths, ports, host scoping) · `examples/`.
 
 ## Tests
 
