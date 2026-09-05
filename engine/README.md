@@ -105,7 +105,7 @@ an import is an API call, and reporting success for a rule that was discarded is
 
 A `POST`, `PUT`, `PATCH` or `DELETE` carrying a body must send `Content-Type: application/json`,
 and the `Host` header must be a loopback name with the control port. Cross-origin requests are
-refused. `GET /status` is an alias of `GET /health`.
+refused.
 
 ### Override shape
 

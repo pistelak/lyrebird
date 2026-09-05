@@ -124,7 +124,6 @@ def make_app(store: Store, meta_provider: Callable[[], dict[str, Any]]) -> web.A
     # MARK: - Health / status
 
     @routes.get("/__mock__/health")
-    @routes.get("/__mock__/status")
     async def health(_request: web.Request) -> web.StreamResponse:
         return web.json_response({
             "ok": True,
