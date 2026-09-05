@@ -1,7 +1,7 @@
 [project]
 name = "lyrebird"
 version = "0.1.0"
-description = "Transparent MITM mock proxy for iOS-simulator development (mitmproxy engine + endpoint-override dashboard)"
+description = "Transparent MITM mock proxy for iOS-simulator development (mitmproxy engine + endpoint-override API)"
 requires-python = ">=3.12"   # mitmproxy 12.2.3 requires >=3.12
 license = "MIT"
 

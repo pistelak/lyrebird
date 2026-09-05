@@ -120,8 +120,7 @@ bin/lyrebird down          # puts your proxy settings back
 `up` relaunches your app if `simBundleId` is set. If it isn't, relaunch it yourself — `URLSession`
 holds on to the proxy configuration it saw at launch, so a running app won't notice Lyrebird.
 
-There's a dashboard at <http://127.0.0.1:8088/> and an optional
-[menu-bar app](menubar/README.md).
+There's an optional [menu-bar app](menubar/README.md).
 
 ## Driving it from an agent
 
@@ -181,8 +180,8 @@ exactly what it does:
 - Only your exact hostnames are decrypted. `api.example.com` doesn't imply `sub.api.example.com`.
 - Response bodies are **never recorded**. Recent traffic keeps time, method, host, path, status
   and which override matched — never a request or response body.
-- The dashboard and control API are unauthenticated on loopback, with Host and Origin checks so a
-  web page you're visiting can't drive them. Other processes running as you still can.
+- The control API is unauthenticated on loopback, with Host and Origin checks so a web page
+  you're visiting can't drive it. Other processes running as you still can.
 - `down` restores the proxy settings you had before.
 
 Development machines only. [SECURITY.md](SECURITY.md) has the full threat model and how to remove

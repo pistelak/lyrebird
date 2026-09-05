@@ -456,7 +456,6 @@ def status(as_json: bool) -> None:
             "profile": str(config.PROFILE_DIR),
             "service": service,
             "pac": {"url": pac.url, "enabled": pac.enabled, "ours": pac.ours} if pac else None,
-            "dashboard": config.CONTROL_ORIGIN,
         }, indent=2))
     else:
         click.echo(f"{DIM}profile: {config.PROFILE_DIR}{R}")
@@ -469,7 +468,6 @@ def status(as_json: bool) -> None:
                 overrun = f" {YELLOW}· overrun{R}" if state["hasOverrun"] else ""
                 trigger = "own calls" if state["advanceOn"] == "self" else "advanceOn"
                 click.echo(f"  sequence {state['id']}: {position} · {trigger}{overrun}")
-            click.echo(f"  dashboard: {CONTROL}/")
         if pac is not None:
             state = "enabled" if pac.enabled else f"{RED}DISABLED{R}"
             owner = "" if pac.ours or not pac.url else " · not ours"

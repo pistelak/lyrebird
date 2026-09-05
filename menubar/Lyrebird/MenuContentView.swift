@@ -111,7 +111,6 @@ struct MenuContentView: View {
 
     private var footer: some View {
         HStack {
-            Button("Dashboard") { Task { await model.openDashboard() } }
             Button("Settings") { showSettings = true }
             Spacer()
             Button("Quit") { NSApplication.shared.terminate(nil) }

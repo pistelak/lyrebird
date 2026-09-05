@@ -34,7 +34,6 @@ from pathlib import Path
 # MARK: - Code location (never written to at runtime)
 
 ROOT = Path(__file__).resolve().parent
-WEB_DIR = ROOT / "web"
 EXAMPLES_DIR = ROOT / "examples"
 
 

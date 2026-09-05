@@ -75,15 +75,24 @@ def test_same_origin_json_post_is_allowed(profile):
 
 
 def test_bodyless_mutation_needs_no_content_type(profile):
-    """The dashboard sends bodyless DELETE; the guard must not break it."""
+    """A bodyless DELETE carries no Content-Type; the guard must not demand one."""
     status, _, _ = call(profile, "DELETE", "/__mock__/overrides")
     assert status == 200
 
 
 def test_security_headers_are_present(profile):
+    """Nothing served here is a page any more, so the policy allows no resource loads at all —
+    spelled out rather than read back from `control._CSP`, so loosening it fails this test."""
     _, headers, _ = call(profile, "GET", "/__mock__/health")
     assert headers["X-Content-Type-Options"] == "nosniff"
-    assert "frame-ancestors 'none'" in headers["Content-Security-Policy"]
+    assert headers["Content-Security-Policy"] == "default-src 'none'; frame-ancestors 'none'"
+
+
+def test_the_control_server_serves_no_pages(profile):
+    """The dashboard is gone; the root and its old assets must not come back as anything."""
+    for path in ("/", "/app.js", "/styles.css"):
+        status, _, _ = call(profile, "GET", path)
+        assert status == 404, path
 
 
 # MARK: - Names that become paths

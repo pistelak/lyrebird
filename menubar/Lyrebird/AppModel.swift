@@ -95,8 +95,4 @@ final class AppModel {
         let result = await Control.relaunch(bundleId: bundleId)
         lastError = result.succeeded ? nil : result.output.trimmingCharacters(in: .whitespacesAndNewlines)
     }
-
-    func openDashboard() async {
-        await Control.openDashboard(Config.controlURL)
-    }
 }
