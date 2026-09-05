@@ -434,6 +434,26 @@ def test_status_fails_when_the_proxy_is_up_but_the_pac_is_off(profile, runner, m
     assert runner.invoke(cli.cli, ["status"]).exit_code == 1
 
 
+def test_up_refuses_a_profile_with_no_hosts_before_starting_anything(profile, runner, monkeypatch):
+    """With no hosts `up` used to trust the CA, install a DIRECT-only PAC, relaunch the app, print
+    INTERCEPT ACTIVE and exit 0 — every step a success, nothing intercepted."""
+    import subprocess
+
+    (profile / "profile.json").write_text('{"hosts": []}', encoding="utf-8")
+    config.reload_profile()
+
+    def must_not_start(*args, **kwargs):
+        raise AssertionError("the proxy must not be started for a profile that intercepts nothing")
+
+    monkeypatch.setattr(subprocess, "Popen", must_not_start)
+    monkeypatch.setattr(cli, "_health", must_not_start)
+
+    result = runner.invoke(cli.cli, ["up"])
+
+    assert result.exit_code != 0
+    assert "no hosts" in result.output
+
+
 def test_up_starts_the_log_on_a_new_inode(profile, tmp_path):
     """A log left at 0644 by an older version cannot be made private by chmod alone.
 

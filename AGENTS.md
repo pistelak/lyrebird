@@ -28,6 +28,7 @@ thing to be wrong about when something misbehaves later.
 
 `up` exits non-zero if the CA could not be trusted, if no network service was found, or if the app
 could not be relaunched — all cases where the proxy is running but you are *not* mocking anything.
+It refuses outright, before starting anything, when the profile lists no hosts.
 Do not treat a zero exit from `up` as optional to check.
 
 **2. `wait-ready` alone does not prove your rule works.**

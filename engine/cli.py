@@ -185,8 +185,16 @@ def _require_profile() -> None:
             f"  or point at an existing one:  lyrebird --profile /path/to/profile ...\n"
             f"  (a profile is a directory containing profile.json and sessions/)"
         )
+    # Refused, not warned about: with no hosts there is nothing `up` could achieve, and it
+    # used to trust the CA, install a DIRECT-only PAC, relaunch the app, print INTERCEPT ACTIVE
+    # and exit 0 — every step a success, the postcondition not met. The addon still honours an
+    # empty list as "intercept nothing"; this is the command named for intercepting declining
+    # to claim it did.
     if not config.INTERCEPT_HOSTS:
-        click.echo(f"{YELLOW}⚠ profile lists no hosts — nothing will be intercepted.{R}")
+        raise SystemExit(
+            f"{RED}profile at {config.PROFILE_DIR} lists no hosts — nothing would be intercepted{R}\n"
+            f"  add the hostname your app calls to `hosts` in {config.PROFILE_FILE}"
+        )
 
 
 # MARK: - CLI

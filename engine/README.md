@@ -32,8 +32,9 @@ Select one with `--profile PATH` (wins) or `LYREBIRD_PROFILE`; the default is
 `examples/`.
 
 `hosts` are **exact hostnames** — `api.example.com` does not imply `sub.api.example.com`. An empty
-list means *intercept nothing*, and a malformed profile aborts rather than falling back to a
-default.
+list means *intercept nothing*: the engine honours it, and `up` refuses to start on it, because
+there would be nothing for `up` to achieve. A malformed profile aborts rather than falling back to
+a default.
 
 Sessions you save go into the profile — that is what it is for. Everything the tool
 writes for its own purposes stays out, in the macOS directory that matches how long the file
