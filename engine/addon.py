@@ -77,8 +77,16 @@ class Lyrebird:
 
     def _meta(self) -> dict:
         service = self._service()
-        intercepting = netproxy.intercepting(service)
-        return {
+        try:
+            intercepting = netproxy.intercepting(service)
+            pac_error = None
+        except netproxy.NetworkSetupError as error:
+            # Health must keep answering. The CLI reads "no health" as "no proxy": the watchdog
+            # would restore the network over a live proxy, and `up` would start a second one. So
+            # a PAC that could not be read is reported as such, next to an `intercepting` that
+            # is false because it is unproven — not because the PAC was seen to be off.
+            intercepting, pac_error = False, str(error)
+        meta = {
             "proxyUp": True,
             "intercepting": intercepting,   # PAC enabled AND pointing at us — not merely "process alive"
             "pacEnabled": intercepting,
@@ -92,6 +100,9 @@ class Lyrebird:
             "pid": os.getpid(),
             "startedAt": self.started_at,
         }
+        if pac_error:
+            meta["pacError"] = pac_error
+        return meta
 
     @staticmethod
     def _service() -> str | None:

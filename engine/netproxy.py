@@ -60,7 +60,12 @@ class PacStatus(NamedTuple):
 
 
 def pac_status(service: str) -> PacStatus:
-    out = _run(["networksetup", "-getautoproxyurl", service]).stdout
+    """Raises when `networksetup` fails. A PAC that could not be read is not a PAC that is absent
+    or somebody else's: reading it as `("", False, False)` made `down` announce "not ours — left
+    untouched" over a PAC it never saw, and the watchdog delete the only record of what to put
+    back. Callers that can carry on without the answer catch this; the ones named for restoring
+    the network do not."""
+    out = _run(["networksetup", "-getautoproxyurl", service], check=True).stdout
     url_match = re.search(r"URL:\s*(\S+)", out)
     url = url_match.group(1) if url_match else ""
     if url.lower() == "(null)":
@@ -78,16 +83,30 @@ def set_pac(service: str) -> None:
 
 
 def restore_pac(service: str, url: str, enabled: bool) -> None:
-    """Put back whatever was configured before we touched it.
+    """Put back whatever was configured before we touched it, and confirm it took.
 
     Only ever called while the current PAC is still ours, so a PAC the user set by hand mid-session
     is left alone.
+
+    URL first, then the state: `-setautoproxyurl` switches the PAC on as a side effect, so the
+    state has to be set after it. That means a failure between the two calls leaves the user's URL
+    with the wrong flag — which is why the caller that retries (`cli._restore_previous_pac`) treats
+    a PAC at the recorded previous URL as still restorable, not as one somebody set by hand.
+
+    No URL means "there was no PAC before", and that is restored as *off* whatever the recorded
+    flag says: macOS rejects an empty URL, so "on" here could only mean leaving ours enabled.
+
+    Read back at the end, as `set_pac` does: `networksetup` can exit 0 and change nothing.
     """
+    enabled = bool(url) and enabled
     if url:
         _run(["networksetup", "-setautoproxyurl", service, url], check=True)
-        _run(["networksetup", "-setautoproxystate", service, "on" if enabled else "off"], check=True)
-    else:
-        _run(["networksetup", "-setautoproxystate", service, "off"], check=True)
+    _run(["networksetup", "-setautoproxystate", service, "on" if enabled else "off"], check=True)
+    status = pac_status(service)
+    if status.enabled != enabled or (url and status.url != url):
+        raise NetworkSetupError(
+            f"PAC on '{service}' did not restore (wanted url={url!r} enabled={enabled}, now: {status})"
+        )
 
 
 def intercepting(service: str | None) -> bool:

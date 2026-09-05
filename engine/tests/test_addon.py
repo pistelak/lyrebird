@@ -572,3 +572,22 @@ def test_a_repeated_last_step_is_credited_like_any_other_answer(hosts, profile):
     for _ in range(4):        # two planned steps, then two repeats of the last
         run_request(subject, _flow())
     assert _answers(subject) == {"ovr_retry": 4}
+
+
+# MARK: - Health under a PAC that cannot be read
+
+def test_health_reports_an_unreadable_pac_instead_of_dying(profile, monkeypatch):
+    """The CLI reads "no health" as "no proxy": the watchdog would restore the network over a live
+    proxy and `up` would start a second one. So `/health` must answer, saying the PAC is unproven
+    rather than off."""
+    import netproxy
+
+    def boom(service):
+        raise netproxy.NetworkSetupError("`networksetup -getautoproxyurl Wi-Fi` failed: 1")
+
+    monkeypatch.setattr(netproxy, "active_service", lambda: "Wi-Fi")
+    monkeypatch.setattr(netproxy, "pac_status", boom)
+    meta = addon.Lyrebird()._meta()
+    assert meta["proxyUp"] is True
+    assert meta["intercepting"] is False
+    assert "networksetup" in meta["pacError"]

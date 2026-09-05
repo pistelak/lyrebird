@@ -47,6 +47,8 @@ import rules
 MITMDUMP = config.ROOT / ".venv" / "bin" / "mitmdump"
 CONTROL = config.CONTROL_ORIGIN
 _DOWN_WAIT_SECONDS = 5.0   # how long `down` waits for SIGTERM to take effect
+_WATCHDOG_RESTORE_ATTEMPTS = 5   # `networksetup` fails transiently; one try is not a restore
+_LOCK_WAIT_SECONDS = 60.0   # how long `up` waits for another `up`, or a watchdog restore, to finish
 
 R = "\033[0m"
 BOLD = "\033[1m"
@@ -225,12 +227,34 @@ def up(bundle_id: str | None) -> None:
     config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
 
     with open(config.lock_file(), "w") as lock:
+        _acquire_lock(lock)
+        _up_locked(bundle_id)
+
+
+def _acquire_lock(lock: Any, timeout: float = _LOCK_WAIT_SECONDS) -> None:
+    """Take the per-port lock, waiting for a holder to finish rather than failing at once.
+
+    The holder is another `up`, or the watchdog putting the network back after a crash — and the
+    second is exactly the moment an `up` must not start: an install interleaved with a restore on
+    one network service ends with the new proxy's PAC restored over and its runtime file deleted.
+    Both holders finish on their own within seconds, so waiting is right; the timeout is for a
+    holder that did not.
+    """
+    deadline = time.time() + timeout
+    waiting = False
+    while True:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
         except OSError:
-            raise SystemExit(
-                f"{RED}another `lyrebird up` is in progress on port {config.CONTROL_PORT}{R}") from None
-        _up_locked(bundle_id)
+            if time.time() >= deadline:
+                raise SystemExit(
+                    f"{RED}another `lyrebird up` or a watchdog restore is still in progress on port "
+                    f"{config.CONTROL_PORT} after {timeout:g}s{R}") from None
+            if not waiting:
+                click.echo(f"{DIM}waiting for another `lyrebird up` or a watchdog restore to finish…{R}")
+                waiting = True
+            time.sleep(0.5)
 
 
 def _up_locked(bundle_id: str | None) -> None:
@@ -284,20 +308,35 @@ def _up_locked(bundle_id: str | None) -> None:
     if not ca_ok:
         failures.append(f"CA not trusted in the simulator: {message}")
 
-    service = netproxy.active_service()
+    # The recorded service is a fallback, not merely a default. After a crash and a restore that
+    # failed, the record names the service whose PAC is still ours; losing the route meanwhile
+    # (Wi-Fi off) must not turn that into "no service", which strands the record with nothing to
+    # restore it on and lets `down` delete it.
+    service = netproxy.active_service() or runtime.get("service")
+    recorded = runtime.get("previousPac")
     state = {"proxyPid": proxy_pid, "service": service}
+    if recorded:
+        # Kept until a successful read says otherwise. The record is what the watchdog left when
+        # it could not restore; a PAC read that fails below must not cost it, or `down` restores
+        # "nothing" over the user's PAC once reads work again.
+        state["previousPac"] = recorded
     # Record the pid before anything else can fail: if PAC installation raises, `down` must still
     # be able to find and stop the proxy we just started.
     config.write_runtime(state)
 
     if service:
-        # Only carry a recorded previousPac forward while a proxy is actually running. A stale
-        # entry left by an earlier crash would otherwise be restored over the user's current
-        # settings much later.
-        before = (runtime.get("previousPac") if existing else None) or _snapshot_pac(service)
-        state["previousPac"] = before
-        config.write_runtime(state)
+        # Carry a recorded previousPac forward while it still describes the network: a proxy is
+        # running, or the installed PAC is one Lyrebird is answerable for — ours, or the recorded
+        # URL that a failed restore handed back with the wrong flag. Both are the watchdog having
+        # kept the record because it could not restore; snapshotting now would read "ours, so
+        # nothing" or the wrong flag, and the user's PAC would be lost or restored wrong at the
+        # next `down`. Once the installed PAC is somebody else's the record is stale (a crash,
+        # then settings changed by hand), and the network is snapshotted afresh.
         try:
+            installed = netproxy.pac_status(service)
+            keep = recorded is not None and (existing is not None or _still_restorable(installed, recorded))
+            state["previousPac"] = recorded if keep else _snapshot_pac(installed)
+            config.write_runtime(state)
             netproxy.set_pac(service)
         except netproxy.NetworkSetupError as error:
             click.echo(f"{RED}✗ could not install the PAC on '{service}': {error}{R}\n"
@@ -328,7 +367,16 @@ def _up_locked(bundle_id: str | None) -> None:
                    f"   xcrun simctl terminate booted <bundleid> && xcrun simctl launch booted <bundleid>\n"
                    f"   (or set simBundleId in profile.json)")
 
-    _banner(_health(), service, netproxy.intercepting(service))
+    try:
+        intercepting = netproxy.intercepting(service)
+    except netproxy.NetworkSetupError as error:
+        # Said here, in place of the banner: the banner's "PAC is disabled/not ours" would be a
+        # diagnosis this command never made, and the summary below only names failures that
+        # were printed as they happened.
+        click.echo(f"{RED}✗ could not read the PAC on '{service}' after installing it: {error}{R}")
+        failures.append(f"could not read the PAC on '{service}': {error}")
+    else:
+        _banner(_health(), service, intercepting)
 
     # Exit non-zero unless the whole point of `up` was achieved. Reporting a warning and returning 0
     # meant a script — or an agent — could believe it was mocking when nothing was intercepted.
@@ -347,19 +395,31 @@ def _up_locked(bundle_id: str | None) -> None:
 def _restore_previous_pac(service: str, runtime: dict) -> dict | None:
     """Put back the PAC recorded at `up`, or return None having touched nothing.
 
-    Returns None when the installed PAC is no longer ours: a PAC the user set by hand while
-    Lyrebird was running must survive teardown. Both callers depend on that rule, so it lives
-    here rather than being restated in each.
+    Returns None when the installed PAC is neither ours nor the one being restored: a PAC the
+    user set by hand while Lyrebird was running must survive teardown. The second clause is what
+    makes a retry work — `restore_pac` changes the URL before the enabled state, so an attempt
+    that failed between the two has already handed the URL back and only the flag is wrong.
+    Reading that as "not ours" left it wrong for good, because the runtime file was then
+    discarded. Both callers depend on this rule, so it lives here rather than in each.
     """
-    if not netproxy.pac_status(service).ours:
-        return None
+    status = netproxy.pac_status(service)
     previous = runtime.get("previousPac") or {"url": "", "enabled": False}
+    if not _still_restorable(status, previous):
+        return None
     netproxy.restore_pac(service, previous.get("url", ""), previous.get("enabled", False))
     return previous
 
 
-def _snapshot_pac(service: str) -> dict:
-    status = netproxy.pac_status(service)
+def _still_restorable(status: netproxy.PacStatus, previous: dict) -> bool:
+    """Is the installed PAC one Lyrebird is answerable for? Ours, or the recorded previous URL —
+    which a restore that failed between its two `networksetup` calls has already handed back, with
+    the wrong enabled flag. Anything else was set by hand and is left alone. One predicate for
+    `down`, the watchdog and `up`, so they cannot disagree about whose PAC it is."""
+    url = previous.get("url", "")
+    return status.ours or bool(url and status.url == url)
+
+
+def _snapshot_pac(status: netproxy.PacStatus) -> dict:
     if status.ours:
         return {"url": "", "enabled": False}  # never record our own PAC as the thing to restore
     return {"url": status.url, "enabled": status.enabled}
@@ -434,13 +494,20 @@ def status(as_json: bool) -> None:
     # the banner, again for the JSON field and a third time for the exit status let a PAC that
     # flips in between produce output that contradicts the exit code — a `status` whose text says
     # one thing and whose `$?` says another is worse than either being wrong.
-    pac = netproxy.pac_status(service) if service else None
+    pac_error = None
+    try:
+        pac = netproxy.pac_status(service) if service else None
+    except netproxy.NetworkSetupError as error:
+        # Unproven, which is different from seen to be off — the exit code is the same, the
+        # explanation is not, and a person reading "DISABLED" would go and switch it on.
+        pac, pac_error = None, str(error)
     intercepting = pac is not None and pac.enabled and pac.ours
 
     if as_json:
         click.echo(json.dumps({
             "proxyUp": health is not None,
             "intercepting": intercepting,
+            "pacError": pac_error,
             "activeSession": (health or {}).get("activeSession"),
             "overrideCount": (health or {}).get("overrideCount"),
             "sessions": (health or {}).get("sessions", []),
@@ -459,7 +526,12 @@ def status(as_json: bool) -> None:
         }, indent=2))
     else:
         click.echo(f"{DIM}profile: {config.PROFILE_DIR}{R}")
-        _banner(health, service, intercepting)
+        if pac_error and health is not None:
+            # Not the banner: its "PAC is disabled/not ours" is a diagnosis this read never made.
+            click.echo(f"{BOLD}{YELLOW}🟠 PROXY UP, PAC UNREADABLE{R} — could not read the PAC on "
+                       f"'{service}': {pac_error}")
+        else:
+            _banner(health, service, intercepting)
         if health:
             click.echo(f"  sessions: {', '.join(health['sessions'])}")
             for state in health.get("sequences", []):
@@ -961,20 +1033,54 @@ def logs() -> None:
 def watchdog(service: str) -> None:
     while True:
         if _health() is None:
-            # Proxy gone → put back whatever the user had, rather than merely switching off.
-            with contextlib.suppress(netproxy.NetworkSetupError):
-                _restore_previous_pac(service, config.read_runtime())
-            # Clear the runtime file: the settings it describes have been put back, so a later
-            # `up` must snapshot the network afresh rather than trust this record.
-            with contextlib.suppress(OSError):
-                config.runtime_file().unlink()
-            return
-        pac = netproxy.pac_status(service)
+            if _restore_after_death(service):
+                return
+            continue   # a replacement proxy is live: go back to watching it
+        try:
+            pac = netproxy.pac_status(service)
+        except netproxy.NetworkSetupError:
+            time.sleep(2)   # unknown is not "off": neither reinstall nor give up, just ask again
+            continue
         if not (pac.enabled and pac.ours) and pac.url in ("", netproxy.pac_url()):
             with contextlib.suppress(netproxy.NetworkSetupError):
                 # macOS silently disabled our PAC while the proxy is alive
                 netproxy.set_pac(service)
         time.sleep(2)
+
+
+def _restore_after_death(service: str) -> bool:
+    """The watchdog's job once health is gone: put back whatever the user had, rather than
+    merely switching off. True when that job is finished — restored, or given up with the runtime
+    file left for `down` — and False when a replacement proxy turns out to be live.
+
+    Under the lock `up` takes while it starts a proxy and installs its PAC, with health checked
+    again once it is held. `up` reuses a running watchdog rather than spawning another, so without
+    the lock a replacement starting during this restore had its PAC restored over and then its
+    runtime file deleted; the health check before the lock was too early to see it.
+
+    Several attempts, not one: a network change in progress is a common reason for a proxy to
+    die, and it makes `networksetup` fail for a moment too. Giving up on the first error left
+    the Mac routed at a dead port with nobody left to fix it.
+    """
+    with open(config.lock_file(), "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if _health() is not None:
+            return False
+        for _ in range(_WATCHDOG_RESTORE_ATTEMPTS):
+            try:
+                _restore_previous_pac(service, config.read_runtime())
+            except netproxy.NetworkSetupError:
+                time.sleep(2)
+                continue
+            # Clear the runtime file: the settings it describes have been put back, so a later
+            # `up` must snapshot the network afresh rather than trust this record.
+            with contextlib.suppress(OSError):
+                config.runtime_file().unlink()
+            return True
+        # Could not read the PAC, or could not put it back. The runtime file is the only record
+        # of what to restore, so it stays for `down` — or the next `up` — to act on; deleting it
+        # here is how a failed restore used to become permanent and invisible.
+        return True
 
 
 # MARK: - Presentation

@@ -87,7 +87,8 @@ and what the PAC advertises — those are deliberately separate settings.
 ## Admin API (`/__mock__/*`)
 
 - `GET /health` (reports `intercepting` / `proxyUp` / `pacEnabled` / `simBundleId` / `sequences` /
-  `answers`) · `GET /recent`
+  `answers`, and `pacError` when the PAC could not be read — `intercepting` is then unproven, not
+  off) · `GET /recent`
 - `POST /reset` — start a fresh run in the active session: rewind sequence cursors and clear answer
   counts, for every rule or one named with `{"id": ...}`
 - `GET|POST /overrides`, `DELETE /overrides/{id}` — act on the **active session**
