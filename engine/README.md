@@ -42,17 +42,16 @@ deserves to live:
 | | |
 |---|---|
 | `~/Library/Application Support/Lyrebird/` | must survive: the active-session pointer, per-port runtime and lock files, and the CA |
-| `~/Library/Caches/com.lyrebird.Lyrebird/` | may be discarded: the generated endpoint catalog |
 | `~/Library/Logs/Lyrebird/` | for a person to read: the proxy log — this is where the Console app looks |
 
 Runtime files are keyed by **control port**, not profile, so `lyrebird down` finds the running
-instance from any directory. `LYREBIRD_STATE_DIR` collapses all three underneath one directory,
+instance from any directory. `LYREBIRD_STATE_DIR` collapses both underneath one directory,
 which is how the tests keep their writes in a temp tree and how you get a single thing to delete.
 
-The split is not cosmetic. `tmutil isexcluded` reports Caches and Logs as excluded from Time
-Machine and Application Support as included, so a regenerable catalog left in the wrong directory
-gets backed up forever to no purpose. A profile, by contrast, *is* configuration — hand-edited and
-worth keeping in git — which is why it lives in `~/.config` and none of the above does.
+The split is not cosmetic. `tmutil isexcluded` reports Logs as excluded from Time Machine and
+Application Support as included, so a log left in the wrong directory gets backed up forever to no
+purpose. A profile, by contrast, *is* configuration — hand-edited and worth keeping in git — which
+is why it lives in `~/.config` and neither of the above does.
 
 ## Use
 
@@ -90,7 +89,7 @@ and what the PAC advertises — those are deliberately separate settings.
 ## Admin API (`/__mock__/*`)
 
 - `GET /health` (reports `intercepting` / `proxyUp` / `pacEnabled` / `simBundleId` / `sequences` /
-  `answers`) · `GET /recent` · `GET /catalog`
+  `answers`) · `GET /recent`
 - `POST /reset` — start a fresh run in the active session: rewind sequence cursors and clear answer
   counts, for every rule or one named with `{"id": ...}`
 - `GET|POST /overrides`, `DELETE /overrides/{id}` — act on the **active session**
@@ -240,26 +239,11 @@ bundled examples are `enable-beta-export`, `orders-outage`, `slow-profile`, `che
 `remove-item-then-refresh` and `retry-then-succeed` — the last two demonstrate the two sequence
 triggers.
 
-## Endpoint catalog
-
-```bash
-.venv/bin/pip install pyyaml                               # --spec only; not a base dependency
-.venv/bin/python catalog.py --spec /path/to/openapi.yaml   # group by OpenAPI tag
-.venv/bin/python catalog.py --from-recent                  # derive from observed traffic
-```
-
-`--spec` is the one thing here that needs PyYAML, and reading an OpenAPI file is not why most
-people install this, so it stays out of `requirements.txt` rather than being pulled in by everyone.
-Run `--spec` without it and you are told exactly that. `--from-recent` needs nothing extra.
-
-Written to the cache directory, not the profile — it is a derived copy of your API's structure.
-Served at `GET /__mock__/catalog`; the bundled dashboard does not consume it yet.
-
 ## Files
 
 `../bin/lyrebird` (launcher) → `cli.py` (supervisor: CA + PAC + watchdog) · `addon.py` (mitmproxy
 addon) · `rules.py` (match/patch/validate, unit-tested) · `control.py` (aiohttp API + dashboard) ·
-`store.py` · `catalog.py` · `netproxy.py` · `config.py` (paths, ports, host scoping) · `web/`
+`store.py` · `netproxy.py` · `config.py` (paths, ports, host scoping) · `web/`
 (dashboard) · `examples/`.
 
 ## Tests

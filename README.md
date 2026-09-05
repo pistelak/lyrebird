@@ -147,9 +147,9 @@ Your hosts and sessions live in a **profile** directory, outside this repo. The 
 Because a profile is plain JSON, you can keep it in its own repository and review scenarios the way
 you review code. Saving a scenario writes to it — that is what it is for. Everything *operational*
 stays out, in the macOS directory that matches how long it should live: the active-session pointer
-and the CA under `~/Library/Application Support/Lyrebird/`, the generated catalog under
-`~/Library/Caches/com.lyrebird.Lyrebird/`, the proxy log under `~/Library/Logs/Lyrebird/`. So a
-profile in git changes when you change a scenario, never merely because the proxy ran.
+and the CA under `~/Library/Application Support/Lyrebird/`, the proxy log under
+`~/Library/Logs/Lyrebird/`. So a profile in git changes when you change a scenario, never merely
+because the proxy ran.
 
 ## Where it fits
 

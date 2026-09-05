@@ -142,12 +142,6 @@ def make_app(store: Store, meta_provider: Callable[[], dict[str, Any]]) -> web.A
     async def recent(_request: web.Request) -> web.StreamResponse:
         return web.json_response(store.recent_list())
 
-    @routes.get("/__mock__/catalog")
-    async def catalog(_request: web.Request) -> web.StreamResponse:
-        if config.CATALOG_FILE.is_file():
-            return web.json_response(json.loads(config.CATALOG_FILE.read_text(encoding="utf-8")))
-        return web.json_response([])
-
     # MARK: - Overrides (act on the active session)
 
     @routes.get("/__mock__/overrides")
