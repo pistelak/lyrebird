@@ -3,6 +3,9 @@ name: CI
 on:
   push:
     branches: [main]
+    # A release is cut from a tag, so the tag has to be a thing CI runs on. Without this the
+    # commit a release ships from is only ever checked earlier, as a branch.
+    tags: ['v*']
   pull_request:
 
 # Nothing here writes to the repository, and a public repository's workflow token should not be
@@ -34,11 +37,72 @@ jobs:
         working-directory: engine
         run: python -m pytest tests/ -q
 
+      # The tests import the package directly; nothing above ever runs `bin/lyrebird`, which is how
+      # a launcher that could not resolve its own path through a PATH symlink shipped. So build the
+      # documented install — a real `engine/.venv`, the launcher reached by a symlink from outside
+      # the checkout — and drive it from a directory that has nothing to do with the repository.
+      - name: Install the engine venv (the documented install)
+        working-directory: engine
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install --quiet -r requirements.txt
+
+      - name: Launcher runs from outside the checkout, through a symlink
+        shell: bash
+        run: |
+          # `shell: bash` gives -e and pipefail but not -u; an unset RUNNER_TEMP would otherwise
+          # quietly write the launcher symlink to /bin and run the checks against nothing.
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/bin"
+          ln -sf "$GITHUB_WORKSPACE/bin/lyrebird" "$RUNNER_TEMP/bin/lyrebird"
+          cd /
+          "$RUNNER_TEMP/bin/lyrebird" --help
+          # No proxy is running here, so `status` must report that and exit 1 — "not intercepting".
+          # Exit 0 would mean it claimed a proxy it cannot see, so the code is asserted, not ignored.
+          status_rc=0
+          "$RUNNER_TEMP/bin/lyrebird" --profile "$GITHUB_WORKSPACE/engine/examples" status --json \
+            > "$RUNNER_TEMP/status.json" || status_rc=$?
+          test "$status_rc" -eq 1
+          python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); assert s["proxyUp"] is False, s' \
+            "$RUNNER_TEMP/status.json"
+
   app:
     name: menu-bar app (build)   # a required check on main — keep the name stable
     runs-on: macos-15
     steps:
+      # The build number is the commit count, so the whole history has to be here.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # One place decides what this build calls itself, and both the Release build below and the
+      # verify that reads the bundle back use it. A branch build must not look like a release, so
+      # off a tag the marketing version stays at the development placeholder.
+      - name: Derive the version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF#refs/tags/v}" != "$GITHUB_REF" ]; then
+            MARKETING="${GITHUB_REF_NAME#v}"
+          else
+            MARKETING=0.0.0
+          fi
+          if ! printf '%s' "$MARKETING" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "version: tag '$GITHUB_REF_NAME' is not vX.Y.Z (got marketing version" \
+                 "'$MARKETING'); retag with three numeric components" >&2
+            exit 1
+          fi
+          BUILD="$(git rev-list --count HEAD)"
+          # CFBundleVersion's first component historically tops out at 9999, and 0 would collide
+          # with the placeholder a development build carries.
+          if ! printf '%s' "$BUILD" | grep -Eq '^[0-9]+$' || [ "$BUILD" -lt 1 ] || [ "$BUILD" -gt 9999 ]; then
+            echo "version: commit count '$BUILD' is outside 1..9999 and cannot be a build number" >&2
+            exit 1
+          fi
+          echo "MARKETING=$MARKETING" >> "$GITHUB_ENV"
+          echo "BUILD=$BUILD" >> "$GITHUB_ENV"
+          echo "building $MARKETING ($BUILD)"
+
       - run: brew install xcodegen
       - name: Generate project
         working-directory: menubar
@@ -83,3 +147,81 @@ jobs:
             -destination 'platform=macOS' \
             MARKETING_VERSION=9.9.9 CURRENT_PROJECT_VERSION=999 build
           scripts/verify-version.sh .build/Build/Products/Debug/Lyrebird.app 9.9.9 999
+
+      # Everything above builds Debug. A release ships Release, so that is the configuration the
+      # commit has to be checked in — built once here, and promoted (never rebuilt) by the tag-only
+      # job below, so the bytes a maintainer publishes are the bytes these checks passed on.
+      - name: Build the shipped configuration
+        working-directory: menubar
+        run: |
+          xcodebuild -project Lyrebird.xcodeproj -scheme Lyrebird \
+            -configuration Release -derivedDataPath .build \
+            -destination 'platform=macOS' \
+            MARKETING_VERSION="$MARKETING" CURRENT_PROJECT_VERSION="$BUILD" build
+          scripts/verify-version.sh .build/Build/Products/Release/Lyrebird.app "$MARKETING" "$BUILD"
+
+      - name: Package the release candidate
+        if: startsWith(github.ref, 'refs/tags/v')
+        working-directory: menubar
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/release"
+          mkdir -p "$out"
+          ditto -c -k --keepParent .build/Build/Products/Release/Lyrebird.app \
+            "$out/Lyrebird-$GITHUB_REF_NAME.zip"
+          # What a maintainer needs to tell whether this artifact belongs to the tag they are about
+          # to publish: the commit these checks actually ran on, written by the run itself. A
+          # standalone assignment, not a substitution inside `echo`: `echo` succeeds whatever the
+          # substitution did, and a file saying `commit: ` would pass the size check below.
+          commit="$(git rev-parse --verify 'HEAD^{commit}')"
+          {
+            echo "commit: $commit"
+            echo "tag: $GITHUB_REF_NAME"
+            echo "marketing-version: $MARKETING"
+            echo "build-version: $BUILD"
+          } > "$out/CHECKED-COMMIT.txt"
+          # An upload of nothing is an upload that looks like a success, so check before uploading.
+          test -s "$out/Lyrebird-$GITHUB_REF_NAME.zip"
+          test -s "$out/CHECKED-COMMIT.txt"
+          cat "$out/CHECKED-COMMIT.txt"
+
+      - name: Stage the release candidate
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v4
+        with:
+          name: lyrebird-${{ github.ref_name }}-candidate
+          path: |
+            ${{ runner.temp }}/release/Lyrebird-${{ github.ref_name }}.zip
+            ${{ runner.temp }}/release/CHECKED-COMMIT.txt
+          if-no-files-found: error
+
+  # The artifact a maintainer downloads exists only if both required checks passed on the tagged
+  # commit — `needs` makes that a property of the graph rather than something anyone has to verify.
+  # It builds nothing: it promotes what the app job already built and checked.
+  release-candidate:
+    name: release candidate (tag)
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [engine, app]
+    runs-on: macos-15
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: lyrebird-${{ github.ref_name }}-candidate
+          path: candidate
+
+      - name: The candidate carries both files and neither is empty
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s "candidate/Lyrebird-$GITHUB_REF_NAME.zip"
+          test -s candidate/CHECKED-COMMIT.txt
+          cat candidate/CHECKED-COMMIT.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lyrebird-${{ github.ref_name }}
+          path: |
+            candidate/Lyrebird-${{ github.ref_name }}.zip
+            candidate/CHECKED-COMMIT.txt
+          if-no-files-found: error
