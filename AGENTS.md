@@ -29,15 +29,43 @@ UI-test runner owns the app instead, pass `--no-relaunch` and launch it only onc
 
 `use NAME` on its own is still how you switch mid-run. It affects the requests that come *after*
 it and relaunches nothing: an app that cached its launch response needs
-`xcrun simctl terminate booted <bundleid> && xcrun simctl launch booted <bundleid>`, or another
-`up --use NAME`.
+`lyrebird --profile PATH relaunch`, which relaunches it on the simulator this run is bound to, or
+another `up --use NAME`.
+
+### Which simulator
+
+`up` and `trust-ca` take `--simulator UDID-OR-NAME`. That device is where the CA is trusted and
+where `--relaunch` / `simBundleId` relaunches the app, so a UI-test run should pass the same UDID
+it drives:
+
+```bash
+lyrebird --profile PATH up --use NAME --simulator <udid>   # `xcrun simctl list devices booted`
+```
+
+With exactly one iOS simulator booted you can leave it out. With several booted and no choice
+made, `up` and `trust-ca` **refuse and list the booted devices** instead of passing simctl's
+`booted` keyword, which `simctl help` says "will choose one of them" — and never reports which.
+Only booted, available **iOS** simulators count, so a paired Apple Watch does not make the choice
+ambiguous. Absent, shut-down, unavailable and non-iOS devices are named and the command exits
+non-zero; nothing silently falls back to another device. `status` reports the device the last
+`up` used (`simulator` in `--json`), and `lyrebird relaunch [BUNDLEID]` relaunches the app on
+that same device — use it instead of `xcrun simctl launch booted <bundleid>` mid-run.
+
+**It does not isolate traffic.** The PAC is installed on a network service and scoped by
+hostname, so every simulator on the Mac — and the Mac itself — routes the profile's hosts through
+the proxy. `--simulator` decides where the CA is trusted and which app is relaunched, nothing
+more. A device that already trusts the CA — one an earlier `up` selected, say, since switching
+devices does not untrust anything — keeps getting mocked responses; one that never trusted it
+fails TLS on those hosts. Either way its traffic is not left alone, so do not treat device
+selection as a way to run two scenarios side by side.
 
 ## Six things worth knowing before you start
 
 **1. Exit codes mean the postcondition, not "the command ran."**
 
-`up` exits non-zero if the CA could not be trusted, if no network service was found, or if the app
-could not be relaunched — all cases where the proxy is running but you are *not* mocking anything.
+`up` exits non-zero if there is no single simulator to work on, if the CA could not be trusted, if
+no network service was found, or if the app could not be relaunched — all cases where the proxy is
+running but you are *not* mocking anything.
 It refuses outright, before starting anything, when the profile lists no hosts.
 Do not treat a zero exit from `up` as optional to check.
 
@@ -384,7 +412,10 @@ net; if not, take a copy before touching someone else's sessions.
 | A rule you wrote in a session file is nowhere in `explain-match` | It was dropped at load. `lyrebird validate NAME` names the rule and the field |
 | A whole session behaves as if it were empty | The file was refused whole — malformed JSON, or a `schemaVersion` this engine does not read. `lyrebird validate NAME` |
 | A sequence is one step ahead | Something else called the endpoint. Narrow `match`, or use `advanceOn` |
-| `up` fails on CA | No booted simulator. Boot one first |
+| `up` fails on CA | No booted iOS simulator (a booted watch is not one). Boot one first |
+| `up` or `trust-ca` says N simulators are booted | Name the one you drive: `--simulator <udid>` (it lists them) |
+| The app rejects Lyrebird's certificate | The CA is on another device. Re-run `trust-ca --simulator <udid>` for the one under test |
+| The app came back without the mock after a relaunch | It was relaunched on another device. `lyrebird relaunch` uses the one `up` recorded |
 | 421 / 415 from the API | Missing `Host: 127.0.0.1:8088` or `Content-Type: application/json` — or just use the CLI |
 | 409 `profile_mismatch` | Another profile's proxy holds the port. `lyrebird down` first, or pass the `--profile` that is running |
 | `path escapes …` when changing sessions or overrides (API: 400 `invalid_name`) | A session file resolves outside `sessions/` or outside the profile — usually a symlink. Symlink the whole profile instead |

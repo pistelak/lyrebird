@@ -11,15 +11,24 @@ on this repository, rather than opening a public issue.
 
 ## What Lyrebird does to your machine
 
-- **Installs a CA in the simulator.** `lyrebird up` generates a CA under
-  `~/Library/Application Support/Lyrebird/mitmproxy/` and adds it to the **booted simulator's**
-  keychain via `xcrun simctl keychain booted add-root-cert`. It is never added to your system
-  keychain. It is Lyrebird's own CA, not the shared `~/.mitmproxy` one, so trusting Lyrebird does
-  not widen trust for other mitmproxy tooling.
-  `simctl` has no remove-one-certificate command: `xcrun simctl keychain booted reset` clears
-  every added certificate from the booted simulator, or erase the device. To rotate the CA, run
+- **Installs a CA in one simulator.** `lyrebird up` generates a CA under
+  `~/Library/Application Support/Lyrebird/mitmproxy/` and adds it to **one simulator's** keychain
+  via `xcrun simctl keychain <udid> add-root-cert`. The device is the booted one when exactly one
+  is booted, and otherwise the one you name with `--simulator`; `up` refuses rather than let
+  simctl choose among several booted devices, so the CA never lands somewhere you did not pick.
+  It is never added to your system keychain. It is Lyrebird's own CA, not the shared
+  `~/.mitmproxy` one, so trusting Lyrebird does not widen trust for other mitmproxy tooling.
+  `simctl` has no remove-one-certificate command: `xcrun simctl keychain <udid> reset` clears
+  every added certificate from that simulator, or erase the device. To rotate the CA, run
   `lyrebird down` first, delete the directory, then `up` — a running proxy is reused, so the CA
   is only regenerated when mitmdump restarts.
+  Trusting the CA on one device does not confine interception to it — see the PAC below: routing
+  is per network service and per hostname, so every simulator on the Mac (and the Mac itself)
+  goes through the proxy for the profile's hosts. What differs per device is only whether it
+  trusts the CA: a device that does — including one an *earlier* `up` trusted, since nothing
+  removes the certificate when you select a different simulator — receives mocked responses just
+  like the selected one; a device that does not fails TLS on those hosts. Neither is traffic that
+  was left alone.
 - **Changes your active network service's proxy settings.** It installs a PAC pointing at the local
   proxy. Your previous PAC URL and enabled state are recorded and restored by `lyrebird down`, and
   by the watchdog if the proxy dies. A PAC that isn't Lyrebird's is left untouched.

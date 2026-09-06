@@ -103,8 +103,31 @@ hands the launch to the caller — a UI-test runner that starts the app itself �
 the relaunch and the reminder to do one by hand; it cannot be combined with `--relaunch BUNDLE`.
 
 > **First run:** `up` generates Lyrebird's CA under
-> `~/Library/Application Support/Lyrebird/mitmproxy/` and trusts it in the **booted** simulator.
+> `~/Library/Application Support/Lyrebird/mitmproxy/` and trusts it in the booted simulator.
 > Boot the simulator first. Re-run `lyrebird trust-ca` after erasing one.
+
+### Which simulator
+
+`up` and `trust-ca` take `--simulator UDID-OR-NAME`, and that device gets the CA and the relaunch.
+Without it, the single booted **iOS** simulator is used; with several booted and no choice made,
+both commands **refuse and list them** rather than pass simctl's `booted` keyword, which — per
+`simctl help` — "will choose one of them" without saying which. A UI-test runner that already
+picked a device should pass the same UDID here. `status` reports the device the last `up` used,
+in the text output and as `simulator` in `--json`, and `lyrebird relaunch [BUNDLEID]` relaunches
+the app on it (`--simulator` overrides; that is the command the menu-bar app's Relaunch runs).
+
+Candidates are booted iOS simulators simctl calls available, so a paired Apple Watch booting
+alongside its phone does not make the choice ambiguous, and a lone booted watch is not selected
+by default. Names must match in full (`iPhone 17 Pro`, not `iPhone 17`); UDIDs are matched
+case-insensitively. A device that is absent, shut down, unavailable, or not an iOS simulator is
+reported as such and the command exits non-zero — nothing falls back to another device.
+
+**This is not traffic isolation.** The PAC is installed on a *network service* and scoped by
+*hostname*, so every simulator on the Mac, and the Mac itself, routes the profile's hosts through
+the proxy. `--simulator` decides where the CA is trusted and which app is relaunched, nothing
+more. Devices that already trust the CA — including one an earlier `up` selected, because
+switching devices does not untrust anything — go on receiving mocked responses; devices that
+never trusted it fail TLS on those hosts instead.
 
 ## Ports
 

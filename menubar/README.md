@@ -60,5 +60,13 @@ The simulator bundle id to relaunch comes from the engine (`simBundleId` in your
 surfaced via `GET /__mock__/health`), so the app ships with no app identifier of its own. Relaunch
 stays disabled until your profile sets one.
 
+The app has no simulator picker: Start runs a bare `lyrebird up`, so the CLI's default applies —
+the booted iOS simulator when exactly one is booted, and a refusal that names the booted devices
+when there are several. Relaunch runs `lyrebird relaunch <bundleid>`, which uses the device that
+`up` recorded, so the button cannot relaunch the app on a simulator that never received the CA;
+it shows the CLI's own refusal when there is no single device it can mean. Nothing in the app
+names simctl's `booted`. To bind a run to a particular device, start it from the CLI with
+`lyrebird up --simulator <udid>` (see [AGENTS.md](../AGENTS.md)) — the button then follows it.
+
 If the `lyrebird` path is unset, the app searches the inherited `PATH`, then `/usr/local/bin`,
 `/opt/homebrew/bin`, `~/.local/bin` and `~/bin`. CLI failures are shown in the menu rather than swallowed.
