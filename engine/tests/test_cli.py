@@ -8,6 +8,7 @@ the user is left with a PAC pointing at a dead port and no indication why.
 
 import json
 import os
+import threading
 
 import pytest
 from click.testing import CliRunner
@@ -541,6 +542,130 @@ def test_down_takes_the_lock_before_it_signals_the_watchdog_or_touches_the_pac(
 
     assert runner.invoke(cli.cli, ["down"]).exit_code == 0
     assert events[:3] == ["lock", "terminate _watchdog", "restore"]
+
+
+def test_down_waits_for_an_overlapping_watchdog_repair_that_holds_the_lock_and_restores_after_it(profile, monkeypatch):
+    """The interleaving the lock exists for, driven for real rather than pinned by call order.
+
+    The test above pins the *order* `down` does things in; this one pins what happens when a
+    watchdog repair is already inside the lock when `down` arrives. That is the dangerous
+    overlap: `_repair_pac` re-enables our PAC, so a `down` running alongside it would have the
+    PAC switched back on after its own restore had read the network back clean — leaving the Mac
+    pointed at a stopped proxy, its runtime record deleted, and "stopped" on the terminal.
+
+    Threads with separate `open()` calls are a faithful substitute for two processes here because
+    a `flock` lock belongs to the open file description, not to the process: two descriptions of
+    one file contend on macOS and Linux whether they live in one process or two, and that
+    contention is the whole subject. What threads do *not* exercise — SIGTERM actually reaching a
+    watchdog — is not what this test claims.
+
+    Determinism comes from a handshake, not from sleeps: the repair parks inside `pac_status`
+    while holding the lock, and the main thread waits for the "waiting for another…" diagnostic
+    `_acquire_lock` prints the first time its non-blocking `flock` fails. That message is positive
+    evidence that `down` is blocked on the lock, so the "nothing of `down` has happened yet"
+    assertion below cannot pass merely because `down` was slow off the mark. Every wait is
+    bounded and its result asserted, so a lost handshake fails the test instead of hanging it.
+    """
+    config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
+    config.write_runtime({"proxyPid": 99, "watchdogPid": 98, "service": "Wi-Fi",
+                          "previousPac": {"url": "http://proxy.example.com/corp.pac", "enabled": True}})
+
+    state = {"url": netproxy.pac_url(), "enabled": False}   # ours, but macOS switched it off
+    events = []
+    repair_holds_lock = threading.Event()
+    down_is_waiting = threading.Event()
+    release = threading.Event()
+
+    def pac_status(service):
+        if threading.current_thread().name == "repair":
+            events.append("repair:pac_status")
+            repair_holds_lock.set()
+            assert release.wait(timeout=10), "the repair was never released"
+        else:
+            events.append("down:pac_status")
+        return netproxy.PacStatus(state["url"], state["enabled"], state["url"] == netproxy.pac_url())
+
+    def set_pac(service):
+        state.update(url=netproxy.pac_url(), enabled=True)
+        events.append("repair:set_pac")
+
+    def restore_pac(service, url, enabled):
+        state.update(url=url, enabled=enabled)
+        events.append("down:restore")
+
+    def terminate(pid, marker):
+        events.append(f"down:terminate {marker}")
+
+    monkeypatch.setattr(netproxy, "pac_status", pac_status)
+    monkeypatch.setattr(netproxy, "set_pac", set_pac)
+    monkeypatch.setattr(netproxy, "restore_pac", restore_pac)
+    monkeypatch.setattr(cli, "_terminate", terminate)
+    monkeypatch.setattr(cli, "_health",
+                        lambda: None if "down:terminate addon.py" in events else {"pid": 99})
+
+    real_echo = cli.click.echo
+
+    def echo(message="", *args, **kwargs):
+        if "waiting for another" in str(message):
+            down_is_waiting.set()
+        return real_echo(message, *args, **kwargs)
+
+    monkeypatch.setattr(cli.click, "echo", echo)
+
+    failures = []
+    result = {}
+
+    def worker(name, work):
+        def run():
+            try:
+                work()
+            except Exception as error:   # re-raised on the main thread once both are joined
+                failures.append(error)
+
+        return threading.Thread(target=run, name=name)
+
+    # Exactly one Click invocation runs at a time, on the `down` thread; nothing else touches
+    # Click or global I/O while it runs, and it is joined before the fixtures tear down.
+    repair_thread = worker("repair", lambda: cli._repair_pac("Wi-Fi"))
+    down_thread = worker("down", lambda: result.update(down=CliRunner().invoke(cli.cli, ["down"])))
+
+    repair_thread.start()
+    try:
+        assert repair_holds_lock.wait(timeout=10), "the repair never reached the lock"
+        down_thread.start()
+        assert down_is_waiting.wait(timeout=5), "`down` never waited on the lock the repair holds"
+        assert [event for event in events if event.startswith("down:")] == [], \
+            "`down` signalled the watchdog or touched the PAC while the repair held the lock"
+        assert down_thread.is_alive()
+    finally:
+        # Cleanup and the verdict on the workers both live here: an assertion above must not
+        # skip the joins (the fixtures tear down next), and a worker that raised must be heard
+        # even when the main thread already has something to say.
+        release.set()
+        for thread in (repair_thread, down_thread):
+            if thread.ident is not None:
+                thread.join(timeout=10)
+        assert not repair_thread.is_alive() and not down_thread.is_alive(), "a worker never finished"
+        if failures:
+            raise failures[0]
+
+    assert events == ["repair:pac_status", "repair:set_pac", "down:terminate _watchdog",
+                      "down:pac_status", "down:restore", "down:terminate addon.py"], \
+        "the repair must finish before `down` reads the PAC it is about to restore"
+    assert state == {"url": "http://proxy.example.com/corp.pac", "enabled": True}
+    assert not config.runtime_file().exists()
+    assert result["down"].exit_code == 0, result["down"].output
+    assert "stopped" in result["down"].output
+
+    # The other half of the guarantee: a repair entering afterwards finds no runtime record
+    # naming its service, and returns before it reads — let alone writes — the network.
+    def must_not_be_called(service):
+        raise AssertionError("pac_status must not be called after `down`")
+
+    monkeypatch.setattr(netproxy, "pac_status", must_not_be_called)
+    cli._repair_pac("Wi-Fi")
+    assert len(events) == 6, "a repair that arrived after `down` did something"
+    assert state == {"url": "http://proxy.example.com/corp.pac", "enabled": True}
 
 
 def test_down_reports_a_proxy_that_did_not_stop(profile, runner, fake_network, monkeypatch):
