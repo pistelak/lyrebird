@@ -714,7 +714,8 @@ def test_a_captured_slot_credits_nobody_after_the_session_is_switched(profile):
     subject.add_override({"id": "shared", "mode": "patch", "patch": {}})
 
     store.credit(slot)   # the in-flight patch from the previous session lands now
-    assert subject.answer_states() == [{"id": "shared", "active": True, "count": 0}]
+    assert subject.answer_states() == [
+        {"id": "shared", "active": True, "count": 0, "runId": None}]
 
 
 def test_a_captured_slot_credits_nobody_after_the_rule_is_replaced(profile):
@@ -725,7 +726,7 @@ def test_a_captured_slot_credits_nobody_after_the_rule_is_replaced(profile):
     slot = subject.answer_slot("r")
     subject.add_override({"id": "r", "mode": "replace", "status": 200})
     store.credit(slot)
-    assert subject.answer_states() == [{"id": "r", "active": True, "count": 0}]
+    assert subject.answer_states() == [{"id": "r", "active": True, "count": 0, "runId": None}]
 
 
 def test_reading_answer_states_does_not_mint_run_state(profile):
@@ -744,7 +745,7 @@ def test_switching_session_clears_answer_counts(profile):
     subject.create_session("scratch")
     subject.set_active("scratch")
     subject.set_active("default")
-    assert subject.answer_states() == [{"id": "a", "active": True, "count": 0}]
+    assert subject.answer_states() == [{"id": "a", "active": True, "count": 0, "runId": None}]
 
 
 def test_reset_clears_one_rules_answer_count_and_leaves_the_others(profile):
@@ -754,8 +755,7 @@ def test_reset_clears_one_rules_answer_count_and_leaves_the_others(profile):
     store.credit(subject.answer_slot("a"))
     store.credit(subject.answer_slot("b"))
     subject.reset_runtime("a")
-    assert subject.answer_states() == [{"id": "a", "active": True, "count": 0},
-                                       {"id": "b", "active": True, "count": 1}]
+    assert [(s["id"], s["count"]) for s in subject.answer_states()] == [("a", 0), ("b", 1)]
 
 
 def test_answer_states_report_an_inactive_rule_as_inactive(profile):
@@ -763,7 +763,84 @@ def test_answer_states_report_an_inactive_rule_as_inactive(profile):
     than burn its timeout."""
     subject = store.Store()
     subject.add_override({"id": "off", "active": False, "mode": "replace", "status": 200})
-    assert subject.answer_states() == [{"id": "off", "active": False, "count": 0}]
+    assert subject.answer_states() == [
+        {"id": "off", "active": False, "count": 0, "runId": None}]
+
+
+# MARK: - Which run the answers belong to
+#
+# A count on its own says "some run's". Every test here is a way another run's evidence could be
+# handed to a caller asking about the boundary it drew — the same shape as a stale sequence event
+# satisfying a wait, one step further out: the rule id survives everything that ends a run.
+
+def test_reset_issues_the_run_id_the_following_answers_are_counted_under(profile):
+    """The whole flow in one place: reset hands back a token, and what the rule answers afterwards
+    is reported under exactly that token. Without this, a caller has nothing to compare against."""
+    subject = store.Store()
+    subject.add_override({"id": "a", "mode": "replace", "status": 200})
+    issued = subject.reset_runtime("a")["reset"]["a"]
+    store.credit(subject.answer_slot("a"))
+    assert subject.answer_states() == [{"id": "a", "active": True, "count": 1, "runId": issued}]
+
+
+def test_a_reset_leaves_the_previous_run_id_unclaimable(profile):
+    """A count is only ever evidence about the run it was taken in, so the run that produced it has
+    to be nameable — and a reset has to make the previous name stop matching."""
+    subject = store.Store()
+    subject.add_override({"id": "a", "mode": "replace", "status": 200})
+    store.credit(subject.answer_slot("a"))
+    before = subject.answer_states()[0]["runId"]
+    subject.reset_runtime("a")
+    store.credit(subject.answer_slot("a"))
+    after = subject.answer_states()[0]
+    assert after["count"] == 1, "the new run has its own answer"
+    assert after["runId"] != before, "and cannot be mistaken for the run before it"
+
+
+def test_a_rule_replaced_under_the_same_id_answers_in_a_different_run(profile):
+    """Rule ids are reused — `override add` on an existing id is the documented way to change a
+    rule. The id therefore cannot carry the identity a caller holds; only the run token can."""
+    subject = store.Store()
+    subject.add_override({"id": "a", "mode": "replace", "status": 200})
+    issued = subject.reset_runtime("a")["reset"]["a"]
+    subject.add_override({"id": "a", "mode": "replace", "status": 500})
+    store.credit(subject.answer_slot("a"))
+    state = subject.answer_states()[0]
+    assert state["count"] == 1, "the new definition really did answer"
+    assert state["runId"] != issued, "but not in the run the caller was told about"
+
+
+def test_a_session_switch_answers_in_a_different_run_under_the_same_id(profile):
+    """Two sessions can file a rule under one id. Reading a count from the second while holding the
+    first's run token is the substitution this field exists to make visible."""
+    subject = store.Store()
+    subject.add_override({"id": "shared", "mode": "replace", "status": 200})
+    issued = subject.reset_runtime("shared")["reset"]["shared"]
+    subject.create_session("other")
+    subject.set_active("other")
+    subject.add_override({"id": "shared", "mode": "replace", "status": 200})
+    store.credit(subject.answer_slot("shared"))
+    assert subject.answer_states()[0]["runId"] != issued
+
+
+def test_a_rule_that_has_no_run_reports_none_rather_than_a_run_with_no_answers(profile):
+    """`null` says "there is no run here"; a count of zero says "there was a run and nothing
+    answered". Collapsing the first into the second is how a caller believes a boundary it never
+    drew — the reading-does-not-mint rule is what makes the distinction possible."""
+    subject = store.Store()
+    subject.add_override({"id": "untouched", "mode": "replace", "status": 200})
+    assert subject.answer_states() == [
+        {"id": "untouched", "active": True, "count": 0, "runId": None}]
+
+
+def test_answer_and_sequence_states_report_one_run_not_two(profile):
+    """One identity per rule, reported by both views. Two tokens for the same boundary would let a
+    caller bind a wait and an assertion to different things and never find out."""
+    subject = store.Store()
+    subject.add_override(dict(SEQ))
+    subject.reset_runtime("seq")
+    answers = {state["id"]: state["runId"] for state in subject.answer_states()}
+    assert answers["seq"] == subject.sequence_states()[0]["runId"]
 
 
 # MARK: - Write then publish
@@ -833,7 +910,8 @@ def test_a_replacement_whose_write_fails_leaves_a_captured_slot_crediting_the_li
     assert subject.answer_slot("r") is slot, "the live rule kept its runtime entry"
     assert slot["answers"] == 1 and slot["runId"] == run_id, "and the entry itself is untouched"
     store.credit(slot)
-    assert subject.answer_states() == [{"id": "r", "active": True, "count": 2}]
+    assert subject.answer_states() == [{"id": "r", "active": True, "count": 2, "runId": run_id}],\
+        "and the run the caller was told about is still the one being counted"
 
 
 def test_a_rule_whose_removal_cannot_be_written_stays_live(profile, monkeypatch):

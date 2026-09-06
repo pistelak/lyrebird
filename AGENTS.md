@@ -12,9 +12,9 @@ This file is the contract for that. It assumes you can run shell commands and re
 lyrebird --profile PATH validate NAME   # offline: non-zero unless that scenario loads whole
 lyrebird --profile PATH up --use NAME   # start, activate the scenario, then relaunch the app
 lyrebird --profile PATH wait-ready --match --timeout 30
-lyrebird --profile PATH reset       # start a fresh run, immediately before the action you test
+RUN=$(lyrebird --profile PATH reset ovr_x --json | jq -r .reset.ovr_x)   # a fresh run, and its id
 # …do the work you came to do…
-lyrebird --profile PATH assert-answered ovr_x   # non-zero unless that rule actually answered
+lyrebird --profile PATH assert-answered ovr_x --run "$RUN"   # non-zero unless it answered in it
 lyrebird --profile PATH down        # restores the proxy settings that were there before
 ```
 
@@ -62,16 +62,42 @@ matched, because the real backend usually produces the same screen. A suite like
 nothing, and it stays green when a rule quietly stops matching.
 
 ```bash
-lyrebird --profile PATH reset                    # draw the boundary…
+RUN=$(lyrebird --profile PATH reset ovr_x --json | jq -r .reset.ovr_x)   # draw the boundary…
 # trigger the action under test
-lyrebird --profile PATH assert-answered ovr_x    # …then assert the rule answered inside it
+lyrebird --profile PATH assert-answered ovr_x --run "$RUN"   # …and assert inside *that* boundary
 ```
 
-Non-zero unless that rule answered a request since the reset. `--timeout N` waits instead of
+Non-zero unless that rule answered a request in the run you name. `--timeout N` waits instead of
 sampling. Put the reset immediately before the action, not once at start-up: the app's launch
 fetches land in between, and an answer they produced would satisfy an assertion your test never
 earned. A rule that answered is counted where the answer is produced, so the evidence outlives its
 entry in `recent` and can never come from a rule that merely matched and lost.
+
+**Keep the run id and pass it.** `reset` issues a fresh run id per rule, and every answer the rule
+then gathers is reported under that id. A second reset, a rule replaced under the same id
+(`override add`), or a session switch ends that run and starts another — and the rule id is
+identical on the other side, so without `--run` a count belonging to the new run reads exactly like
+the one your test earned. `--run` refuses that substitution instead of reporting it as success.
+
+With `--run`, 1 means the assertion was made and failed; 3 means it could not be made at all:
+
+| Exit | Meaning |
+|---|---|
+| 0 | The rule answered, in the run you required |
+| 1 | The rule is in that run and answered nothing — including a rule that is inactive and can never answer |
+| 3 | The run you named is not the rule's current run, the rule is not in the active session at all, or nothing could be read about it: the proxy is unreachable, too old to report runs, or running another profile. **Not** "the mock did not apply" |
+
+Exit 3 is the one a harness handles separately: nothing was learned about your run, so re-draw the
+boundary and run the action again (or, for the version-skew cases, `lyrebird down && lyrebird up`)
+rather than going to debug the rule. A `runId` of `null` — the rule has no run at all, its state
+dropped by a session switch or a replacement — is exit 3 too, never a count of zero. So is another
+profile's proxy taking the port mid-test: its counters describe someone else's rules, and the
+fingerprint is compared on every poll, so the wait ends there instead of running to its timeout.
+
+Without `--run` the command keeps its older, weaker meaning: "has this rule answered in whichever
+run the proxy is in when I look", and every failure is exit 1, as it always was. That is fine for a
+one-shot check by hand. It is not enough for a suite that resets more than once, replaces rules, or
+switches sessions.
 
 **4. `status --json` is the state query.**
 
@@ -88,7 +114,7 @@ lyrebird --profile PATH status --json
   "runningProfileFingerprint": "3f0a1c4d9b22",
   "activeSession": "orders-outage",
   "overrideCount": 1,
-  "answers": [ { "id": "ovr_9a99bd", "active": true, "count": 3 } ],
+  "answers": [ { "id": "ovr_9a99bd", "active": true, "count": 3, "runId": "5c1f9d0a7b3e4d62" } ],
   "sessions": ["default", "orders-outage"],
   "simBundleId": "com.example.Store",
   "profile": "/path/to/profile",
@@ -288,14 +314,23 @@ request you did not expect.
 
 `status --json` carries `sequences[]` with `nextStep`, `exhausted`, `hasOverrun`, per-step serve
 counts in `serves`, and a `runId` that changes on every reset. It also carries `answers[]` — one
-entry per rule in the active session, with how many requests it has answered since the last reset,
-which is what `assert-answered` reads.
+`{id, active, count, runId}` per rule in the active session: how many requests it has answered
+since the last reset, and which run those answers belong to. That is what `assert-answered` reads,
+and the `runId` is the same token `reset` returned for that rule and `sequences[]` reports for it —
+one run per rule, described by both views, not two identities to keep straight. Only
+`assert-answered --run` takes a run id back from you, though: `sequence wait` baselines itself on
+whichever run is current when it starts.
 
-Both are `null`, not `[]`, when the running proxy did not report them — a proxy started from an
-engine older than the field, or one that is not up at all. An empty list means "the engine answered,
-and there is nothing to show"; `null` means "it could not tell you", which is a different thing to
-act on. If you pipe this into `jq '.answers[]'`, handle the null rather than reading it as zero
-answers; `lyrebird down && lyrebird up` clears the version-skew case. `recent` shows which request took which step, and which request advanced
+Both lists are `null`, not `[]`, when the running proxy did not report them — a proxy started from
+an engine older than the field, or one that is not up at all. An empty list means "the engine
+answered, and there is nothing to show"; `null` means "it could not tell you", which is a different
+thing to act on. If you pipe this into `jq '.answers[]'`, handle the null rather than reading it as
+zero answers; `lyrebird down && lyrebird up` clears the version-skew case.
+
+The same distinction one level down: inside an entry, `"runId": null` means the rule has no run at
+all — never reset, never near a request, or its run state dropped by a session switch or a
+replacement. It is not a count of zero, and reading it as one is how a test comes to believe in a
+boundary it never drew. `recent` shows which request took which step, and which request advanced
 what, so a scenario that went wrong can be read back rather than guessed at.
 
 If a rule advances when you did not expect it to, the fix is usually a narrower `match`, or an
@@ -344,6 +379,7 @@ net; if not, take a copy before touching someone else's sessions.
 | `sequence wait` fails at once | The step already went by — reset, then trigger the action |
 | `assert-answered` fails but the screen looked right | The real backend served it. The rule never applied — that is the point of the command |
 | `assert-answered` lists paths you did not expect | The app went somewhere else; the matcher is probably fine |
+| `assert-answered --run` exits 3 | The run ended under the test — something reset the rule, replaced it, switched session, or took the port for another profile. Draw the boundary again and re-run the action; the assertion was never made |
 | A rule matches more screens than you meant | `explain-match` on a sibling request — if it selects your rule, it is too broad |
 | A rule you wrote in a session file is nowhere in `explain-match` | It was dropped at load. `lyrebird validate NAME` names the rule and the field |
 | A whole session behaves as if it were empty | The file was refused whole — malformed JSON, or a `schemaVersion` this engine does not read. `lyrebird validate NAME` |

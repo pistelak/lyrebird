@@ -10,9 +10,9 @@
                                           not loadable whole
     lyrebird explain-match <method> <path>  which rule would be selected, and why the rest were not
                                           (--session NAME reads a file instead of the proxy)
-    lyrebird assert-answered <id>         exit non-zero unless that rule answered this run
+    lyrebird assert-answered <id> [--run R]  exit non-zero unless that rule answered in that run
     lyrebird session new <name>           create a scratch session (--clone-from X)
-    lyrebird reset [id]                   start a fresh run: rewind sequences, clear answer counts
+    lyrebird reset [id] [--json]          start a fresh run: rewind sequences, clear answer counts
     lyrebird sequence wait <id> --step N  block until a sequence serves a given step
     lyrebird status [--json]              show intercept state (honest about PAC on/off)
     lyrebird wait-ready [--match]         block until traffic arrives, or until a rule matches
@@ -95,17 +95,23 @@ def _error_body(error: urllib.error.HTTPError) -> dict:
     return body if isinstance(body, dict) else {}
 
 
-def _refuse_a_foreign_profile(error: urllib.error.HTTPError, body: dict) -> None:
+def _refuse_a_foreign_profile(error: urllib.error.HTTPError, body: dict,
+                              unproven_exit: int = 1) -> None:
     """Exits when the API says the request named a profile it is not running.
 
     Shared by both callers so a scoped read fails the same way a scoped mutation does: the read
     would otherwise report another profile's sessions, counters and traffic as this profile's.
+
+    `unproven_exit` carries a caller's code for "I could not ask", for the same reason
+    `_require_same_profile` takes one: this refusal can arrive at any call, including the last one a
+    command makes, and it must not be reported under a code that claims a question was answered.
     """
     if error.code == 409 and body.get("error") == "profile_mismatch":
-        raise SystemExit(_profile_mismatch(body.get("running") or "unknown"))
+        click.echo(_profile_mismatch(body.get("running") or "unknown"), err=True)
+        raise SystemExit(unproven_exit)
 
 
-def _get_json(path: str, timeout: float = 1.5) -> Any:
+def _get_json(path: str, timeout: float = 1.5, *, unproven_exit: int = 1) -> Any:
     request = urllib.request.Request(
         f"{CONTROL}{path}",
         headers={"Host": config.CONTROL_HOST_HEADER, _PROFILE_HEADER: config.PROFILE_FINGERPRINT})
@@ -115,22 +121,28 @@ def _get_json(path: str, timeout: float = 1.5) -> Any:
     except urllib.error.HTTPError as error:
         # A mismatch is an answer, not an outage: returning None here would say "not reachable"
         # about a proxy that is up and talking, and the caller would go looking for a dead port.
-        _refuse_a_foreign_profile(error, _error_body(error))
+        _refuse_a_foreign_profile(error, _error_body(error), unproven_exit)
         return None
     except Exception:  # any other failure means 'not reachable', which is the answer
         return None
 
 
-def _require_same_profile(health: dict) -> None:
+def _require_same_profile(health: dict, *, unproven_exit: int = 1) -> None:
     """Exits when a health reading describes a proxy running some other profile.
 
     `/health` is deliberately unscoped at the API — that is how `down` recovers across profiles —
     so a command that goes on to *interpret* a health reading has to make the comparison itself.
     A reading with no fingerprint is accepted, as `up` accepts one: an older engine cannot say.
+
+    `unproven_exit` exists for a caller whose exit codes already separate "I asked and the answer is
+    no" from "I could not ask". The port changing hands says nothing about the question that was
+    put, so answering it under the code for a failed check would invent a result — and this is the
+    one refusal a command cannot see coming, since the reading it is about looks perfectly healthy.
     """
     running = health.get("profileFingerprint")
     if running and running != config.PROFILE_FINGERPRINT:
-        raise SystemExit(_profile_mismatch(running))
+        click.echo(_profile_mismatch(running), err=True)
+        raise SystemExit(unproven_exit)
 
 
 def _health() -> dict | None:
@@ -1066,18 +1078,28 @@ def sequence_wait(override_id: str, step: int, timeout: int) -> None:
 
 @cli.command()
 @click.argument("override_id", metavar="[ID]", required=False)
-def reset(override_id: str | None) -> None:
+@click.option("--json", "as_json", is_flag=True, help="Machine-readable output.")
+def reset(override_id: str | None, as_json: bool) -> None:
     """Start a fresh run: rewind sequences to step 1 and clear answer counts.
 
     With no ID, resets every rule in the active session. Run this immediately before the action you
     are about to test, not once at start-up — the app's launch fetches land in between, and evidence
     they leave behind would satisfy an `assert-answered` the test itself never earned.
 
+    Every rule reset here gets a fresh run id, printed per rule and machine-readable under `--json`.
+    Keep the one for the rule you are about to test and pass it to `assert-answered --run`: that is
+    what binds the assertion to *this* boundary instead of to whichever run is current when it looks.
+
     Run state is in memory, so this is also the only way to replay a scenario without switching
     sessions.
     """
     result = _control("/__mock__/reset", "POST", {"id": override_id} if override_id else {})
     reset_ids = result.get("reset") or {}
+    if as_json:
+        # A formatting flag decides how this is printed and nothing else: same call, same exit,
+        # same meaning — including the empty case, which is a real answer ("no rules here").
+        click.echo(json.dumps({"session": result.get("session"), "reset": reset_ids}, indent=2))
+        return
     if not reset_ids:
         click.echo(f"{DIM}no rules in '{result.get('session')}' — nothing to reset{R}")
         return
@@ -1085,11 +1107,53 @@ def reset(override_id: str | None) -> None:
         click.echo(f"✓ reset {name} {DIM}(run {run_id}){R}")
 
 
+# `assert-answered` distinguishes two failures that a harness must not confuse. Exit 1 is the
+# assertion this command exists to make, failing: the rule answered nothing. Exit 3 is the
+# assertion never being made at all — the run the caller named is not the one the proxy is
+# reporting on, or nothing could be read about it. Evidence from another run is not weaker
+# evidence; it is evidence about a different question, and "the mock did not apply" is the wrong
+# thing to conclude from it. Click reserves 2 for its own usage errors, so the next code up is 3.
+#
+# Only `--run` can produce 3: without it the caller has asked the older, weaker question, and every
+# failure answers it the way it always did.
+_ANSWERED_NONE = 1
+_ASSERTION_NOT_MADE = 3
+
+
+def _require_run(override_id: str, state: dict, required: str) -> None:
+    """Exits unless the rule's live run is the one the caller asked about.
+
+    Missing identity is neither a mismatch nor a zero count, and gets the same distinct exit as a
+    mismatch rather than the one for "it answered nothing": an engine older than the field cannot
+    say which run its counts belong to, and a `runId` of `null` says the rule has no run at all —
+    dropped by a session switch or by a replacement under the same id, or never made. Reporting
+    either as a rule that answered nothing would send someone to debug a matcher that is fine.
+    """
+    if "runId" not in state:
+        click.echo(f"{RED}✗ this proxy does not report which run a count belongs to — restart it "
+                   f"(`lyrebird down && lyrebird up`) to pick up the current engine.{R}\n"
+                   f"   Without --run the assertion reads whatever run is current instead.")
+        raise SystemExit(_ASSERTION_NOT_MADE)
+    current = state["runId"]
+    if current == required:
+        return
+    reason = (f"is in run {current}" if current else
+              "has no run at all — a session switch or a rule replaced under the same id "
+              "dropped its run state")
+    click.echo(f"{RED}✗ '{override_id}' {reason}, not run {required}.{R}\n"
+               f"   Whatever it has answered belongs to a different run than the one you set up, "
+               f"so this assertion cannot be made.\n"
+               f"   Reset, trigger the action, then assert — with the run id that reset printed.")
+    raise SystemExit(_ASSERTION_NOT_MADE)
+
+
 @cli.command(name="assert-answered")
 @click.argument("override_id")
+@click.option("--run", "required_run", default=None, metavar="ID",
+              help="Require the answer to belong to this run id (printed by `lyrebird reset`).")
 @click.option("--timeout", default=0, help="Seconds to wait for the first answer (0 checks now).")
-def assert_answered(override_id: str, timeout: int) -> None:
-    """Exit non-zero unless that rule has answered a request since the last reset.
+def assert_answered(override_id: str, required_run: str | None, timeout: int) -> None:
+    """Exit non-zero unless that rule has answered a request in the run you name.
 
     The assertion a test can make about its own setup. A negative UI assertion — "this section is
     not shown" — passes identically whether the mock applied or never matched, because the real
@@ -1099,10 +1163,37 @@ def assert_answered(override_id: str, timeout: int) -> None:
     The count is taken where the answer is produced, so it survives eviction from the traffic list
     and can never be satisfied by a rule that merely matched and lost. `lyrebird reset` draws the
     boundary: reset, trigger the action, assert.
+
+    Pass `--run` with the id `reset` printed for the rule and the evidence must come from that
+    boundary. Without it the assertion is the weaker one it has always been — "has this rule
+    answered in whatever run is current right now" — and a second reset, a rule replaced under the
+    same id, or a session switch between the action and the assertion starts a run whose count is
+    not the one the test earned. Same-id, different run reads identically otherwise.
+
+    \b
+    Exit codes with --run — 1 means the assertion was made and failed, 3 that it could not be made:
+      0  the rule answered, in the run you required
+      1  the rule is in that run and has answered nothing (including: it is inactive)
+      3  the run you named is not the rule's current run, the rule is not in the active session at
+         all, or nothing could be read about it — an unreachable proxy, one too old to report
+         runs, or another profile's proxy holding the port
+
+    \b
+    Without --run, every failure is 1, as it always was.
     """
     if timeout < 0:
         click.echo(f"{RED}✗ --timeout must not be negative{R}")
         raise SystemExit(1)
+    if required_run is not None and not required_run.strip():
+        # Checked here rather than compared later: an empty --run would match a rule whose run is
+        # unknown only by accident, and "no run id" must never be spelled the same way as one.
+        click.echo(f"{RED}✗ --run must name a run id (`lyrebird reset` prints one per rule){R}")
+        raise SystemExit(1)
+
+    # Every way of learning nothing about the caller's run shares one code, so a harness has a
+    # single branch for "re-establish the boundary" rather than a list of special cases. Without
+    # --run there is no boundary to be unable to check, and each of these stays 1, as it always was.
+    unproven = _ASSERTION_NOT_MADE if required_run else _ANSWERED_NONE
 
     deadline = time.time() + timeout
     while True:
@@ -1111,37 +1202,62 @@ def assert_answered(override_id: str, timeout: int) -> None:
             # Distinct from "it answered nothing": we could not ask. Falling through to the
             # zero-answer message would send someone to debug a rule that may be perfectly fine.
             click.echo(f"{RED}✗ cannot reach the control API — is the proxy up?{R}")
-            raise SystemExit(1)
-        _require_same_profile(health)
+            raise SystemExit(unproven)
+        # Checked on every poll, and unproven rather than failed: another profile's proxy can take
+        # the port before the first look or between two of them, and its counters are evidence
+        # about a different profile's rules — the run this command was given cannot be checked
+        # against them at all, which is not the same as checking it and finding no answers.
+        _require_same_profile(health, unproven_exit=unproven)
         if "answers" not in health:
             click.echo(f"{RED}✗ this proxy does not report answer counts — restart it "
                        f"(`lyrebird down && lyrebird up`) to pick up the current engine.{R}")
-            raise SystemExit(1)
+            # An engine that cannot count answers certainly cannot say which run they are in, so
+            # under --run this joins the other identity failures: a harness branching on 3 must not
+            # have to learn that one flavour of version skew arrives as 1.
+            raise SystemExit(unproven)
 
         state = next((s for s in health["answers"] if s.get("id") == override_id), None)
         if state is None:
             # A typo must not read as "it never fired": different bug, different fix.
             active = health.get("activeSession")
             click.echo(f"{RED}✗ no rule '{override_id}' in session '{active}'{R}")
-            raise SystemExit(1)
+            if required_run:
+                # The rule can also vanish *during* the wait — a session switched to one that does
+                # not carry this id — and that destroys the boundary rather than answering the
+                # question about it. Same code as a run that moved, for the same reason.
+                click.echo(f"   Run {required_run} cannot be checked: the rule is not there to "
+                           f"have answered in it.")
+            raise SystemExit(unproven)
+        # Before the count, and re-checked every poll: a run that changes between the action and
+        # the assertion — or while the assertion waits — makes the count that follows evidence
+        # about a different run, and returning success on it is exactly the substitution this
+        # option exists to refuse. The rule cannot come back to the run it left, so this is final.
+        if required_run is not None:
+            _require_run(override_id, state, required_run)
         count = state.get("count", 0)
         if count:
-            click.echo(f"✓ {override_id} answered {count} request(s) this run")
+            where = f"in run {state['runId']}" if state.get("runId") else "this run"
+            click.echo(f"✓ {override_id} answered {count} request(s) {where}")
             return
         if not state.get("active", True):
             # Waiting cannot help — matching skips a disabled rule entirely.
             click.echo(f"{RED}✗ '{override_id}' is not active, so it can never answer.{R}")
-            raise SystemExit(1)
-        # A reset landing mid-wait is deliberately not special-cased: a count can only be observed
-        # falling if it was seen above zero first, and a count above zero has already returned. The
-        # wait simply runs out and says the rule has not answered this run, which is true.
+            raise SystemExit(_ANSWERED_NONE)
+        # Without `--run`, a reset landing mid-wait is deliberately not special-cased: a count can
+        # only be observed falling if it was seen above zero first, and a count above zero has
+        # already returned. The wait simply runs out and says the rule has not answered this run,
+        # which is true of the run it ends up looking at — which is the weakness `--run` removes.
         if time.time() >= deadline:
             break
         time.sleep(1)
 
-    entries = _get_json("/__mock__/recent", timeout=2) or []
+    # The diagnostic read, and the last chance for the port to change hands: `/health` is unscoped
+    # so no poll above can be refused for the profile, but this one can, and it would otherwise
+    # print a mismatch under the code that means "your run was checked and nothing answered".
+    entries = _get_json("/__mock__/recent", timeout=2, unproven_exit=unproven) or []
     waited = f" within {timeout}s" if timeout else ""
-    click.echo(f"{RED}✗ '{override_id}' has not answered any request this run{waited}.{R}")
+    scope = f"in run {required_run}" if required_run else "this run"
+    click.echo(f"{RED}✗ '{override_id}' has not answered any request {scope}{waited}.{R}")
     if not entries:
         click.echo("   Nothing has reached the proxy at all — relaunch the app, and check the host "
                    "is listed in your profile.")
@@ -1159,7 +1275,7 @@ def assert_answered(override_id: str, timeout: int) -> None:
         # "the app is not reaching us" from "it is, on other paths"; not enough to blame the rule.
         click.echo("   `lyrebird explain-match <method> <path>` says which rule one of those "
                    "would select, and why yours was not it.")
-    raise SystemExit(1)
+    raise SystemExit(_ANSWERED_NONE)
 
 
 def _section(title: str, rows: list[tuple[str, str]]) -> None:
