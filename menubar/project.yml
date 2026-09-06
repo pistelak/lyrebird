@@ -30,3 +30,24 @@ targets:
         CODE_SIGN_IDENTITY: "-"
         DEVELOPMENT_TEAM: ""
         ENABLE_HARDENED_RUNTIME: NO
+    # Named explicitly so `xcodebuild -scheme Lyrebird test` runs the tests: an auto-created scheme
+    # is not something a CI line should have to trust.
+    scheme:
+      testTargets:
+        - LyrebirdTests
+  LyrebirdTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - LyrebirdTests
+    dependencies:
+      - target: Lyrebird
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.lyrebird.LyrebirdTests
+        SWIFT_VERSION: "5.0"
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
+        DEVELOPMENT_TEAM: ""

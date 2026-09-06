@@ -96,6 +96,101 @@ def test_the_control_server_serves_no_pages(profile):
         assert status == 404, path
 
 
+# MARK: - Which profile the call means
+#
+# One proxy holds the control port. A CLI run with `--profile B` while profile A is running used to
+# reach A and be told everything worked, so the operator watched an unchanged profile B and looked
+# for the bug in their rule. The header says which profile the caller means; the API refuses to act
+# for any other one.
+
+_FOREIGN = {"X-Lyrebird-Profile": "deadbeefcafe"}
+
+
+def test_a_call_naming_the_running_profile_is_served(profile):
+    status, _, _ = call(profile, "GET", "/__mock__/overrides",
+                        headers={"X-Lyrebird-Profile": config.PROFILE_FINGERPRINT})
+    assert status == 200
+
+
+def test_a_call_naming_another_profile_is_refused_and_leaves_no_rule_behind(profile):
+    """The failure this closes: `lyrebird --profile B override add …` printed the new rule's id
+    while the rule went into profile A, which is what the port actually belongs to."""
+    (profile / "profile.json").write_text('{"hosts": []}', encoding="utf-8")
+    config.reload_profile()
+    app = control.make_app(store.Store(), lambda: {"proxyUp": True})
+
+    async def main():
+        async with TestClient(TestServer(app)) as client:
+            added = await client.post(
+                "/__mock__/overrides",
+                data=json.dumps({"mode": "replace", "match": {"path": "/api/items"}, "status": 503}),
+                headers={"Host": config.CONTROL_HOST_HEADER, "Content-Type": "application/json",
+                         **_FOREIGN})
+            listed = await client.get("/__mock__/overrides",
+                                      headers={"Host": config.CONTROL_HOST_HEADER})
+            return added.status, await added.json(), await listed.json()
+
+    status, body, listed = asyncio.run(main())
+    assert status == 409
+    assert body["error"] == "profile_mismatch"
+    assert body["running"] == config.PROFILE_FINGERPRINT
+    assert body["requested"] == "deadbeefcafe"
+    assert listed == [], "a refused rule must leave nothing behind"
+
+
+def test_a_read_naming_another_profile_is_refused_too(profile):
+    """A read answered from the wrong profile is not harmless: it reports a stranger's sessions and
+    counters as yours, which is how you conclude a rule is missing that was never installed here."""
+    status, _, body = call(profile, "GET", "/__mock__/overrides", headers=_FOREIGN)
+    assert status == 409 and body["error"] == "profile_mismatch"
+
+
+def test_a_bodyless_delete_naming_another_profile_is_refused(profile):
+    """`DELETE /overrides` is the destructive one, and it carries no body — so it must not reach the
+    handler through the gap left by a check that only looks at requests with one."""
+    status, _, body = call(profile, "DELETE", "/__mock__/overrides", headers=_FOREIGN)
+    assert status == 409 and body["error"] == "profile_mismatch"
+
+
+def test_health_answers_a_call_naming_another_profile(profile):
+    """Health is how a caller finds out *which* profile holds the port — `down` restores the network
+    whatever is running, and scoping the one endpoint that reports the running profile would break
+    exactly the recovery that matters after a crash."""
+    status, _, body = call(profile, "GET", "/__mock__/health", headers=_FOREIGN)
+    assert status == 200 and body["ok"] is True
+
+
+def test_the_pac_answers_a_call_naming_another_profile(profile):
+    """macOS fetches the PAC and knows nothing about profiles; a 409 here would take the Mac's
+    routing down."""
+    status, _, _ = call(profile, "GET", "/proxy.pac", headers=_FOREIGN)
+    assert status == 200
+
+
+def test_an_empty_profile_header_is_a_mismatch_not_an_absence(profile):
+    """`X-Lyrebird-Profile:` with nothing after it named nobody, and a truthiness check read that as
+    "no header" — so a bodyless DELETE reached the handler. Empty is a value, and it is not ours."""
+    status, _, body = call(profile, "DELETE", "/__mock__/overrides", headers={"X-Lyrebird-Profile": ""})
+    assert status == 409 and body["error"] == "profile_mismatch"
+
+
+def test_the_profile_header_name_is_matched_case_insensitively(profile):
+    """HTTP header names are case-insensitive; a client that lower-cases them must still be scoped,
+    and one that names the running profile that way must still be served."""
+    status, _, _ = call(profile, "GET", "/__mock__/overrides",
+                        headers={"x-lyrebird-profile": config.PROFILE_FINGERPRINT})
+    assert status == 200
+    status, _, body = call(profile, "GET", "/__mock__/overrides", headers={"x-lyrebird-profile": "deadbeefcafe"})
+    assert status == 409 and body["error"] == "profile_mismatch"
+
+
+def test_a_call_that_names_no_profile_is_served(profile):
+    """The header is a scoping declaration, not a credential: curl, the menu bar and an older CLI
+    send nothing, and refusing them would break clients this change is not about."""
+    status, _, _ = call(profile, "GET", "/__mock__/overrides")
+    assert status == 200
+
+
 # MARK: - Names that become paths
 
 def test_traversal_in_a_session_name_is_rejected(profile):

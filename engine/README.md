@@ -108,6 +108,14 @@ A `POST`, `PUT`, `PATCH` or `DELETE` carrying a body must send `Content-Type: ap
 and the `Host` header must be a loopback name with the control port. Cross-origin requests are
 refused.
 
+The CLI sends `X-Lyrebird-Profile: <fingerprint>` on every call, so a command run with `--profile B`
+cannot read or change the profile A that actually holds the port: a mismatch is **409**
+`{"error": "profile_mismatch", "running": …, "requested": …}`. Direct callers may omit the header
+and are not checked. `GET /health` and `/proxy.pac` answer everyone — health is how a caller finds
+out which profile is running (`down` needs that across profiles), and macOS fetches the PAC. The
+check runs in the proxy, so a proxy started before this change enforces nothing until you restart it
+(`lyrebird down && lyrebird up`).
+
 ### Override shape
 
 ```json
