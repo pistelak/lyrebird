@@ -40,6 +40,54 @@ Scale the landing to the change:
 Either way, a behavior change is not done without a test pinned to the
 failure that motivated it (see *Test the failure path* below).
 
+## Releasing
+
+CI runs on tags matching `v*` as well as on `main` and pull requests, so the
+commit a release is cut from is checked as a tag, in the configuration that
+ships: the app is built `Release` and stamped with the tag's version, and the
+engine is exercised through `bin/lyrebird` in its installed layout.
+
+1. Tag a commit on `main` — `git tag vX.Y.Z && git push origin vX.Y.Z`.
+   `vX.Y.Z` with three numeric components; anything else (`v1.2`, `v1.2.3-rc.1`)
+   fails the version check on purpose.
+2. Wait for the run on the tag to succeed. `release-candidate` needs both
+   required checks, so its artifact cannot exist otherwise.
+3. Download `lyrebird-vX.Y.Z` from that run. It holds `Lyrebird-vX.Y.Z.zip` —
+   the exact bundle the checks passed on, not a rebuild — and
+   `CHECKED-COMMIT.txt`.
+4. Before publishing, confirm the artifact belongs to the tag as it stands on
+   GitHub *now* — fetch the tag first, because a local tag still pointing at the
+   checked commit says nothing about one that was moved on the remote:
+
+   ```bash
+   git fetch origin "refs/tags/vX.Y.Z" && git rev-parse --verify 'FETCH_HEAD^{commit}'
+   # must equal the `commit:` line in CHECKED-COMMIT.txt
+   ```
+
+5. Create the GitHub Release by hand and attach the zip. Nothing in CI has
+   write access to the repository, and publishing stays a human decision.
+
+What the artifact proves and what it does not: it proves the engine and app
+checks passed on the commit named in `CHECKED-COMMIT.txt`, and that the zip is
+what that build produced. It does not stop anyone moving the tag afterwards —
+step 4, done against the freshly fetched remote tag, is what catches that, and
+it is worth doing every time.
+
+The app reports `X.Y.Z (N)`, where `N` is `git rev-list --count HEAD`. A
+marketing version of `0.0.0` means a build off a tag: a development build, not
+a release. The build number only increases along descendants of the previous
+release, so cut releases from forward-moving history — a tag on an older commit,
+or a retag of one already released, produces a build number that is not larger
+than the last published one, and macOS will not treat it as an update. Check
+that the new build number is larger than the last one you published; CI cannot,
+since it does not know what was published.
+
+The engine is not stamped with a version at all; it is identified by the tag the
+release was cut from. The zip is **ad-hoc signed** — fine for running on your own
+machine, not for handing to other people. See the distribution paragraph in
+[menubar/README.md](menubar/README.md) for what Developer ID signing and
+notarization would take.
+
 ## Independent review
 
 Before pushing anything beyond a trivial fix, get a review from a capable
