@@ -4,7 +4,6 @@ enum Config {
     static let controlURLKey = "controlURL"
     static let lyrebirdPathKey = "lyrebirdPath"
     static let profilePathKey = "profilePath"
-    static let pollKey = "pollSeconds"
 
     static let defaultControlURL = "http://127.0.0.1:8088"
 
@@ -46,8 +45,6 @@ enum Config {
         string(profilePathKey, default: "")
     }
 
-    static var pollSeconds: Double {
-        let value = UserDefaults.standard.double(forKey: pollKey)
-        return value > 0 ? value : 2.0
-    }
+    /// The menu re-reads health, sessions and recent traffic at this interval.
+    static let pollSeconds = 2.0
 }
