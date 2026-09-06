@@ -79,9 +79,8 @@ def _ca_cert() -> Path:
 def _profile_mismatch(running: str) -> str:
     """The one sentence for "the port is held by someone else's proxy", wherever we learn it.
 
-    `up` learns it from `/health` before it starts anything; every other command learns it from a
-    409. Both name the two fingerprints and both remedies, because "a different profile" without
-    them leaves the operator no way to tell which one they are looking at.
+    It names both fingerprints and both remedies: "a different profile" without them leaves the
+    operator no way to tell which one they are looking at.
     """
     return (f"{RED}a different profile is already running on port {config.CONTROL_PORT}{R}\n"
             f"  running: {running}   requested: {config.PROFILE_FINGERPRINT}\n"
@@ -102,12 +101,10 @@ def _refuse_a_foreign_profile(error: urllib.error.HTTPError, body: dict,
                               unproven_exit: int = 1) -> None:
     """Exits when the API says the request named a profile it is not running.
 
-    Shared by both callers so a scoped read fails the same way a scoped mutation does: the read
-    would otherwise report another profile's sessions, counters and traffic as this profile's.
-
-    `unproven_exit` carries a caller's code for "I could not ask", for the same reason
-    `_require_same_profile` takes one: this refusal can arrive at any call, including the last one a
-    command makes, and it must not be reported under a code that claims a question was answered.
+    The 409 counterpart of `_require_same_profile`, which explains the scoping; shared by both
+    callers so a scoped read fails the same way a scoped mutation does. `unproven_exit` is that
+    function's, and matters here because this refusal can arrive at any call a command makes,
+    including its last.
     """
     if error.code == 409 and body.get("error") == "profile_mismatch":
         click.echo(_profile_mismatch(body.get("running") or "unknown"), err=True)
@@ -122,8 +119,7 @@ def _get_json(path: str, timeout: float = 1.5, *, unproven_exit: int = 1) -> Any
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.loads(response.read().decode())
     except urllib.error.HTTPError as error:
-        # A mismatch is an answer, not an outage: returning None here would say "not reachable"
-        # about a proxy that is up and talking, and the caller would go looking for a dead port.
+        # A mismatch is an answer, not an outage: returning None would point at a dead port.
         _refuse_a_foreign_profile(error, _error_body(error), unproven_exit)
         return None
     except Exception:  # any other failure means 'not reachable', which is the answer
@@ -134,8 +130,13 @@ def _require_same_profile(health: dict, *, unproven_exit: int = 1) -> None:
     """Exits when a health reading describes a proxy running some other profile.
 
     `/health` is deliberately unscoped at the API — that is how `down` recovers across profiles —
-    so a command that goes on to *interpret* a health reading has to make the comparison itself.
-    A reading with no fingerprint is accepted, as `up` accepts one: an older engine cannot say.
+    so a command that goes on to *interpret* a health reading has to make the comparison itself,
+    or it reports another profile's sessions, counters and traffic as this profile's. A reading
+    with no fingerprint is accepted, as `up` accepts one: an older engine cannot say.
+
+    A command that polls makes the comparison on every reading, not only the first: the proxy that
+    answered the first read can be stopped and another profile's started on the port mid-wait, so
+    a baseline taken from one store would end up compared against a stranger's.
 
     `unproven_exit` exists for a caller whose exit codes already separate "I asked and the answer is
     no" from "I could not ask". The port changing hands says nothing about the question that was
@@ -170,9 +171,7 @@ def _control(path: str, method: str = "GET", payload: Any = None, timeout: float
             return json.loads(response.read().decode())
     except urllib.error.HTTPError as error:
         body = _error_body(error)
-        # Before the generic path: `detail` is absent on a mismatch, so the slug alone would print
-        # "profile_mismatch" and neither fingerprint — the two facts that identify which proxy
-        # answered and which one the caller meant.
+        # Before the generic path: a mismatch carries no `detail`, so it would print a bare slug.
         _refuse_a_foreign_profile(error, body)
         # `detail` first: the API sends the sentence that names the problem ("match: unknown
         # field 'kind' — a matcher may only carry method, path, query, bodyContains") and
@@ -943,11 +942,8 @@ def status(as_json: bool) -> None:
     nothing.
     """
     health = _health()
-    # `/health` is unscoped by design (it is how `down` recovers across profiles), so the proxy
-    # answering on this port may be running someone else's. Its interception is not this
-    # profile's, and reporting it as such let `lyrebird --profile B status && …` proceed against
-    # a proxy mocking profile A's hosts and sessions. Same comparison `up` makes; a reading with
-    # no fingerprint is accepted the same way, because an older engine cannot say.
+    # Compared by hand, not `_require_same_profile` (see it for why): `status` reports the foreign
+    # proxy before exiting 1, so `--profile B status && …` cannot proceed against one mocking A.
     running = (health or {}).get("profileFingerprint")
     foreign = bool(running) and running != config.PROFILE_FINGERPRINT
     runtime = config.read_runtime()
@@ -1194,6 +1190,12 @@ def sequence_wait(override_id: str, step: int, timeout: int) -> None:
     succeeds immediately (reset → trigger → wait is the documented order, and the action may land
     before the wait starts), and a run already past the step without serving it fails immediately —
     an agent that waits 30 seconds for either learns the wrong thing about why.
+
+    The evidence that a step was served is the live serve counter; `/recent` only supplies the
+    request details when it still has them, because it is a bounded window a serve can be evicted
+    from while the fact that it happened is still true. The counter cannot be evicted and a reset
+    drops it with the runtime entry it lives in, which is what makes it evidence about this run —
+    see `store._rule_runtime`.
     """
     health = _health()
     if health is None:
@@ -1211,19 +1213,13 @@ def sequence_wait(override_id: str, step: int, timeout: int) -> None:
         raise SystemExit(1)
 
     run_id, next_step = state["runId"], state["nextStep"]
-    # A serve already recorded for this run IS the postcondition: the counter lives in the runtime
-    # entry a reset drops, so everything in it happened after the last reset. The documented
-    # workflow is reset → trigger the action → wait, and if the action lands before the wait
-    # starts, refusing (or timing out) would report failure on a transition that completed.
     already = (state.get("serves") or {}).get(str(step), 0)
     if already:
         click.echo(f"✓ {override_id} served step {step}/{state['stepCount']} this run "
                    f"({already}×, before the wait began)")
         return
 
-    # Fail now, not at the deadline. This has to come from live state rather than the traffic
-    # buffer: /recent holds a bounded window, so the event may have been evicted while the fact
-    # that it happened is still true. Ordered after the serve check: a cursor past the step with
+    # Fail now, not at the deadline. Ordered after the serve check: a cursor past the step with
     # no serve recorded means the run advanced over the step without ever serving it.
     if next_step is None or next_step > step:
         position = "exhausted" if next_step is None else f"now at step {next_step}"
@@ -1232,10 +1228,6 @@ def sequence_wait(override_id: str, step: int, timeout: int) -> None:
                    f"   Run `lyrebird reset {override_id}` before triggering the action.")
         raise SystemExit(1)
 
-    # The observation comes from the live serve counter, not /recent: /recent is a bounded window,
-    # so under enough traffic the serve could be evicted between polls — the wait would then time
-    # out on something that happened. The counter cannot be evicted, and a reset clears it with
-    # the runtime entry it lives in.
     deadline = time.time() + timeout
     unreachable = False
     current: dict | None = None
@@ -1245,9 +1237,7 @@ def sequence_wait(override_id: str, step: int, timeout: int) -> None:
             unreachable = True   # transient until the deadline says otherwise; keep polling
         else:
             unreachable = False
-            # Re-checked every poll: the proxy that answered the first read can be stopped and
-            # another profile's started on the port mid-wait, and this wait's baseline — a run id
-            # from a different profile's store — would then be compared against a stranger's.
+            # Re-checked: this wait's baseline is a run id from whichever store answered first.
             _require_same_profile(current_health)
             current = _find_sequence(current_health, override_id)
             if current is None or current.get("runId") != run_id:
@@ -1263,7 +1253,7 @@ def sequence_wait(override_id: str, step: int, timeout: int) -> None:
                 if detail:
                     click.echo(f"{served} for {detail['method']} {detail['path']} → {detail['status']}")
                 else:
-                    click.echo(served)   # the serve outlived its /recent entry; the counter is the proof
+                    click.echo(served)   # the serve outlived its /recent entry
                 return
             now_next = current.get("nextStep")
             if now_next is None or now_next > step:
@@ -1393,7 +1383,7 @@ def assert_answered(override_id: str, required_run: str | None, timeout: int) ->
          runs, or another profile's proxy holding the port
 
     \b
-    Without --run, every failure is 1, as it always was.
+    Without --run, every failure is 1.
     """
     if timeout < 0:
         click.echo(f"{RED}✗ --timeout must not be negative{R}")
@@ -1406,7 +1396,7 @@ def assert_answered(override_id: str, required_run: str | None, timeout: int) ->
 
     # Every way of learning nothing about the caller's run shares one code, so a harness has a
     # single branch for "re-establish the boundary" rather than a list of special cases. Without
-    # --run there is no boundary to be unable to check, and each of these stays 1, as it always was.
+    # --run there is no boundary to be unable to check, and each of these is 1.
     unproven = _ASSERTION_NOT_MADE if required_run else _ANSWERED_NONE
 
     deadline = time.time() + timeout
@@ -1417,10 +1407,6 @@ def assert_answered(override_id: str, required_run: str | None, timeout: int) ->
             # zero-answer message would send someone to debug a rule that may be perfectly fine.
             click.echo(f"{RED}✗ cannot reach the control API — is the proxy up?{R}")
             raise SystemExit(unproven)
-        # Checked on every poll, and unproven rather than failed: another profile's proxy can take
-        # the port before the first look or between two of them, and its counters are evidence
-        # about a different profile's rules — the run this command was given cannot be checked
-        # against them at all, which is not the same as checking it and finding no answers.
         _require_same_profile(health, unproven_exit=unproven)
         if "answers" not in health:
             click.echo(f"{RED}✗ this proxy does not report answer counts — restart it "
@@ -1465,9 +1451,8 @@ def assert_answered(override_id: str, required_run: str | None, timeout: int) ->
             break
         time.sleep(1)
 
-    # The diagnostic read, and the last chance for the port to change hands: `/health` is unscoped
-    # so no poll above can be refused for the profile, but this one can, and it would otherwise
-    # print a mismatch under the code that means "your run was checked and nothing answered".
+    # The diagnostic read, and the last chance for the port to change hands: a 409 here must not
+    # exit under the code that means "your run was checked and nothing answered".
     entries = _get_json("/__mock__/recent", timeout=2, unproven_exit=unproven) or []
     waited = f" within {timeout}s" if timeout else ""
     scope = f"in run {required_run}" if required_run else "this run"
