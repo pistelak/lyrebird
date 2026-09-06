@@ -35,11 +35,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from collections.abc import Mapping, Sequence
 from functools import lru_cache
 from typing import Any, TypeGuard
 
+SCHEMA_VERSION = 1  # the session-file format this engine reads; see `normalise_session`
 MAX_WILDCARDS = 10  # a bounded number of wildcards keeps the generated regex cheap to evaluate
 MAX_SEQUENCE_STEPS = 50  # bounded for the same reason: a pasted file must not cost unbounded memory
 VALID_MODES = ("replace", "patch")
@@ -517,6 +519,14 @@ def validate_override(override: Any) -> dict:
     if delay is not None:
         if isinstance(delay, bool) or not isinstance(delay, (int, float)):
             raise ValidationError("delayMs must be a number")
+        # Before the comparison and the conversion, both of which a non-finite float gets past or
+        # through: `json.loads` turns `1e309`, `Infinity` and `NaN` into floats, `NaN < 0` is False,
+        # and `int()` then raises OverflowError (not even a ValueError) from inside validation.
+        # That is not a rule this file refuses, it is validation itself falling over — the caller
+        # gets a traceback instead of the field name, and the loader's `except ValidationError`
+        # never sees it, so one such rule took a whole session's diagnostics with it.
+        if isinstance(delay, float) and not math.isfinite(delay):
+            raise ValidationError("delayMs must be a finite number")
         if delay < 0:
             raise ValidationError("delayMs must not be negative")
         result["delayMs"] = int(delay)
@@ -546,8 +556,10 @@ def derived_id(override: Mapping[str, Any]) -> str:
 def normalise_session(session: Any, name: str) -> dict:
     """Coerce a session read from disk or an import payload into a shape the store can rely on.
 
-    Invalid overrides are dropped rather than taking the whole session (or the proxy) down; the
-    caller reports them.
+    Two failure grades, deliberately different: an invalid *override* is dropped into `_problems`
+    rather than taking the whole session (or the proxy) down, and the caller reports it; a session
+    that is not an object, or is stamped with a `schemaVersion` this engine does not read, raises —
+    there is no part of it that can be trusted, so keeping any of it would be a guess.
     """
     if not is_plain_object(session):
         raise ValidationError("session must be a JSON object")
@@ -559,6 +571,18 @@ def normalise_session(session: Any, name: str) -> dict:
     result = {key: value for key, value in session.items() if not key.startswith("_")}
     result["name"] = name
     result.setdefault("schemaVersion", 1)
+    # Refused whole, not per-rule. A file written for a format this engine does not know is a file
+    # it would read with the wrong rules — silently, and only in the ways the format changed. The
+    # refusal turns that into a session the loader *names* as skipped, which is the difference
+    # between "your scenario is not loaded" and "your scenario loaded and behaves oddly".
+    # `isinstance(True, int)` is True, so bools are excluded explicitly: `"schemaVersion": true`
+    # is a typo, not version 1.
+    version = result["schemaVersion"]
+    if isinstance(version, bool) or not isinstance(version, int) or version != SCHEMA_VERSION:
+        raise ValidationError(
+            f"schemaVersion: unsupported version {version!r} — this engine reads version "
+            f"{SCHEMA_VERSION}"
+        )
     result.setdefault("notes", "")
     result.setdefault("verified", False)
 

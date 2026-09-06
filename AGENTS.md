@@ -9,6 +9,7 @@ This file is the contract for that. It assumes you can run shell commands and re
 ## The loop
 
 ```bash
+lyrebird --profile PATH validate NAME   # offline: non-zero unless that scenario loads whole
 lyrebird --profile PATH up          # start; non-zero if it did not achieve interception
 lyrebird --profile PATH use NAME    # activate a saved scenario
 # relaunch the app under test
@@ -132,6 +133,56 @@ Two options, and the second is usually the right one for an agent.
 
 Then `lyrebird use orders-outage`. Files are picked up when the proxy starts.
 
+**Check the file before you start anything.** A file the proxy cannot read whole does not stop it
+starting: it keeps the rules it can, reports the rest to its log, and runs. So a scenario can be
+live and quietly missing the one rule your test depends on. `validate` is where that surfaces, and
+it needs no proxy, changes no network settings and writes nothing:
+
+```bash
+lyrebird --profile PATH validate                  # every file in <profile>/sessions/
+lyrebird --profile PATH validate orders-outage    # just this one
+```
+
+```
+✓ orders-outage            1 rule(s)
+✗ partial                  1 rule(s) kept, 2 dropped
+    partial.json: override[1]: match: unknown field 'paths' — a matcher may only carry method, path, query, bodyContains
+    partial.json: override[2]: duplicate id 'ovr_ok' — ids must be unique within a session; this rule was skipped
+✗ broken                   not loaded at all
+    skipped broken.json: Expecting property name enclosed in double quotes: line 1 column 2 (char 1)
+```
+
+**Exit 0 only when every session named loads whole.** It refuses a name that does not exist rather
+than reporting an empty session for it, and it refuses to exit 0 having found no files at all —
+the usual cause of that is the wrong `--profile`.
+
+`--json` is the machine-readable form:
+
+```json
+{
+  "ok": false,
+  "problems": [],
+  "sessions": [
+    { "name": "partial", "file": "/path/to/profile/sessions/partial.json",
+      "loaded": true, "ok": false, "overrideCount": 1,
+      "problems": ["partial.json: override[1]: match: unknown field 'paths' — …"] },
+    { "name": "broken", "file": "/path/to/profile/sessions/broken.json",
+      "loaded": false, "ok": false, "overrideCount": null,
+      "problems": ["skipped broken.json: Expecting property name enclosed in double quotes: …"] }
+  ]
+}
+```
+
+`loaded` false means the file was refused entirely — malformed JSON, not an object, or a
+`schemaVersion` this engine does not read — and `overrideCount` is then `null`, not `0`: a refused
+file has no rule count, and zero would read as a session that loaded and happens to be empty.
+`ok` false with `loaded` true is the dangerous one: that session *will* run, without the rules in
+`problems`.
+
+The top-level `problems` is about the *request* rather than a file — a name that names nothing, a
+name that could not be one, a profile with no sessions in it — and `sessions` is then empty. Every
+failure comes back in this shape, so `--json` output never has to be parsed as prose.
+
 **Check a rule before you launch anything.** `explain-match` answers, in a second, what otherwise
 costs a cold launch and a walk through the app:
 
@@ -151,6 +202,20 @@ is not there, so a rule broad enough to appear in it is a rule quietly mocking i
 
 That also splits the two things "nothing matched" runs together. If `explain-match` selects your
 rule and it still never fires, the rule is fine and the app did not make the request.
+
+`--session NAME` asks the same question of a saved file instead of the running proxy — same
+ranking, same reasons, no proxy needed:
+
+```bash
+lyrebird --profile PATH explain-match --session orders-outage GET '/api/v1/orders/42'
+```
+
+Its output and `--json` shape are the live command's, plus a `problems` list — present only with
+`--session`, because only then is there a file whose load problems were read. It exits non-zero
+when the file did not load whole even if a rule was selected. The proxy drops those rules too, so
+the winner it names is the one that would be picked; what is *not* true is that the ranking covers
+the rules you wrote — yours may be missing rather than out-ranked, which is usually the thing you
+ran the command to find out. `validate` is where you read those problems in full.
 
 **Or add one from the CLI,** which takes effect immediately with no restart:
 
@@ -267,11 +332,14 @@ net; if not, take a copy before touching someone else's sessions.
 | `assert-answered` fails but the screen looked right | The real backend served it. The rule never applied — that is the point of the command |
 | `assert-answered` lists paths you did not expect | The app went somewhere else; the matcher is probably fine |
 | A rule matches more screens than you meant | `explain-match` on a sibling request — if it selects your rule, it is too broad |
+| A rule you wrote in a session file is nowhere in `explain-match` | It was dropped at load. `lyrebird validate NAME` names the rule and the field |
+| A whole session behaves as if it were empty | The file was refused whole — malformed JSON, or a `schemaVersion` this engine does not read. `lyrebird validate NAME` |
 | A sequence is one step ahead | Something else called the endpoint. Narrow `match`, or use `advanceOn` |
 | `up` fails on CA | No booted simulator. Boot one first |
 | 421 / 415 from the API | Missing `Host: 127.0.0.1:8088` or `Content-Type: application/json` — or just use the CLI |
 | 409 `profile_mismatch` | Another profile's proxy holds the port. `lyrebird down` first, or pass the `--profile` that is running |
 | `path escapes …` when changing sessions or overrides (API: 400 `invalid_name`) | A session file resolves outside `sessions/` or outside the profile — usually a symlink. Symlink the whole profile instead |
+| A session file is on disk but the proxy does not have it | Same cause: reads are held to the same rule, so it is skipped at load. `lyrebird validate` names it |
 
 `lyrebird logs` prints the last 60 lines of the proxy log and writes the path to stderr, so
 `tail -f "$(lyrebird logs 2>&1 >/dev/null)"` follows it. When the proxy itself fails to start, `up` prints the last

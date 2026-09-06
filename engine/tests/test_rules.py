@@ -584,3 +584,71 @@ def test_an_explicit_null_match_is_rejected():
     says "no matcher", the other says "here is my matcher" and hands over nothing."""
     with pytest.raises(rules.ValidationError, match="match must be a JSON object"):
         rules.validate_override({"mode": "replace", "status": 200, "match": None})
+
+
+# MARK: - Session schema version
+
+def test_a_session_without_a_schema_version_is_read_as_version_1():
+    """The field has always been optional, and hand-writing a session is the documented workflow."""
+    assert rules.normalise_session({"overrides": []}, "s")["schemaVersion"] == 1
+
+
+def test_an_unsupported_schema_version_refuses_the_whole_session():
+    """A file written for a format this engine does not know would be read with the wrong rules —
+    silently, and only in the ways the format changed. Refusing turns it into a session the loader
+    names as skipped, which is a different thing to act on from one that loaded and behaves oddly."""
+    with pytest.raises(rules.ValidationError, match="schemaVersion"):
+        rules.normalise_session({"schemaVersion": 2, "overrides": []}, "s")
+
+
+def test_a_boolean_schema_version_is_not_read_as_version_1():
+    """`isinstance(True, int)` is True, so `"schemaVersion": true` would otherwise load as the
+    version it happens to equal rather than being reported as the typo it is."""
+    with pytest.raises(rules.ValidationError, match="schemaVersion"):
+        rules.normalise_session({"schemaVersion": True, "overrides": []}, "s")
+
+
+@pytest.mark.parametrize("version", ["1", 1.0, None, [1]])
+def test_a_non_integer_schema_version_is_refused(version):
+    with pytest.raises(rules.ValidationError, match="schemaVersion"):
+        rules.normalise_session({"schemaVersion": version, "overrides": []}, "s")
+
+
+def test_a_valid_rule_survives_a_refused_schema_version_nowhere():
+    """The refusal is whole-session: no part of a file stamped with an unknown version is kept,
+    because nothing in it can be trusted to mean what this engine would read it as."""
+    payload = {"schemaVersion": 99,
+               "overrides": [{"mode": "replace", "status": 200, "match": {"path": "/a"}}]}
+    with pytest.raises(rules.ValidationError):
+        rules.normalise_session(payload, "s")
+
+
+# MARK: - Numbers that are not numbers
+#
+# `json.loads` accepts `1e309`, `Infinity` and `NaN` and hands back floats. Validation has to refuse
+# them as rules, not fall over on them: an exception that is not a ValidationError escapes every
+# `except ValidationError` between here and the caller, so one such rule costs a whole file its
+# diagnostics — and the operator gets a traceback where the field name belongs.
+
+@pytest.mark.parametrize("delay", [float("inf"), -float("inf"), float("nan"), 1e309])
+def test_a_non_finite_delay_is_refused_as_a_rule_not_as_a_crash(delay):
+    with pytest.raises(rules.ValidationError, match="finite"):
+        rules.validate_override({"mode": "replace", "status": 200, "delayMs": delay})
+
+
+@pytest.mark.parametrize("status", [float("inf"), float("nan"), 10**400])
+def test_a_status_that_is_not_a_usable_integer_is_refused_the_same_way(status):
+    """The other numeric fields were checked for the same hole: `status` (on the rule and on every
+    sequence step) and `schemaVersion` all test `isinstance(..., int)` before comparing, so no
+    float ever reaches a conversion. `delayMs` was the only one that converted."""
+    with pytest.raises(rules.ValidationError):
+        rules.validate_override({"mode": "replace", "status": status})
+    with pytest.raises(rules.ValidationError):
+        rules.validate_override({"mode": "replace", "status": 200,
+                                 "sequence": {"steps": [{"status": status}]}})
+
+
+@pytest.mark.parametrize("version", [float("inf"), float("nan"), 10**400])
+def test_a_schema_version_that_is_not_a_usable_integer_is_refused_the_same_way(version):
+    with pytest.raises(rules.ValidationError, match="schemaVersion"):
+        rules.normalise_session({"schemaVersion": version, "overrides": []}, "s")

@@ -44,9 +44,12 @@ link: a session file must resolve under the resolved `sessions/` directory *and*
 profile. A `sessions/` linked out of the profile therefore fails every write that touches a session
 file — including `session new`, `session rm`, `override add`, `override clear`,
 `DELETE /overrides/{id}` and `POST /sessions/import` — with `path escapes …`; a single file linked
-out, or into a sibling directory inside the profile, fails only the writes to that session. Reads
-are not checked, so `status` lists the sessions, `use` still switches between them, and the proxy
-looks healthy. Move the whole profile, not the sessions.
+out, or into a sibling directory inside the profile, fails only the writes to that session.
+
+Reads are held to the same rule, so such a file is not loaded at all: startup skips it with
+`path escapes …` in its load problems, and `lyrebird validate` names it. That is the point — a
+session the proxy served but could never save was a scenario you could not edit and could not tell
+apart from one that had loaded. Move the whole profile, not the sessions.
 
 Sessions you save go into the profile — that is what it is for. Everything the tool
 writes for its own purposes stays out, in the macOS directory that matches how long the file
@@ -297,6 +300,55 @@ Named, saveable scenarios under `<profile>/sessions/`. One active session drives
 bundled examples are `enable-beta-export`, `orders-outage`, `slow-profile`, `checkout-edge-cases`,
 `remove-item-then-refresh` and `retry-then-succeed` — the last two demonstrate the two sequence
 triggers.
+
+A session file carries `schemaVersion: 1`. It may be omitted, but any other value is refused whole:
+a file written for a format this engine does not read would otherwise load with the wrong rules,
+silently and only in the ways the format changed.
+
+## Checking a session file without starting anything
+
+Startup keeps the rules it can read and reports the rest, so a scenario can be live and quietly
+missing the rule a test depends on. Two commands answer that from the file alone — no proxy, no
+network change, nothing written to the profile:
+
+```bash
+lyrebird validate                     # every file in <profile>/sessions/
+lyrebird validate orders-outage       # one of them
+lyrebird validate --json              # machine-readable
+```
+
+```
+✓ orders-outage            1 rule(s)
+✗ partial                  1 rule(s) kept, 2 dropped
+    partial.json: override[1]: match: unknown field 'paths' — a matcher may only carry method, path, query, bodyContains
+    partial.json: override[2]: duplicate id 'ovr_ok' — ids must be unique within a session; this rule was skipped
+✗ broken                   not loaded at all
+    skipped broken.json: Expecting property name enclosed in double quotes: line 1 column 2 (char 1)
+```
+
+Exit code 0 only when every session named loads whole. `--json` gives
+`{"ok": bool, "problems": [], "sessions": [{"name", "file", "loaded", "ok", "overrideCount",
+"problems": []}]}`, where `loaded` false means the file was refused entirely and `overrideCount` is
+then `null` rather than `0` — a refused file has no rule count, and zero reads as a session that
+loaded empty. The top-level `problems` holds what went wrong with the *request* rather than with a
+file: a name that names nothing, a name that could not be one, a profile with no sessions in it.
+Every failure comes back in this shape, so `--json` never has to be parsed as prose.
+
+`explain-match --session NAME` runs the same ranking as the live command against a file:
+
+```bash
+lyrebird explain-match --session orders-outage GET '/api/v1/orders/42'
+```
+
+Output and `--json` shape match the live command, plus a `problems` list (present only with
+`--session`, because only then is there a file whose load problems were actually read). It exits
+non-zero if the file did not load whole even when a rule was selected. The proxy drops those rules
+too, so the winner named is the one it would pick; what is not true is that the ranking covers the
+rules in the file — and "my rule was never loaded" is the question this command gets run to answer.
+
+Both read session files through `store.load_session_file`, the function `Store._load` loops over at
+startup, and rank with `rules.find_override` — so the verdict is the engine's, not a second opinion
+about it.
 
 ## Files
 

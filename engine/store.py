@@ -58,7 +58,13 @@ def _contained(parent: Path, *parts: str) -> Path:
     try:
         resolved = candidate.resolve()
         roots = [parent.resolve(), config.PROFILE_DIR.resolve()]
-    except OSError as error:
+    except (OSError, RuntimeError) as error:
+        # RuntimeError as well as OSError: `Path.resolve()` raises `RuntimeError("Symlink loop
+        # from …")` for a link that points at itself, and it is not an OSError. Startup reads every
+        # session file through here, so an uncaught one is a self-referencing file in `sessions/`
+        # stopping the proxy from starting at all — and an offline command dying on a traceback
+        # instead of the JSON diagnostics it promises. "I could not resolve it" is the honest
+        # verdict for both, and it is a refusal, not a pass.
         raise UnsafeName(f"cannot resolve path: {error}") from None
     for root in roots:
         if not resolved.is_relative_to(root):
@@ -66,8 +72,58 @@ def _contained(parent: Path, *parts: str) -> Path:
     return candidate
 
 
-def _session_path(name: str) -> Path:
+def session_path(name: str) -> Path:
+    """Where the session called `name` lives. Resolves only — it creates nothing."""
     return _contained(config.SESSIONS_DIR, f"{safe_component(name, 'session name')}.json")
+
+
+def session_files() -> list[Path]:
+    """Every session file in the profile, in the order startup reads them.
+
+    Shared with the offline commands so "which files are a profile's sessions" has one answer:
+    a file the loader would read but an inspection command would not is a file whose problems
+    only ever surface as a proxy that behaves oddly.
+    """
+    return sorted(config.SESSIONS_DIR.glob("*.json"))
+
+
+def load_session_file(file: Path) -> tuple[dict | None, list[str]]:
+    """Read one session file the way startup does: `(session, problems)`.
+
+    `session` is None when nothing could be kept — an unsafe name, an unreadable or malformed file,
+    a payload that is not an object, a `schemaVersion` this engine does not read — and `problems`
+    then holds the one `skipped <file>: …` line saying so. Otherwise it is the normalised session
+    and `problems` lists the rules that were reported-and-dropped, each prefixed with the file name.
+    The two are distinguishable on purpose: "this scenario is not loaded" and "this scenario is
+    loaded without the rule you are looking for" send an operator to different places.
+
+    A module-level function rather than a `Store` method, so a command can ask "what would the proxy
+    make of this file?" without constructing a store — which creates directories, synthesises a
+    `default` session and reads the active-session pointer, none of which an inspection may do.
+    `Store._load` is a loop around this function, so an offline answer cannot drift from startup's.
+    """
+    try:
+        name = safe_component(file.stem, "session name")
+        # Containment on the file about to be *read*, not only on the ones written and unlinked.
+        # Startup reaches its files through a glob, so nothing used to check them: a session file
+        # symlinked out of `sessions/` loaded into the proxy while `session_path` refused that very
+        # session by name — one file, two verdicts, and the permissive one was the one that ran. It
+        # is the same rule either way now, so a session the proxy serves is one it can also save.
+        _contained(file.parent, file.name)
+    except UnsafeName as error:
+        return None, [f"skipped {file.name}: {error}"]
+    try:
+        raw = json.loads(file.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError) as error:
+        # UnicodeDecodeError is a ValueError and not a JSONDecodeError — it is raised by the decode,
+        # before json sees anything — so without it a file of binary junk escaped all three arms and
+        # took the proxy down at startup, from the one directory operators are told to hand-edit.
+        return None, [f"skipped {file.name}: {error}"]
+    try:
+        session = rules.normalise_session(raw, name)
+    except rules.ValidationError as error:
+        return None, [f"skipped {file.name}: {error}"]
+    return session, [f"{file.name}: {problem}" for problem in session.pop("_problems", [])]
 
 
 def _clone(source: dict, name: str) -> dict:
@@ -180,25 +236,13 @@ class Store:
 
     def _load(self) -> None:
         config.SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
-        for file in sorted(config.SESSIONS_DIR.glob("*.json")):
-            try:
-                name = safe_component(file.stem, "session name")
-            except UnsafeName as error:
-                self._problem(f"skipped {file.name}: {error}")
+        for file in session_files():
+            session, problems = load_session_file(file)
+            for problem in problems:
+                self._problem(problem)
+            if session is None:
                 continue
-            try:
-                raw = json.loads(file.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError) as error:
-                self._problem(f"skipped {file.name}: {error}")
-                continue
-            try:
-                session = rules.normalise_session(raw, name)
-            except rules.ValidationError as error:
-                self._problem(f"skipped {file.name}: {error}")
-                continue
-            for problem in session.pop("_problems", []):
-                self._problem(f"{file.name}: {problem}")
-            self.sessions[name] = session
+            self.sessions[session["name"]] = session
 
         if "default" not in self.sessions:
             # In memory only. Writing it would dirty a profile kept in git the first time the
@@ -227,7 +271,7 @@ class Store:
         Taking the dict rather than looking it up is what lets a mutator write its candidate before
         publishing it, so a failed write leaves nothing half-applied.
         """
-        config.atomic_write(_session_path(name), json.dumps(_persistable(session), indent=2))
+        config.atomic_write(session_path(name), json.dumps(_persistable(session), indent=2))
 
     def _persist_state(self, name: str) -> None:
         """Record `name` as active. Takes the name for the same reason `_write_session` takes the
@@ -492,7 +536,7 @@ class Store:
     def delete_session(self, name: str) -> bool:
         if name == "default" or name not in self.sessions:
             return False
-        path = _session_path(name)
+        path = session_path(name)
         # Switch away BEFORE removing: set_active reads the outgoing session's override count.
         if self.active_name == name:
             self._activate("default")
@@ -501,7 +545,7 @@ class Store:
             path.unlink()
         except FileNotFoundError:
             pass
-        except OSError as error:
+        except (OSError, RuntimeError) as error:
             self._problem(f"could not delete {path.name}: {error}")
             return False
         return True
