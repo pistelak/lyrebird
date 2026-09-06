@@ -1,22 +1,62 @@
 # Operating Lyrebird from an agent
 
-Lyrebird is designed to be driven by a coding agent as much as by a person. Most of its use is a
-machine putting an app into a specific backend state, checking something, and putting the machine
-back the way it found it.
+Lyrebird's contract for coding agents; assumes a shell and JSON.
 
-This file is the contract for that. It assumes you can run shell commands and read JSON.
+## First run
 
-## The loop
+Use your own profile. On a shared one, follow
+[the scratch-session procedure](#working-on-a-scenario-without-disturbing-anyone) first, and name
+that session in the loop.
 
 ```bash
 lyrebird --profile PATH validate NAME   # offline: non-zero unless that scenario loads whole
 lyrebird --profile PATH up --use NAME   # start, activate the scenario, then relaunch the app
 lyrebird --profile PATH wait-ready --match --timeout 30
-RUN=$(lyrebird --profile PATH reset ovr_x --json | jq -r .reset.ovr_x)   # a fresh run, and its id
+RUN=$(lyrebird --profile PATH reset ovr_x --json | jq -r .reset.ovr_x)   # a fresh run, and its id — immediately before the action under test
 # …do the work you came to do…
 lyrebird --profile PATH assert-answered ovr_x --run "$RUN"   # non-zero unless it answered in it
 lyrebird --profile PATH down        # restores the proxy settings that were there before
 ```
+
+The contract:
+
+- **Profile** — always pass `--profile`.
+- **Cleanup** — check `up`'s exit code; on failure stop and run `down`, because setup may have left
+  the proxy running. Run `down` on every exit path.
+- **Exit codes** — 0 means the postcondition was met, never merely that the command ran.
+  `assert-answered --run`: 1 = the rule answered nothing in your run; 3 = the assertion could not be
+  made — resolve the reported cause, then reset and repeat the action.
+- **Simulator** — more than one booted → `up --simulator <udid>`. That picks the device for the CA
+  and the relaunch only: interception still covers the profile's hosts across the Mac and every
+  simulator.
+- **Proof** — `wait-ready --match` proves an override matched. Only
+  `assert-answered <id> --run "$RUN"` proves the named rule answered in your run, so keep the id
+  `reset --json` prints.
+
+Do not:
+
+- **Point it at production.** Development and simulators only.
+- **Leave interception on.** Run `down`.
+- **Commit a profile** into this repository, or any public one. Sessions can hold real payloads.
+- **Assume no output means success.** Check exit codes; they are meaningful.
+
+The rest:
+
+- Scenarios → [Making a scenario](#making-a-scenario), [Sequences](#scenarios-that-move-between-states)
+- State and proof → [Six things](#six-things-worth-knowing-before-you-start)
+- Deleting → [Destructive operations](#the-destructive-operations)
+- Failures → [TROUBLESHOOTING.md](TROUBLESHOOTING.md)
+
+---
+
+Reference. Lyrebird is designed to be driven by a coding agent as much as by a person: most of its
+use is a machine putting an app into a specific backend state, checking something, and putting the
+machine back the way it found it. The block above is the contract for that; read the section you
+need.
+
+## The loop
+
+The block at the top of this file is that loop; this section is why it has that shape.
 
 Always pass `--profile` explicitly. `LYREBIRD_PROFILE` works too, but an explicit path is one less
 thing to be wrong about when something misbehaves later.
@@ -396,36 +436,5 @@ take a copy before touching someone else's sessions.
 
 ## When it does not work
 
-| Symptom | Usual cause |
-|---|---|
-| `wait-ready` times out with 0 requests | App wasn't relaunched, or the host isn't in `profile.json` |
-| Requests arrive but nothing matches | Path pattern wrong. `/recent` shows the real paths |
-| `patchSkipped` in `/recent` | `patch` needs a JSON response from a live upstream; use `replace` if there isn't one |
-| `overrun` in `/recent` | A sequence ran past its last step. Add steps, or set `onExhausted` |
-| `sequence wait` fails at once | The step already went by — reset, then trigger the action |
-| `assert-answered` fails but the screen looked right | The real backend served it. The rule never applied — that is the point of the command |
-| `assert-answered` lists paths you did not expect | The app went somewhere else; the matcher is probably fine |
-| `assert-answered --run` exits 3 | The run ended under the test — something reset the rule, replaced it, switched session, or took the port for another profile. Draw the boundary again and re-run the action; the assertion was never made |
-| A rule matches more screens than you meant | `explain-match` on a sibling request — if it selects your rule, it is too broad |
-| A rule you wrote in a session file is nowhere in `explain-match` | It was dropped at load. `lyrebird validate NAME` names the rule and the field |
-| A whole session behaves as if it were empty | The file was refused whole — malformed JSON, or a `schemaVersion` this engine does not read. `lyrebird validate NAME` |
-| A sequence is one step ahead | Something else called the endpoint. Narrow `match`, or use `advanceOn` |
-| `up` fails on CA | No booted iOS simulator (a booted watch is not one). Boot one first |
-| `up` or `trust-ca` says N simulators are booted | Name the one you drive: `--simulator <udid>` (it lists them) |
-| The app rejects Lyrebird's certificate | The CA is on another device. Re-run `trust-ca --simulator <udid>` for the one under test |
-| The app came back without the mock after a relaunch | It was relaunched on another device. `lyrebird relaunch` uses the one `up` recorded |
-| 421 / 415 from the API | Missing `Host: 127.0.0.1:8088` or `Content-Type: application/json` — or just use the CLI |
-| 409 `profile_mismatch` | Another profile's proxy holds the port. `lyrebird down` first, or pass the `--profile` that is running |
-| `path escapes …` when changing sessions or overrides (API: 400 `invalid_name`) | A session file resolves outside `sessions/` or outside the profile — usually a symlink. Symlink the whole profile instead |
-| A session file is on disk but the proxy does not have it | Same cause: reads are held to the same rule, so it is skipped at load. `lyrebird validate` names it |
-
-`lyrebird logs` prints the last 60 lines of the proxy log and writes the path to stderr, so
-`tail -f "$(lyrebird logs 2>&1 >/dev/null)"` follows it. When the proxy itself fails to start, `up` prints the last
-lines for you; later failures (CA, PAC, relaunch) report their own reason instead.
-
-## Do not
-
-- **Point it at production.** Development and simulators only.
-- **Leave interception on.** Run `down`.
-- **Commit a profile** into this repository, or any public one. Sessions can hold real payloads.
-- **Assume no output means success.** Check exit codes; they are meaningful.
+The symptom → cause table is in [TROUBLESHOOTING.md](TROUBLESHOOTING.md), together with what
+`lyrebird logs` prints and how to follow the proxy log.

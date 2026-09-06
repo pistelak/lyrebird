@@ -212,6 +212,7 @@ the CA.
 - [Engine guide](engine/README.md) — the full rule schema, matching order, control API, ports, tests
 - [Menu-bar app](menubar/README.md) — building and signing the SwiftUI client
 - [AGENTS.md](AGENTS.md) — driving Lyrebird from a coding agent
+- [Troubleshooting](TROUBLESHOOTING.md) — symptoms, their usual causes, and reading the proxy log
 - [Contributing](CONTRIBUTING.md)
 
 ## Licence
