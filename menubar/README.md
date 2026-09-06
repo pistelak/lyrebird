@@ -17,6 +17,25 @@ xcodebuild -project Lyrebird.xcodeproj -scheme Lyrebird -configuration Debug bui
 
 Or open the generated `Lyrebird.xcodeproj` in Xcode.
 
+### Release versioning
+
+`project.yml` sets `MARKETING_VERSION: "0.0.0"` and `CURRENT_PROJECT_VERSION: "0"` as development
+placeholders, and the Info.plist references both as `$(…)` rather than holding literals. A version
+that reads `0.0.0` is therefore a build nobody stamped — not a release. To stamp one, pass both on
+the `xcodebuild` command line and read the result back out of the bundle (from `menubar/`):
+
+```bash
+MARKETING=1.2.3 BUILD=42 && \
+xcodebuild -project Lyrebird.xcodeproj -scheme Lyrebird \
+  -configuration Release -derivedDataPath .build -destination 'platform=macOS' \
+  MARKETING_VERSION="$MARKETING" CURRENT_PROJECT_VERSION="$BUILD" build && \
+scripts/verify-version.sh .build/Build/Products/Release/Lyrebird.app "$MARKETING" "$BUILD"
+```
+
+The verify line is not optional politeness: `xcodebuild` accepts settings it does not use, so an
+override that never reaches the plist produces a green build and a mis-versioned app. The script
+only reads the bundle — a signed app cannot have its Info.plist patched after the fact.
+
 The project builds **ad-hoc signed** (`CODE_SIGN_IDENTITY: "-"`, hardened runtime off), which is
 fine for running it on your own machine. To distribute it, set `DEVELOPMENT_TEAM` and a Developer
 ID identity in `project.yml`, enable `ENABLE_HARDENED_RUNTIME`, and notarize the result — a
