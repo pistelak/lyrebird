@@ -6,6 +6,7 @@ look same-origin. These tests pin the three checks that close that gap.
 """
 
 import asyncio
+import errno
 import json
 
 from aiohttp.test_utils import TestClient, TestServer
@@ -273,3 +274,36 @@ def test_the_reset_route_stays_behind_the_guard(profile):
                            headers={"Host": "evil.example.com"}, json_body={})
     assert status == 421
     assert body["error"] == "bad_host"
+
+
+# MARK: - A profile that cannot be written
+
+def test_a_rule_whose_write_fails_is_reported_and_not_installed(profile, monkeypatch):
+    """A bare aiohttp 500 says "Internal Server Error" and sends the operator to the proxy log
+    rather than to the disk that is full. One client for both requests, on purpose: a fresh Store
+    would reload from disk and hide a rule left live in memory."""
+    (profile / "profile.json").write_text('{"hosts": []}', encoding="utf-8")
+    config.reload_profile()
+    app = control.make_app(store.Store(), lambda: {"proxyUp": True})
+
+    def refuse(path, text):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(config, "atomic_write", refuse)
+
+    async def main():
+        async with TestClient(TestServer(app)) as client:
+            headers = {"Host": config.CONTROL_HOST_HEADER, "Content-Type": "application/json"}
+            added = await client.post("/__mock__/overrides",
+                                      data=json.dumps({"id": "r", "mode": "replace",
+                                                       "match": {"path": "/a"}}),
+                                      headers=headers)
+            listed = await client.get("/__mock__/overrides",
+                                      headers={"Host": config.CONTROL_HOST_HEADER})
+            return added.status, await added.json(), await listed.json()
+
+    status, body, overrides = asyncio.run(main())
+    assert status == 500
+    assert body["error"] == "persist_failed"
+    assert "No space left" in body["detail"]
+    assert overrides == [], "the rule was published despite the write that failed"

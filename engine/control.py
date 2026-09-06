@@ -59,6 +59,12 @@ async def _guard(request: web.Request, handler: Handler) -> web.StreamResponse:
         return web.json_response({"error": "invalid_name", "detail": str(error)}, status=400)
     except ValueError as error:  # rules.ValidationError and friends
         return web.json_response({"error": "invalid_payload", "detail": str(error)}, status=400)
+    except OSError as error:
+        # The store could not write the profile — a full disk, a read-only profile. It publishes
+        # nothing it could not write, so the caller's change simply did not happen and a retry is
+        # safe. Named and detailed because aiohttp's own 500 is a bare text/plain body that sends
+        # the operator to the proxy log instead of to the disk that is full.
+        return web.json_response({"error": "persist_failed", "detail": str(error)}, status=500)
 
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("Content-Security-Policy", _CSP)

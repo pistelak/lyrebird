@@ -6,6 +6,13 @@ same loop, so flow-hook reads and control-API writes are serialised — no locki
 Every name that becomes a path component (a session name) is validated
 and the resolved path is checked for containment before any read, write, listing or unlink. These
 names arrive from an unauthenticated local HTTP API, so they are treated as untrusted input.
+
+Write then publish: a mutator writes the file that records a change *before* the change becomes
+visible in memory, so a write that fails (full disk, read-only profile) leaves live state, runtime
+slots and the file exactly as they were and the OSError reaches the caller. Otherwise the proxy
+would answer with a rule no profile contains — a divergence nothing later reports. This covers
+session content and the active-session pointer; `delete_session` is the deliberate exception, as
+it drops the live session first and reports a failed unlink through `_problem` and False.
 """
 
 from __future__ import annotations
@@ -214,13 +221,18 @@ class Store:
         # control API exposes them. Printing here would double-report into the same log file.
         self.load_problems.append(message)
 
-    def _persist_session(self, name: str) -> None:
-        session = self.sessions.get(name)
-        if session:
-            config.atomic_write(_session_path(name), json.dumps(_persistable(session), indent=2))
+    def _write_session(self, name: str, session: dict) -> None:
+        """Write the session someone *proposes* to store under `name`, not the one already there.
 
-    def _persist_state(self) -> None:
-        config.atomic_write(config.STATE_FILE, json.dumps({"active": self.active_name}, indent=2))
+        Taking the dict rather than looking it up is what lets a mutator write its candidate before
+        publishing it, so a failed write leaves nothing half-applied.
+        """
+        config.atomic_write(_session_path(name), json.dumps(_persistable(session), indent=2))
+
+    def _persist_state(self, name: str) -> None:
+        """Record `name` as active. Takes the name for the same reason `_write_session` takes the
+        session: the pointer is written before `active_name` moves."""
+        config.atomic_write(config.STATE_FILE, json.dumps({"active": name}, indent=2))
 
     def _activate(self, name: str, *, persist: bool = True) -> None:
         """The one place `active_name` changes.
@@ -230,13 +242,16 @@ class Store:
         four of them — startup, the self-heal in `active_session`, `set_active` and
         `delete_session` — and the last two are easy to miss: deleting the active session falls back
         to `default` without going anywhere near `set_active`.
+
+        The pointer is written first: a switch that cannot be recorded must not happen at all, or
+        the destination's cursors are rewound for a scenario that reverts on the next restart.
         """
+        if persist:
+            self._persist_state(name)
         self.active_name = name
         session = self.sessions.get(name)
         if session is not None:
             _runtime(session).clear()
-        if persist:
-            self._persist_state()
 
     # MARK: - Active session / overrides
 
@@ -259,14 +274,17 @@ class Store:
         overrides = self.active_overrides()
         existing = next((i for i, o in enumerate(overrides) if o.get("id") == override["id"]), None)
         if existing is not None:
-            overrides[existing] = override
+            candidate = [*overrides[:existing], override, *overrides[existing + 1:]]
         else:
-            overrides.append(override)
+            candidate = [*overrides, override]
+        self._write_session(self.active_name, {**session, "overrides": candidate})
+        session["overrides"] = candidate
         # The rule at this id is now a different rule; its old cursor describes steps that may no
         # longer exist. Note this only fires for a caller that supplied an explicit id — an id-less
-        # `override add` mints a fresh random one and so replaces nothing.
+        # `override add` mints a fresh random one and so replaces nothing. It happens after the
+        # write for the same reason the list does: if the write failed the old rule is still live,
+        # and its cursor and answer count still describe it.
         _runtime(session).pop(override["id"], None)
-        self._persist_session(self.active_name)
         return override
 
     def remove_override(self, override_id: str) -> bool:
@@ -275,16 +293,16 @@ class Store:
         remaining = [o for o in self.active_overrides() if o.get("id") != override_id]
         if len(remaining) == len(session["overrides"]):
             return False
+        self._write_session(self.active_name, {**session, "overrides": remaining})
         session["overrides"] = remaining
         _runtime(session).pop(override_id, None)
-        self._persist_session(self.active_name)
         return True
 
     def clear_overrides(self) -> None:
         session = self.active_session()
+        self._write_session(self.active_name, {**session, "overrides": []})
         session["overrides"] = []
         _runtime(session).clear()
-        self._persist_session(self.active_name)
 
     # MARK: - Sequences
 
@@ -461,8 +479,8 @@ class Store:
             base = _clone(self.sessions[clone_from], name)
         else:
             base = _empty_session(name)
+        self._write_session(name, base)
         self.sessions[name] = base
-        self._persist_session(name)
 
     def set_active(self, name: str) -> dict | None:
         if name not in self.sessions:
@@ -515,8 +533,8 @@ class Store:
         problems = normalised.pop("_problems", [])
         if problems:
             raise rules.ValidationError("; ".join(problems))
+        self._write_session(name, normalised)
         self.sessions[name] = normalised
-        self._persist_session(name)
         return name
 
     # MARK: - Recent
