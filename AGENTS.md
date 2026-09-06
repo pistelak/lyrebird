@@ -390,11 +390,9 @@ same reason: a typo and a rule that never fired need completely different fixes.
 It is not the only thing that writes: `session rm` deletes a file, and `override add` replaces a
 rule with the same id. But it is the only one that discards everything at once, which is why it
 is the only one behind a flag — `clear` is easy to reach for while meaning "clear the traffic
-list", which is not what it does. An import that cannot be kept whole — an override that fails
-validation, or two sharing an id — is refused outright rather than partially applied, so a 200 from
-it means every rule you sent is installed. Creating or importing a session that already exists is refused
-rather than silently replacing it. If the profile is under version control that is your safety
-net; if not, take a copy before touching someone else's sessions.
+list", which is not what it does. Creating a session that already exists is refused rather than
+silently replacing it. If the profile is under version control that is your safety net; if not,
+take a copy before touching someone else's sessions.
 
 ## When it does not work
 

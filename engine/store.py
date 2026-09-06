@@ -169,7 +169,7 @@ def _persistable(session: dict) -> dict:
 #
 # Per-rule state that must never reach a profile: sequence cursors, and the count of requests each
 # rule has answered. It hangs off the session under a leading underscore, which `_persistable`
-# already strips — so it is never written to a profile, never survives a clone or an import, and is
+# already strips — so it is never written to a profile, never survives a clone, and is
 # scoped to its session without a second key, all from machinery that was already here for
 # `_problems`.
 
@@ -307,7 +307,7 @@ class Store:
 
         `sessions_not_whole` is a claim about the session under a name *now*, not a history, and
         replacing a session is how an operator recovers from a file that would not load — a
-        malformed `orders-outage.json`, then an import of a good one. Keeping the entry would make
+        malformed `orders-outage.json`, then `session new orders-outage`. Keeping the entry would make
         that recovery invisible: every rule installed, and `up --use orders-outage` still refusing
         to launch the app over a file that no longer decides anything.
 
@@ -381,17 +381,6 @@ class Store:
         # and its cursor and answer count still describe it.
         _runtime(session).pop(override["id"], None)
         return override
-
-    def remove_override(self, override_id: str) -> bool:
-        """False if no such override — reporting a removal that did not happen is a lie."""
-        session = self.active_session()
-        remaining = [o for o in self.active_overrides() if o.get("id") != override_id]
-        if len(remaining) == len(session["overrides"]):
-            return False
-        self._write_session(self.active_name, {**session, "overrides": remaining})
-        session["overrides"] = remaining
-        _runtime(session).pop(override_id, None)
-        return True
 
     def clear_overrides(self) -> None:
         session = self.active_session()
@@ -617,38 +606,6 @@ class Store:
             self._problem(f"could not delete {path.name}: {error}")
             return False
         return True
-
-    def export_session(self, name: str) -> dict | None:
-        session = self.sessions.get(name)
-        return _persistable(session) if session else None
-
-    def import_session(self, payload: dict) -> str | None:
-        """Raises ValidationError if anything in the payload could not be kept, and
-        FileExistsError if the name is taken — the same refusal `create_session` makes, because
-        silently replacing a session someone else may be using is a delete without a `delete`.
-
-        A file on disk is reported-and-dropped, because the file is in front of you and the proxy
-        must still start. An import is an API call at the boundary, and answering 200 to a payload
-        whose second override was silently discarded tells the caller their rule is installed when
-        it is not.
-        """
-        session = payload.get("session", payload)
-        if not rules.is_plain_object(session):
-            return None
-        try:
-            name = safe_component(session.get("name"), "session name")
-        except UnsafeName:
-            return None
-        if name in self.sessions:
-            raise FileExistsError(name)
-        normalised = rules.normalise_session({**_empty_session(name), **session}, name)
-        problems = normalised.pop("_problems", [])
-        if problems:
-            raise rules.ValidationError("; ".join(problems))
-        self._write_session(name, normalised)
-        self.sessions[name] = normalised
-        self._forget_load_problems(name)
-        return name
 
     # MARK: - Recent
 

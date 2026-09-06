@@ -391,7 +391,7 @@ def test_replacing_a_rule_during_its_delay_serves_the_replacement(hosts, profile
 def test_removing_a_rule_during_its_delay_stops_it_answering(hosts, profile):
     subject = addon.Lyrebird()
     subject.store.add_override(_replaceable([201, 202]))
-    flow = _mid_flight(subject, lambda: subject.store.remove_override("s"))
+    flow = _mid_flight(subject, lambda: subject.store.clear_overrides())
     assert flow.response is None, "a rule that no longer exists must not answer"
 
 
