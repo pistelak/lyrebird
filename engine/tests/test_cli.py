@@ -113,6 +113,72 @@ def _unreadable_pac(service):
     raise netproxy.NetworkSetupError("`networksetup -getautoproxyurl Wi-Fi` failed: 1")
 
 
+def _discovery_times_out():
+    """`netproxy.active_service` could not raise until its `route`/`networksetup` calls were given
+    a per-command bound. Now it can, and the three commands that ask it — `up`, `down`, `status` —
+    each ask outside any handler, so an uncaught error there is a traceback in the one place the
+    operator most needs an answer."""
+    raise netproxy.NetworkSetupError("`route -n get default` did not finish within 5s")
+
+
+def test_down_uses_the_recorded_service_when_discovery_times_out(profile, runner, fake_network,
+                                                                 monkeypatch):
+    """`down` asks the OS only when it has no record of its own, so a wedged `route` must not
+    reach this path at all — and the restore must happen on the service the last `up` named."""
+    config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
+    config.write_runtime({"proxyPid": 99, "watchdogPid": 98, "service": "Wi-Fi",
+                          "previousPac": {"url": "http://proxy.example.com/corp.pac", "enabled": True}})
+    health_until_terminated(monkeypatch, fake_network, pid=99)
+    monkeypatch.setattr(netproxy, "active_service", _discovery_times_out)
+
+    result = runner.invoke(cli.cli, ["down"])
+
+    assert result.exit_code == 0, result.output
+    assert fake_network["restored"] == ("Wi-Fi", "http://proxy.example.com/corp.pac", True)
+    assert (99, "addon.py") in fake_network["terminated"]
+
+
+def test_down_stops_the_proxy_but_refuses_success_when_discovery_times_out(profile, runner,
+                                                                          monkeypatch):
+    """With nothing recorded there is no service to restore a PAC *on*, and the read that would
+    have found one never answered. `down` used to die here with a traceback, before it had
+    terminated anything. It must stop the proxy anyway — and then say that the network was not put
+    back, because a restore that could not happen is not a success."""
+    stopped = {"terminated": []}
+    monkeypatch.setattr(cli, "_health", lambda: None if stopped["terminated"] else {"pid": 7})
+    monkeypatch.setattr(netproxy, "active_service", _discovery_times_out)
+    monkeypatch.setattr(netproxy, "restore_pac",
+                        lambda *a: pytest.fail("nothing may be restored with no service to name"))
+    monkeypatch.setattr(cli, "_terminate",
+                        lambda pid, marker: stopped["terminated"].append((pid, marker)))
+
+    result = runner.invoke(cli.cli, ["down"])
+
+    assert result.exit_code == 1
+    assert (7, "addon.py") in stopped["terminated"], "the proxy must be stopped regardless"
+    assert "could not restore the proxy settings" in result.output
+    assert "none is recorded" in result.output
+    assert "did not finish within 5s" in result.output
+
+
+def test_down_refuses_success_when_there_is_nothing_recorded_and_discovery_times_out(
+        profile, runner, monkeypatch):
+    """No proxy answering and no runtime file used to mean "nothing to stop", exit 0 — and it still
+    does when discovery says there is no default route. But a discovery that never answered has
+    not said that: a PAC of ours could be installed on a service nobody checked, and exit 0 would
+    claim the network was looked at."""
+    monkeypatch.setattr(cli, "_health", lambda: None)
+    monkeypatch.setattr(netproxy, "active_service", _discovery_times_out)
+    monkeypatch.setattr(netproxy, "restore_pac",
+                        lambda *a: pytest.fail("nothing may be restored with no service to name"))
+
+    result = runner.invoke(cli.cli, ["down"])
+
+    assert result.exit_code == 1
+    assert "could not be checked" in result.output
+    assert "did not finish within 5s" in result.output
+
+
 def test_down_refuses_to_claim_left_untouched_when_the_pac_cannot_be_read(profile, runner, monkeypatch):
     """A failed `networksetup` used to parse as "no PAC, not ours", so `down` printed "left
     untouched", deleted the runtime file, and the PAC it never read stayed pointing at a dead port."""
@@ -176,6 +242,27 @@ def test_up_says_when_it_cannot_read_the_pac_it_just_installed(profile, runner, 
     assert result.exit_code == 1
     assert "could not read the PAC" in result.output
     assert "not ours" not in result.output
+
+
+def test_up_records_the_proxy_pid_when_service_discovery_times_out(profile, runner, monkeypatch):
+    """An uncaught error from discovery left `up` exiting with the proxy it had just adopted
+    running and no pid written — nothing for `down` to find and stop. The run still fails, and the
+    message names both what it means (no service, nothing intercepted) and why."""
+    (profile / "profile.json").write_text('{"hosts": ["api.example.com"]}', encoding="utf-8")
+    config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(cli, "_health", lambda: {"pid": 4321, "activeSession": "default",
+                                                 "sessions": ["default"], "overrideCount": 0,
+                                                 "proxyPort": 8080})
+    monkeypatch.setattr(cli, "trust_ca_in_sim", lambda simulator: (True, "trusted"))
+    fake_simctl(monkeypatch, [_PHONE])
+    monkeypatch.setattr(netproxy, "active_service", _discovery_times_out)
+
+    result = runner.invoke(cli.cli, ["up"])
+
+    assert result.exit_code == 1
+    assert "could not detect the active network service" in result.output
+    assert "did not finish within 5s" in result.output
+    assert config.read_runtime()["proxyPid"] == 4321
 
 
 def test_watchdog_keeps_the_runtime_file_when_the_restore_keeps_failing(profile, runner, monkeypatch):
@@ -1765,6 +1852,23 @@ def test_status_json_says_empty_when_the_engine_reports_nothing_to_show(profile,
     _status_network(monkeypatch)
     payload = json.loads(runner.invoke(cli.cli, ["status", "--json"]).output)
     assert payload["answers"] == [] and payload["sequences"] == []
+
+
+def test_status_json_reports_a_discovery_timeout_rather_than_printing_nothing(profile, runner,
+                                                                             monkeypatch):
+    """`--json` is what a script reads. An uncaught error from discovery printed no JSON at all,
+    so the caller could not tell "not intercepting" from "the command fell over" — and the exit
+    code is 1 for both. The reason goes where every other unproven PAC goes."""
+    monkeypatch.setattr(cli, "_health", _health_payload)
+    monkeypatch.setattr(netproxy, "active_service", _discovery_times_out)
+
+    result = runner.invoke(cli.cli, ["status", "--json"])
+
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert payload["service"] is None
+    assert payload["intercepting"] is False
+    assert "did not finish within 5s" in payload["pacError"]
 
 
 # MARK: - Offline inspection: `validate` and `explain-match --session`

@@ -7,12 +7,16 @@ so they are validated here against mitmproxy's own option manager.
 
 import asyncio
 import json
+import threading
+import time
 
 import pytest
+from aiohttp.test_utils import TestClient, TestServer
 from mitmproxy.addons import proxyserver
 from mitmproxy.test import taddons, tflow, tutils
 
 import addon
+import config
 
 
 def test_proxy_options_are_accepted_by_mitmproxy(hosts):
@@ -587,10 +591,114 @@ def test_health_reports_an_unreadable_pac_instead_of_dying(profile, monkeypatch)
 
     monkeypatch.setattr(netproxy, "active_service", lambda: "Wi-Fi")
     monkeypatch.setattr(netproxy, "pac_status", boom)
-    meta = addon.Lyrebird()._meta()
+    meta = asyncio.run(addon.Lyrebird()._meta())
     assert meta["proxyUp"] is True
     assert meta["intercepting"] is False
     assert "networksetup" in meta["pacError"]
+    assert meta["service"] == "Wi-Fi"   # discovery succeeded; only the PAC read did not
+
+
+def test_health_reports_a_pac_read_that_could_not_be_launched(profile, monkeypatch):
+    """An OSError from the exec itself is the same claim as a failed one — the PAC is unread, not
+    off. Returned as `intercepting: False` with no `pacError` it would read as "the PAC is off",
+    which is the answer `up` and the menu bar act on."""
+    import netproxy
+
+    def cannot_launch():
+        raise OSError("no such file or directory: networksetup")
+
+    monkeypatch.setattr(netproxy, "active_service", cannot_launch)
+    meta = asyncio.run(addon.Lyrebird()._meta())
+    assert meta["intercepting"] is False
+    assert "networksetup" in meta["pacError"]
+
+
+def blocking_pac_status(monkeypatch, entered, release):
+    """A `pac_status` that hangs the way a wedged `networksetup` does, with a failsafe.
+
+    The 5s cap on the wait is what keeps a broken offload from hanging the whole suite: the test
+    fails on its assertions instead. `expired` records whether the cap was what ended the wait,
+    because a double that let go on its own proves nothing about the code under test.
+    """
+    import netproxy
+    state = {"entries": 0, "expired": None}
+
+    def blocked(service):
+        state["entries"] += 1
+        entered.set()
+        state["expired"] = not release.wait(5)
+        return netproxy.PacStatus(url=netproxy.pac_url(), enabled=True, ours=True)
+
+    monkeypatch.setattr(netproxy, "active_service", lambda: "Wi-Fi")
+    monkeypatch.setattr(netproxy, "pac_status", blocked)
+    return state
+
+
+def test_a_blocked_pac_read_does_not_stall_the_proxys_other_traffic(hosts, monkeypatch):
+    """`/health` used to read the PAC on mitmproxy's own loop — the loop that serves traffic — so
+    one wedged `networksetup` stopped everything until it returned. The deadline is lifted here on
+    purpose: this pins the offload, and the bound has its own test below."""
+    import control
+
+    monkeypatch.setattr(addon, "_OBSERVE_DEADLINE", 30.0)
+    entered, release = threading.Event(), threading.Event()
+    state = blocking_pac_status(monkeypatch, entered, release)
+    subject = addon.Lyrebird()
+    app = control.make_app(subject.store, subject._meta)
+    headers = {"Host": config.CONTROL_HOST_HEADER}
+
+    async def main():
+        async with TestClient(TestServer(app)) as client:
+            health = asyncio.ensure_future(client.get("/__mock__/health", headers=headers))
+            try:
+                assert await asyncio.to_thread(entered.wait, 2), "the PAC read never started"
+                recent = await asyncio.wait_for(
+                    client.get("/__mock__/recent", headers=headers), 2)
+                assert recent.status == 200
+                assert not health.done(), "health answered before the PAC read was released"
+            finally:
+                release.set()
+            answered = await asyncio.wait_for(health, 5)
+            return answered.status, await answered.json()
+
+    status, body = asyncio.run(main())
+    assert status == 200
+    assert body["intercepting"] is True
+    assert state["expired"] is False   # the double was released, not rescued by its own cap
+
+
+def test_concurrent_health_polls_share_one_bounded_observation(hosts, monkeypatch):
+    """Two facts in one run, because they are the same mechanism. The menu bar polls every 2s and
+    the CLI every 1s, so a wedged `networksetup` must neither strand a worker thread per poll nor
+    hold an answer back: the CLI reads a slow `/health` exactly as it reads a dead proxy, and the
+    watchdog restores the network over a live one."""
+    import control
+
+    entered, release = threading.Event(), threading.Event()
+    state = blocking_pac_status(monkeypatch, entered, release)
+    subject = addon.Lyrebird()
+    app = control.make_app(subject.store, subject._meta)
+    headers = {"Host": config.CONTROL_HOST_HEADER}
+
+    async def main():
+        async with TestClient(TestServer(app)) as client:
+            started = time.monotonic()
+            try:
+                responses = await asyncio.wait_for(asyncio.gather(
+                    *(client.get("/__mock__/health", headers=headers) for _ in range(10))), 4)
+                bodies = [await response.json() for response in responses]
+                return time.monotonic() - started, [r.status for r in responses], bodies
+            finally:
+                release.set()
+
+    elapsed, statuses, bodies = asyncio.run(main())
+    assert statuses == [200] * 10
+    assert elapsed < 3, "the bound did not hold: health waited for the wedged PAC read"
+    for body in bodies:
+        assert body["proxyUp"] is True
+        assert body["intercepting"] is False        # unproven, not seen to be off
+        assert body["pacError"] == "PAC read did not finish within 1.0s"
+    assert state["entries"] == 1, "each poll started its own observation"
 
 
 def test_the_addon_refuses_to_load_on_a_malformed_profile(profile):

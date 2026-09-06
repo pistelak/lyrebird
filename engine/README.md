@@ -146,6 +146,9 @@ and what the PAC advertises — those are deliberately separate settings.
 - `GET /health` (reports `intercepting` / `proxyUp` / `pacEnabled` / `simBundleId` / `sessions` /
   `sequences` / `answers` / `loadProblems` / `sessionsNotWhole`, and `pacError` when the PAC could
   not be read — `intercepting` is then unproven, not off) · `GET /recent`
+  - The PAC is read in a worker thread, one observation at a time, and health answers within a
+    second whether or not it has finished, so a hung `networksetup` shows up as a `pacError`
+    instead of stalling health and the proxy's traffic together.
   - `loadProblems` is one string **per problem** found while loading the session files — a session
     with two invalid overrides yields two — as `"<file>.json: …"`, or `"skipped <file>.json: …"`
     when the whole file was rejected. `sessions` cannot carry any of it: a session whose invalid

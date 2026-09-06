@@ -18,7 +18,7 @@ profile A, which holds the control port.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from aiohttp import web
@@ -114,7 +114,10 @@ async def _safe_json(request: web.Request) -> dict:
     return payload
 
 
-def make_app(store: Store, meta_provider: Callable[[], dict[str, Any]]) -> web.Application:
+MetaProvider = Callable[[], Awaitable[dict[str, Any]]]
+
+
+def make_app(store: Store, meta_provider: MetaProvider) -> web.Application:
     app = web.Application(middlewares=[_guard])
     routes = web.RouteTableDef()
 
@@ -128,6 +131,11 @@ def make_app(store: Store, meta_provider: Callable[[], dict[str, Any]]) -> web.A
 
     @routes.get("/__mock__/health")
     async def health(_request: web.Request) -> web.StreamResponse:
+        # Awaited *before* the store is read, not inline below. The provider observes the network
+        # off this loop, so it suspends — and a session switch landing in that gap would pair
+        # counters from the session before it with meta from after, a snapshot describing no
+        # moment that ever existed. Everything after this line is synchronous.
+        meta = await meta_provider()
         return web.json_response({
             "ok": True,
             "activeSession": store.active_name,
@@ -151,7 +159,7 @@ def make_app(store: Store, meta_provider: Callable[[], dict[str, Any]]) -> web.A
             # Named for what it holds, not for the objects it describes: `overrides` would read as
             # the rules themselves, which is what GET /overrides returns.
             "answers": store.answer_states(),
-            **meta_provider(),
+            **meta,
         })
 
     @routes.get("/__mock__/recent")
@@ -241,7 +249,7 @@ def make_app(store: Store, meta_provider: Callable[[], dict[str, Any]]) -> web.A
     return app
 
 
-async def start(store: Store, meta_provider: Callable[[], dict[str, Any]]) -> web.AppRunner:
+async def start(store: Store, meta_provider: MetaProvider) -> web.AppRunner:
     app = make_app(store, meta_provider)
     runner = web.AppRunner(app)
     await runner.setup()
