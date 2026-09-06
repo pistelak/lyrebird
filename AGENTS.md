@@ -10,9 +10,7 @@ This file is the contract for that. It assumes you can run shell commands and re
 
 ```bash
 lyrebird --profile PATH validate NAME   # offline: non-zero unless that scenario loads whole
-lyrebird --profile PATH up          # start; non-zero if it did not achieve interception
-lyrebird --profile PATH use NAME    # activate a saved scenario
-# relaunch the app under test
+lyrebird --profile PATH up --use NAME   # start, activate the scenario, then relaunch the app
 lyrebird --profile PATH wait-ready --match --timeout 30
 lyrebird --profile PATH reset       # start a fresh run, immediately before the action you test
 # …do the work you came to do…
@@ -22,6 +20,17 @@ lyrebird --profile PATH down        # restores the proxy settings that were ther
 
 Always pass `--profile` explicitly. `LYREBIRD_PROFILE` works too, but an explicit path is one less
 thing to be wrong about when something misbehaves later.
+
+`up --use NAME` is one command because the order inside it matters: the scenario is selected
+before the app is relaunched, so the app's *launch* requests — the ones a `use` afterwards is too
+late for — are answered by the scenario you asked for. If `NAME` does not exist or did not load
+whole, `up` launches nothing, says so, and exits 1 with the proxy still running; run `down`. If a
+UI-test runner owns the app instead, pass `--no-relaunch` and launch it only once `up` exited 0.
+
+`use NAME` on its own is still how you switch mid-run. It affects the requests that come *after*
+it and relaunches nothing: an app that cached its launch response needs
+`xcrun simctl terminate booted <bundleid> && xcrun simctl launch booted <bundleid>`, or another
+`up --use NAME`.
 
 ## Six things worth knowing before you start
 
@@ -106,7 +115,9 @@ as `up` takes it.
 
 `URLSession` caches the proxy configuration it saw at launch. An app that was already running will
 ignore Lyrebird completely, with no error anywhere — it will just quietly talk to the real backend.
-Set `simBundleId` in the profile and `up` handles it.
+Set `simBundleId` in the profile and `up` handles it — and name the scenario in the same command,
+`up --use NAME`, so the launch that follows meets it. Where something else owns the launch,
+`up --no-relaunch` says so and nothing is started for you.
 
 **6. `down` is not optional.**
 
@@ -131,11 +142,13 @@ Two options, and the second is usually the right one for an agent.
 }
 ```
 
-Then `lyrebird use orders-outage`. Files are picked up when the proxy starts.
+Files are picked up when the proxy starts, so a session file written while Lyrebird is running
+is not there yet: `lyrebird --profile PATH down && lyrebird --profile PATH up --use orders-outage`.
 
 **Check the file before you start anything.** A file the proxy cannot read whole does not stop it
 starting: it keeps the rules it can, reports the rest to its log, and runs. So a scenario can be
-live and quietly missing the one rule your test depends on. `validate` is where that surfaces, and
+live and quietly missing the one rule your test depends on — `up --use NAME` is the one command
+that refuses, and only for the session you name it. `validate` is where that surfaces first, and
 it needs no proxy, changes no network settings and writes nothing:
 
 ```bash

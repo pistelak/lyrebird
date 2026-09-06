@@ -87,6 +87,19 @@ def session_files() -> list[Path]:
     return sorted(config.SESSIONS_DIR.glob("*.json"))
 
 
+def _intended_session_name(file: Path) -> str | None:
+    """The session `file` would have become, or None if its name could never have been one.
+
+    Kept beside `load_session_file` rather than returned by it: the offline commands report on
+    files and have no use for this, and widening that function's contract to carry a name it does
+    not use in its own verdict would put the two callers' needs in one return value.
+    """
+    try:
+        return safe_component(file.stem, "session name")
+    except UnsafeName:
+        return None
+
+
 def load_session_file(file: Path) -> tuple[dict | None, list[str]]:
     """Read one session file the way startup does: `(session, problems)`.
 
@@ -230,6 +243,15 @@ class Store:
         self.active_name: str = "default"
         self.recent: deque[dict] = deque(maxlen=config.RECENT_CAP)
         self.load_problems: list[str] = []
+        # The same problems, keyed by the session each belongs to. A diagnostic string cannot be
+        # matched back to its session: a file may be named `orders-outage.json: backup.json`, and
+        # the `skipped <file>: <error>` line it produces then reads exactly like one about
+        # `orders-outage`. A caller deciding whether to run against a session — `up --use` does —
+        # needs the answer, not a resemblance to it.
+        #
+        # A file whose *name* was rejected is deliberately absent: it could never have become a
+        # session, so there is no session for it to be reported against.
+        self.sessions_not_whole: dict[str, list[str]] = {}
         self._load()
 
     # MARK: - Loading / persistence
@@ -238,8 +260,18 @@ class Store:
         config.SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
         for file in session_files():
             session, problems = load_session_file(file)
+            # Which session these problems belong to. `load_session_file` reports the *file*,
+            # because that is what an offline command is looking at; a running proxy is asked
+            # about sessions instead — `up --use NAME` has to know whether NAME loaded whole.
+            #
+            # A file that yielded nothing still names one, when its name would have been a legal
+            # session: the scenario the operator asked for is the one that is missing, and
+            # answering "no problems with NAME" because NAME never loaded is the failure this
+            # whole map exists to prevent. Only a file that could not have named a session at all
+            # is recorded against none.
+            owner = session["name"] if session else _intended_session_name(file)
             for problem in problems:
-                self._problem(problem)
+                self._problem(problem, owner)
             if session is None:
                 continue
             self.sessions[session["name"]] = session
@@ -260,10 +292,29 @@ class Store:
         # Sessions are NOT rewritten on startup: a profile kept in git must stay clean until
         # something actually changes.
 
-    def _problem(self, message: str) -> None:
-        # Recorded only; addon.running re-emits these through the logger once it is up, and the
-        # control API exposes them. Printing here would double-report into the same log file.
+    def _problem(self, message: str, session: str | None = None) -> None:
+        """Record a problem, and — when it belongs to one — the session it stopped loading whole.
+
+        Recorded only; addon.running re-emits these through the logger once it is up, and the
+        control API exposes them. Printing here would double-report into the same log file.
+        """
         self.load_problems.append(message)
+        if session is not None:
+            self.sessions_not_whole.setdefault(session, []).append(message)
+
+    def _forget_load_problems(self, name: str) -> None:
+        """Drop what was recorded against `name`: the session it described is no longer there.
+
+        `sessions_not_whole` is a claim about the session under a name *now*, not a history, and
+        replacing a session is how an operator recovers from a file that would not load — a
+        malformed `orders-outage.json`, then an import of a good one. Keeping the entry would make
+        that recovery invisible: every rule installed, and `up --use orders-outage` still refusing
+        to launch the app over a file that no longer decides anything.
+
+        `load_problems` is untouched, because it is the other thing: a record of what startup found,
+        which stays true however the store is edited afterwards.
+        """
+        self.sessions_not_whole.pop(name, None)
 
     def _write_session(self, name: str, session: dict) -> None:
         """Write the session someone *proposes* to store under `name`, not the one already there.
@@ -525,6 +576,7 @@ class Store:
             base = _empty_session(name)
         self._write_session(name, base)
         self.sessions[name] = base
+        self._forget_load_problems(name)
 
     def set_active(self, name: str) -> dict | None:
         if name not in self.sessions:
@@ -541,6 +593,9 @@ class Store:
         if self.active_name == name:
             self._activate("default")
         del self.sessions[name]
+        # Before the unlink, which may fail: the session is already out of memory either way, and
+        # an entry left behind would be inherited by the next session created under this name.
+        self._forget_load_problems(name)
         try:
             path.unlink()
         except FileNotFoundError:
@@ -579,6 +634,7 @@ class Store:
             raise rules.ValidationError("; ".join(problems))
         self._write_session(name, normalised)
         self.sessions[name] = normalised
+        self._forget_load_problems(name)
         return name
 
     # MARK: - Recent

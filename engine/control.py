@@ -133,6 +133,20 @@ def make_app(store: Store, meta_provider: Callable[[], dict[str, Any]]) -> web.A
             "activeSession": store.active_name,
             "overrideCount": len(store.active_overrides()),
             "sessions": list(store.sessions.keys()),
+            # What did *not* load, so a caller can tell "this session is here" from "this session
+            # is here whole". A session whose invalid overrides were dropped, and a malformed
+            # default.json replaced by an empty in-memory default, both appear in `sessions`
+            # looking exactly like a session that loaded — which is how `up --use NAME` would
+            # relaunch the app against a scenario that had quietly lost half its rules.
+            #
+            # Two fields for one set of facts, because they answer different questions.
+            # `loadProblems` is the flat list a person reads, one entry per problem. `up --use`
+            # asks a narrower one — did *this* session load whole — and cannot answer it from
+            # those strings: a file named `orders-outage.json: backup.json` produces a line that
+            # reads exactly like a problem with `orders-outage`. So the same problems are also
+            # sent keyed by the session they belong to.
+            "loadProblems": store.load_problems,
+            "sessionsNotWhole": store.sessions_not_whole,
             "sequences": store.sequence_states(),
             # Named for what it holds, not for the objects it describes: `overrides` would read as
             # the rules themselves, which is what GET /overrides returns.
@@ -216,7 +230,11 @@ def make_app(store: Store, meta_provider: Callable[[], dict[str, Any]]) -> web.A
             return web.json_response({"error": "name_required"}, status=400)
         previous = store.set_active(name)
         if previous is None:
-            return web.json_response({"error": "unknown_session", "name": name}, status=404)
+            # `detail` as well as the slug: the CLI prints `detail` when there is one, and
+            # "unknown_session" on its own names the category without naming the mistake.
+            return web.json_response({"error": "unknown_session", "name": name,
+                                      "detail": f"no session named '{name}' in this profile"},
+                                     status=404)
         return web.json_response({"active": store.active_name, "previous": previous})
 
     @routes.get("/__mock__/sessions/{name}/export")

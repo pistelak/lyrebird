@@ -80,9 +80,9 @@ is why it lives in `~/.config` and neither of the above does.
 
 ```bash
 ../bin/lyrebird init ~/lyrebird-profiles/my-app
-../bin/lyrebird --profile ~/lyrebird-profiles/my-app up      # start, trust CA, install PAC
+../bin/lyrebird --profile ~/lyrebird-profiles/my-app up --use orders-outage   # start, CA, PAC, scenario, app
 ../bin/lyrebird --profile ~/lyrebird-profiles/my-app status  # intercepting? which session? PAC state?
-../bin/lyrebird --profile ~/lyrebird-profiles/my-app use orders-outage
+../bin/lyrebird --profile ~/lyrebird-profiles/my-app use another-scenario   # switch, from here on
 ../bin/lyrebird --profile ~/lyrebird-profiles/my-app down    # stop and restore previous settings
 ../bin/lyrebird logs                                          # last 60 lines; path on stderr
 ```
@@ -91,6 +91,16 @@ is why it lives in `~/.config` and neither of the above does.
 seconds if the proxy dies and makes a best-effort attempt to put your previous proxy settings
 back, so a crash is unlikely to strand the Mac pointing at a dead port. There is no idle self-shutdown. After `up`, **relaunch the simulator app** (URLSession caches
 the proxy config), or set `simBundleId` in the profile and Lyrebird relaunches it for you.
+
+`up --use NAME` selects the session — and rewinds its sequences — *before* that relaunch, so the
+app's launch requests are answered by the scenario you named rather than by whatever was last
+active; `use NAME` on its own affects only the requests that follow it. `up` launches nothing at
+all if `NAME` does not exist, did not load whole, or the running proxy is older than the CLI and
+cannot say which of the two it is: it says so, exits 1, and leaves the proxy running for you to
+`down`. That is the same verdict `lyrebird validate NAME` gives offline, arriving later and after
+the network has been rewired, which is why validating first is worth the second. `--no-relaunch`
+hands the launch to the caller — a UI-test runner that starts the app itself — and suppresses both
+the relaunch and the reminder to do one by hand; it cannot be combined with `--relaunch BUNDLE`.
 
 > **First run:** `up` generates Lyrebird's CA under
 > `~/Library/Application Support/Lyrebird/mitmproxy/` and trusts it in the **booted** simulator.
@@ -109,9 +119,19 @@ and what the PAC advertises — those are deliberately separate settings.
 
 ## Admin API (`/__mock__/*`)
 
-- `GET /health` (reports `intercepting` / `proxyUp` / `pacEnabled` / `simBundleId` / `sequences` /
-  `answers`, and `pacError` when the PAC could not be read — `intercepting` is then unproven, not
-  off) · `GET /recent`
+- `GET /health` (reports `intercepting` / `proxyUp` / `pacEnabled` / `simBundleId` / `sessions` /
+  `sequences` / `answers` / `loadProblems` / `sessionsNotWhole`, and `pacError` when the PAC could
+  not be read — `intercepting` is then unproven, not off) · `GET /recent`
+  - `loadProblems` is one string **per problem** found while loading the session files — a session
+    with two invalid overrides yields two — as `"<file>.json: …"`, or `"skipped <file>.json: …"`
+    when the whole file was rejected. `sessions` cannot carry any of it: a session whose invalid
+    overrides were dropped, and a malformed `default.json` replaced by an empty in-memory
+    `default`, are both listed there looking exactly like a session that loaded.
+  - `sessionsNotWhole` is the same problems keyed by the session each belongs to
+    (`{"orders-outage": ["orders-outage.json: …"]}`), which is what `up --use NAME` asks. The
+    strings cannot answer it: a file named `orders-outage.json: backup.json` produces a
+    `"skipped …"` line that begins exactly like a problem with `orders-outage`. A file whose
+    *name* was rejected appears in `loadProblems` only — it could never have become a session.
 - `POST /reset` — start a fresh run in the active session: rewind sequence cursors and clear answer
   counts, for every rule or one named with `{"id": ...}`
 - `GET|POST /overrides`, `DELETE /overrides/{id}` — act on the **active session**
