@@ -190,8 +190,8 @@ def _new_run_id(previous: str | None = None) -> str:
             return candidate
 
 
-def _rule_runtime(session: dict, override_id: str) -> dict:
-    """This rule's cursor and run token, created on first use.
+def _new_slot(previous: str | None = None) -> dict:
+    """A rule's runtime state at the start of a run, under a token that is not `previous`.
 
     `runId` is opaque and reissued whenever the cursor is reset, so a caller can tell "this event
     belongs to the run I asked about" from "this is left over from a previous one". Deliberately not
@@ -211,10 +211,15 @@ def _rule_runtime(session: dict, override_id: str) -> dict:
     rule has answered since the run began. It is what lets a test assert that its mock was actually
     in play, rather than inferring it from a screen the un-mocked backend would have produced too.
     """
+    return {"cursor": 0, "runId": _new_run_id(previous), "overrunSeen": False, "serves": {}, "answers": 0}
+
+
+def _rule_runtime(session: dict, override_id: str) -> dict:
+    """This rule's slot, created on first use."""
     runtime = _runtime(session)
     entry = runtime.get(override_id)
     if entry is None:
-        entry = {"cursor": 0, "runId": _new_run_id(), "overrunSeen": False, "serves": {}, "answers": 0}
+        entry = _new_slot()
         runtime[override_id] = entry
     return entry
 
@@ -229,12 +234,12 @@ def credit(slot: dict) -> None:
     replaced.
 
     Holding the slot rather than the id is what makes that safe. `_activate` clears the runtime
-    container and `add_override`/`reset_runtime` pop from it, so a slot captured before any of those
-    is orphaned: crediting it mutates a dict nothing can reach. A patch that lands after a session
+    container, `add_override` pops from it and `reset_runtime` replaces the entry, so a slot captured
+    before any of those is orphaned: crediting it mutates a dict nothing can reach. A patch that lands after a session
     switch therefore credits nobody, instead of crediting whatever rule in the new session happens to
     share its id.
     """
-    slot["answers"] += 1   # `_rule_runtime` is the only maker of a slot, and it always seeds this
+    slot["answers"] += 1   # `_new_slot` is the only maker of a slot, and it always seeds this
 
 
 class Store:
@@ -542,10 +547,9 @@ class Store:
         runtime = _runtime(session)
         reset = {}
         for target in targets:
-            previous = (runtime.pop(target, None) or {}).get("runId")   # dropping it is the rewind
-            entry = _rule_runtime(session, target)                      # recreate to report a token
-            entry["runId"] = _new_run_id(previous)
-            reset[target] = entry["runId"]
+            previous = (runtime.get(target) or {}).get("runId")
+            runtime[target] = _new_slot(previous)   # replaced, not cleared: a slot captured before
+            reset[target] = runtime[target]["runId"]   # the reset credits nobody — see `credit`
         return {"session": self.active_name, "reset": reset}
 
     # MARK: - Sessions

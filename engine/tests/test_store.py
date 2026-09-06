@@ -634,7 +634,7 @@ def test_reset_clears_a_recorded_overrun(profile):
     assert subject.sequence_states()[0]["hasOverrun"] is False
 
 
-def test_reset_always_issues_a_different_run_id(profile):
+def test_reset_always_issues_a_different_run_id(profile, monkeypatch):
     """The token is what stops a retained event from an earlier run satisfying a wait, so a reset
     reissuing the same value has to be impossible rather than merely unlikely."""
     subject = store.Store()
@@ -644,6 +644,16 @@ def test_reset_always_issues_a_different_run_id(profile):
         issued = subject.reset_runtime()["reset"]["seq"]
         assert issued not in seen
         seen.add(issued)
+
+    # Random tokens never collide in twenty tries, so the retry that makes this a guarantee is only
+    # exercised by handing the generator the collision: the first token it offers is the one the
+    # rule already holds, and the reset has to reject it and ask again.
+    held = subject.sequence_states()[0]["runId"]
+    offered = iter([held, "second-token"])
+    monkeypatch.setattr(store.secrets, "token_hex", lambda _: next(offered))
+    issued = subject.reset_runtime()["reset"]["seq"]
+    assert issued != held, "the token the rule already held was reissued"
+    assert issued == "second-token"
 
 
 # MARK: - Answer counts
@@ -677,6 +687,20 @@ def test_a_captured_slot_credits_nobody_after_the_rule_is_replaced(profile):
     subject.add_override({"id": "r", "mode": "replace", "status": 200})
     store.credit(slot)
     assert subject.answer_states() == [{"id": "r", "active": True, "count": 0, "runId": None}]
+
+
+def test_a_captured_slot_credits_nobody_after_a_reset(profile):
+    """The third way a run ends, and the only one an operator asks for by name: a rewind while a
+    patch is in the air. The answer belongs to the run that was ended, so a reset has to hand the
+    rule a *new* slot — reusing the object and clearing its fields would leave the in-flight answer
+    counted into the fresh run the operator just drew a boundary around."""
+    subject = store.Store()
+    subject.add_override({"id": "r", "mode": "patch", "patch": {}})
+    slot = subject.answer_slot("r")
+    issued = subject.reset_runtime("r")["reset"]["r"]
+
+    store.credit(slot)   # the in-flight patch from the run that just ended lands now
+    assert subject.answer_states() == [{"id": "r", "active": True, "count": 0, "runId": issued}]
 
 
 def test_reading_answer_states_does_not_mint_run_state(profile):
