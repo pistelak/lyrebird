@@ -266,9 +266,11 @@ for rules that were shadowed — and, like everything above, the drift is invisi
 happens. This is the shape that made sequence cursors advance on requests they never served.
 
 **Test the failure path.** Every instance above was found by running the tool or reviewing it, not
-by the tests, because the tests covered the happy path. `engine/tests/test_cli.py` is almost
-entirely failure paths — an unreadable runtime file, a foreign PAC, nothing to stop — and that is
-the model to copy.
+by the tests, because the tests covered the happy path. The CLI suite is almost entirely failure
+paths — an unreadable runtime file, a foreign PAC, nothing to stop — and that is the model to copy:
+`engine/tests/test_cli_supervisor.py`, `test_cli_evidence.py`, `test_cli_offline.py`,
+`test_cli_profile.py`, `test_cli_launch.py` and `test_cli_simulator.py`, over the doubles they
+share in `cli_doubles.py`.
 
 **A comment names the failure it prevents, and the test that pins it.** The comments in this
 codebase explain *why*, usually by citing the bug a line prevents, and that is worth keeping. What

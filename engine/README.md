@@ -411,9 +411,14 @@ addon, mitmproxy's `allow_hosts` and the generated PAC, with `test_addon.py`, `t
 and `test_launcher.py` covering the mitmproxy options, the `networksetup` parsers and how
 `bin/lyrebird` finds its engine.
 
-The largest of them is `test_cli.py`, and it is almost entirely failure paths — an unreadable
-runtime file, a foreign PAC, nothing to stop, a proxy running someone else's profile — for `up`,
-`down`, the watchdog, `status` and the assertion commands.
+The largest of them is the CLI suite, split by concern the way the commands are:
+`test_cli_supervisor.py` (`up`, `down`, the watchdog, `status`, the lock) · `test_cli_evidence.py`
+(`sequence`, `reset`, `assert-answered`) · `test_cli_offline.py` (`explain-match` and `validate`) ·
+`test_cli_profile.py` (which profile a control call means) · `test_cli_launch.py` (selecting the
+scenario before the app is launched) · `test_cli_simulator.py` (which device the CA and the
+relaunch land on), over the doubles they share in `cli_doubles.py`. It is almost entirely failure
+paths — an unreadable runtime file, a foreign PAC, nothing to stop, a proxy running someone else's
+profile.
 
 All of it is hermetic — the simulator, the network and the proxy are replaced with doubles — so it
 checks the orchestration but cannot prove that CA trust, relaunch, PAC routing or teardown work
