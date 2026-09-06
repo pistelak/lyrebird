@@ -21,8 +21,24 @@ class NetworkSetupError(RuntimeError):
     pass
 
 
+# Per *command*, not per operation: a `networksetup` call normally takes tens of milliseconds, so
+# five seconds is already a command that is never coming back. Unbounded, one of these hanging took
+# the whole caller with it — including `/health`, which runs on the proxy's event loop, and whose
+# silence the watchdog reads as a dead proxy. It bounds the operations built out of these too: one
+# watchdog restore attempt is four commands (`cli._restore_previous_pac`), so ~20s at worst.
+_COMMAND_TIMEOUT = 5.0
+
+
 def _run(args: list[str], check: bool = False) -> subprocess.CompletedProcess:
-    result = subprocess.run(args, check=False, capture_output=True, text=True)
+    try:
+        result = subprocess.run(args, check=False, capture_output=True, text=True,
+                                timeout=_COMMAND_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        # Raised, never returned as empty output: a `networksetup` that did not answer has told us
+        # nothing about the PAC, and reading that as "no PAC" is the mistake `pac_status` documents.
+        raise NetworkSetupError(
+            f"`{' '.join(args)}` did not finish within {_COMMAND_TIMEOUT:g}s"
+        ) from None
     if check and result.returncode != 0:
         detail = (result.stderr or result.stdout or "").strip()
         raise NetworkSetupError(f"`{' '.join(args)}` failed: {detail or result.returncode}")

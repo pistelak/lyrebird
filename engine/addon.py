@@ -26,6 +26,10 @@ from store import Store, credit
 _log = logging.getLogger("lyrebird")
 
 BODYLESS_STATUSES = (204, 304)   # must not carry a body or a Content-Length
+# How long `/health` waits for the PAC observation before answering without it. Well under the
+# CLI's 1.5s read timeout (`cli._get_json`), because two silent health reads are what the watchdog
+# takes for a dead proxy — so health answering late is the same failure as health not answering.
+_OBSERVE_DEADLINE = 1.0
 # mitmproxy's stream_large_bodies option is a size *string* ("Understands k/m/g"), not an int.
 STREAM_LARGE_BODIES = "512k"
 
@@ -59,6 +63,12 @@ class Lyrebird:
         self.store = Store()
         self.started_at = datetime.now(UTC).isoformat()
         self._control_started = False
+        # The observation in flight, if any, and the last service it named. `_last_service` is what
+        # health reports when the observation overruns: the service is discovered once and rarely
+        # changes, so the last known name is a better answer than None — and None is what a fresh
+        # proxy honestly has.
+        self._observation: asyncio.Future[tuple[str | None, bool, str | None]] | None = None
+        self._last_service: str | None = None
 
     # MARK: - Lifecycle
 
@@ -79,17 +89,33 @@ class Lyrebird:
         for problem in self.store.load_problems:
             _log.warning("%s", problem)
 
-    def _meta(self) -> dict:
-        service = self._service()
+    async def _meta(self) -> dict:
+        """The health fields that describe the machine, read off the event loop and bounded.
+
+        `_observe` shells out to `networksetup` (and possibly `route`), which mitmproxy's loop also
+        uses to serve traffic — so it runs in a worker thread, and health waits on it for at most
+        `_OBSERVE_DEADLINE`. Both bounds exist for the same reason: the CLI reads "no health" as
+        "no proxy", so a `/health` that blocks is a `/health` that gets a live proxy's network
+        restored out from under it by the watchdog. An observation that overruns is reported as a
+        `pacError`, which is what any other unreadable PAC looks like.
+        """
+        observation = self._observation
+        if observation is None or observation.done():
+            # One at a time: ten polls against a stuck `networksetup` join the one observation
+            # already in flight rather than each stranding a worker thread of their own.
+            observation = asyncio.ensure_future(asyncio.to_thread(self._observe))
+            self._observation = observation
+            observation.add_done_callback(self._forget_observation)
         try:
-            intercepting = netproxy.intercepting(service)
-            pac_error = None
-        except netproxy.NetworkSetupError as error:
-            # Health must keep answering. The CLI reads "no health" as "no proxy": the watchdog
-            # would restore the network over a live proxy, and `up` would start a second one. So
-            # a PAC that could not be read is reported as such, next to an `intercepting` that
-            # is false because it is unproven — not because the PAC was seen to be off.
-            intercepting, pac_error = False, str(error)
+            # Shielded: the deadline gives up on *this* answer, not on the observation — cancelling
+            # it would leave the next poll starting another thread against the same stuck command.
+            service, intercepting, pac_error = await asyncio.wait_for(
+                asyncio.shield(observation), timeout=_OBSERVE_DEADLINE)
+        except TimeoutError:
+            service, intercepting = self._last_service, False
+            pac_error = f"PAC read did not finish within {_OBSERVE_DEADLINE}s"
+        else:
+            self._last_service = service
         meta = {
             "proxyUp": True,
             "intercepting": intercepting,   # PAC enabled AND pointing at us — not merely "process alive"
@@ -107,6 +133,33 @@ class Lyrebird:
         if pac_error:
             meta["pacError"] = pac_error
         return meta
+
+    def _forget_observation(self, task: asyncio.Future) -> None:
+        if self._observation is task:
+            self._observation = None
+
+    def _observe(self) -> tuple[str | None, bool, str | None]:
+        """Everything in `_meta` that touches the OS, run on a worker thread.
+
+        Touches no `Store`: the store is only safe on the loop, and nothing here needs it.
+        Discovery is inside the `try` too — `_service` may shell out to `route` and
+        `networksetup` via `netproxy.active_service`, so it can time out exactly as the PAC read
+        can, and a failure there is the same unproven answer.
+        """
+        service = self._last_service   # kept if discovery itself is what fails
+        try:
+            service = self._service()
+            return service, netproxy.intercepting(service), None
+        except netproxy.NetworkSetupError as error:
+            # Health must keep answering. The CLI reads "no health" as "no proxy": the watchdog
+            # would restore the network over a live proxy, and `up` would start a second one. So
+            # a PAC that could not be read is reported as such, next to an `intercepting` that
+            # is false because it is unproven — not because the PAC was seen to be off.
+            return service, False, str(error)
+        except OSError as error:
+            # `networksetup` or `route` could not be launched at all. Same claim as above — the
+            # PAC is unread, not off — and the same field says so.
+            return service, False, f"could not run networksetup: {error}"
 
     @staticmethod
     def _service() -> str | None:

@@ -194,4 +194,44 @@ def test_restore_pac_partial_failure_leaves_the_url_ours_or_the_target(monkeypat
         assert state["url"] in (netproxy.pac_url(), target), failing
 
 
+# MARK: - A command that never returns
+
+def test_every_command_is_bounded(monkeypatch, hosts):
+    """The bound is on `subprocess.run` itself, so it is asserted there. Without it a hung
+    `networksetup` took its whole caller with it — including `/health`, which runs on the proxy's
+    event loop and whose silence the watchdog reads as a dead proxy worth restoring over."""
+    timeouts = []
+
+    def _subprocess_run(args, *rest, **kwargs):
+        timeouts.append(kwargs.get("timeout"))
+        out = f"URL: {netproxy.pac_url()}\nEnabled: Yes\n"
+        return subprocess.CompletedProcess(args, 0, out, "")
+
+    monkeypatch.setattr(netproxy.subprocess, "run", _subprocess_run)
+    netproxy.pac_status("Wi-Fi")
+    assert timeouts == [netproxy._COMMAND_TIMEOUT]
+
+
+TIMES_OUT = {
+    "pac_status": lambda: netproxy.pac_status("Wi-Fi"),
+    "set_pac": lambda: netproxy.set_pac("Wi-Fi"),
+    "restore_pac": lambda: netproxy.restore_pac("Wi-Fi", "http://proxy.example.com/corp.pac", True),
+    "active_service": netproxy.active_service,
+}
+
+
+@pytest.mark.parametrize("name", list(TIMES_OUT))
+def test_a_command_that_does_not_finish_is_raised_not_read_as_no_pac(monkeypatch, hosts, name):
+    """A `networksetup` that never answered has said nothing about the PAC. Reported as empty
+    output it would parse as "no PAC", which is the mistake `pac_status` exists to prevent — and
+    the one that makes `down` delete the only record of what to put back."""
+    def _subprocess_run(args, *rest, **kwargs):
+        raise subprocess.TimeoutExpired(args, kwargs.get("timeout"))
+
+    monkeypatch.setattr(netproxy.subprocess, "run", _subprocess_run)
+    with pytest.raises(netproxy.NetworkSetupError) as raised:
+        TIMES_OUT[name]()
+    assert "did not finish within 5s" in str(raised.value)
+
+
 # MARK: - The PAC we advertise

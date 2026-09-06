@@ -16,6 +16,13 @@ import control
 import store
 
 
+async def _meta():
+    """The stand-in for `addon.Lyrebird._meta`. Async because the real one observes the network in
+    a worker thread and therefore suspends — a sync double would hide every ordering bug that
+    suspension can cause."""
+    return {"proxyUp": True}
+
+
 def call(profile, method, path, *, headers=None, json_body=None, raw_body=None, content_type=None,
          prepare=None):
     """One request against a fresh control app on a throwaway profile.
@@ -28,7 +35,7 @@ def call(profile, method, path, *, headers=None, json_body=None, raw_body=None, 
     subject = store.Store()
     if prepare is not None:
         prepare(subject)   # the store is built in here, so a test that needs live state seeds it here
-    app = control.make_app(subject, lambda: {"proxyUp": True})
+    app = control.make_app(subject, _meta)
 
     sent = {"Host": config.CONTROL_HOST_HEADER, **(headers or {})}
     body = raw_body if raw_body is not None else (json.dumps(json_body) if json_body is not None else None)
@@ -117,7 +124,7 @@ def test_a_call_naming_another_profile_is_refused_and_leaves_no_rule_behind(prof
     while the rule went into profile A, which is what the port actually belongs to."""
     (profile / "profile.json").write_text('{"hosts": []}', encoding="utf-8")
     config.reload_profile()
-    app = control.make_app(store.Store(), lambda: {"proxyUp": True})
+    app = control.make_app(store.Store(), _meta)
 
     async def main():
         async with TestClient(TestServer(app)) as client:
@@ -293,7 +300,7 @@ def test_clearing_overrides_reports_what_it_deleted(profile):
     """So a client that calls it by mistake at least says so out loud."""
     (profile / "profile.json").write_text('{"hosts": []}', encoding="utf-8")
     config.reload_profile()
-    app = control.make_app(store.Store(), lambda: {"proxyUp": True})
+    app = control.make_app(store.Store(), _meta)
 
     async def main():
         async with TestClient(TestServer(app)) as client:
@@ -349,6 +356,43 @@ def test_health_reports_an_empty_list_when_nothing_is_sequenced(profile):
     assert body["sequences"] == []
 
 
+OTHER_SESSION = {
+    "name": "other",
+    "overrides": [{"id": "ovr_other", "mode": "replace", "match": {"path": "/api/other"},
+                   "sequence": {"steps": [{"status": 204}]}}],
+}
+
+
+def test_health_reads_the_store_after_the_meta_await_and_not_across_it(profile):
+    """`meta_provider` suspends — it observes the network off this loop — so a session switch can
+    land inside that await. Reading the store first paired the outgoing session's counters with
+    the incoming session's meta: a snapshot describing no moment that ever existed."""
+    (profile / "profile.json").write_text('{"hosts": []}', encoding="utf-8")
+    (profile / "sessions").mkdir(parents=True, exist_ok=True)
+    (profile / "sessions" / "default.json").write_text(json.dumps(SEQ_SESSION), encoding="utf-8")
+    (profile / "sessions" / "other.json").write_text(json.dumps(OTHER_SESSION), encoding="utf-8")
+    config.reload_profile()
+    subject = store.Store()
+
+    async def switch_while_awaited():
+        await asyncio.sleep(0)          # the suspension the real provider has
+        subject.set_active("other")
+        return {"proxyUp": True}
+
+    app = control.make_app(subject, switch_while_awaited)
+
+    async def main():
+        async with TestClient(TestServer(app)) as client:
+            response = await client.get("/__mock__/health",
+                                        headers={"Host": config.CONTROL_HOST_HEADER})
+            return await response.json()
+
+    body = asyncio.run(main())
+    assert body["activeSession"] == "other"
+    assert [state["id"] for state in body["sequences"]] == ["ovr_other"]
+    assert [state["id"] for state in body["answers"]] == ["ovr_other"]
+
+
 def test_reset_reports_what_it_rewound(profile):
     seed(profile)
     status, _, body = call(profile, "POST", "/__mock__/reset", json_body={})
@@ -397,7 +441,7 @@ def test_a_rule_with_an_unknown_field_is_refused_and_not_installed(profile):
     typo'd field was kept, ignored, and never mentioned again."""
     (profile / "profile.json").write_text('{"hosts": []}', encoding="utf-8")
     config.reload_profile()
-    app = control.make_app(store.Store(), lambda: {"proxyUp": True})
+    app = control.make_app(store.Store(), _meta)
 
     async def main():
         async with TestClient(TestServer(app)) as client:
@@ -453,7 +497,7 @@ def test_a_rule_whose_write_fails_is_reported_and_not_installed(profile, monkeyp
     would reload from disk and hide a rule left live in memory."""
     (profile / "profile.json").write_text('{"hosts": []}', encoding="utf-8")
     config.reload_profile()
-    app = control.make_app(store.Store(), lambda: {"proxyUp": True})
+    app = control.make_app(store.Store(), _meta)
 
     def refuse(path, text):
         raise OSError(errno.ENOSPC, "No space left on device")

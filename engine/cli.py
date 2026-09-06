@@ -56,6 +56,8 @@ CONTROL = config.CONTROL_ORIGIN
 _PROFILE_HEADER = "X-Lyrebird-Profile"   # says which profile this call means; see `_profile_mismatch`
 _DOWN_WAIT_SECONDS = 5.0   # how long `down` waits for SIGTERM to take effect
 _WATCHDOG_RESTORE_ATTEMPTS = 5   # `networksetup` fails transiently; one try is not a restore
+# An attempt is four `networksetup`/`route` calls, each bounded by `netproxy._COMMAND_TIMEOUT`,
+# so a hung command costs ~20s per attempt rather than the whole restore.
 _LOCK_WAIT_SECONDS = 60.0   # how long `up` waits for another `up`, or a watchdog restore, to finish
 
 R = "\033[0m"
@@ -151,6 +153,23 @@ def _require_same_profile(health: dict, *, unproven_exit: int = 1) -> None:
 
 def _health() -> dict | None:
     return _get_json("/__mock__/health")
+
+
+def _discover_service() -> tuple[str | None, str | None]:
+    """The service carrying the default route, or the reason we could not find out.
+
+    `netproxy.active_service` can raise now that its `route`/`networksetup` calls are bounded, and
+    the three commands that ask are the three that must not die of it: `status --json` would print
+    no JSON, `down` would abort before restoring anything, and `up` would exit with a proxy running
+    and no pid recorded. The substitution is made here rather than inside `active_service`, because
+    returning None there would claim "no default route" about a command that never answered — and
+    each caller below has both a fallback (the service recorded by the last `up`) and somewhere to
+    put the reason, which `active_service` has neither of.
+    """
+    try:
+        return netproxy.active_service(), None
+    except netproxy.NetworkSetupError as error:
+        return None, str(error)
 
 
 def _control(path: str, method: str = "GET", payload: Any = None, timeout: float = 3.0) -> Any:
@@ -695,7 +714,8 @@ def _up_locked(bundle_id: str | None, no_relaunch: bool = False, use_name: str |
     # failed, the record names the service whose PAC is still ours; losing the route meanwhile
     # (Wi-Fi off) must not turn that into "no service", which strands the record with nothing to
     # restore it on and lets `down` delete it.
-    service = netproxy.active_service() or runtime.get("service")
+    discovered, discovery_error = _discover_service()
+    service = discovered or runtime.get("service")
     recorded = runtime.get("previousPac")
     recorded_service = runtime.get("service")
     if recorded and recorded_service and recorded_service != service:
@@ -764,9 +784,14 @@ def _up_locked(bundle_id: str | None, no_relaunch: bool = False, use_name: str |
         state["watchdogPid"] = watchdog_pid
         click.echo(f"✓ PAC installed on '{service}' (configured hosts → proxy, everything else DIRECT)")
     else:
-        click.echo(f"{RED}✗ could not detect the active network service — set the PAC manually:{R}\n"
-                   f"   {netproxy.pac_url()}")
-        failures.append("no active network service: traffic is NOT being intercepted")
+        # The discovery error is appended rather than replacing the message: "no active network
+        # service" is what it means for the run, and the `route`/`networksetup` failure is why —
+        # an operator told only the first goes looking at Wi-Fi, and one told only the second
+        # does not learn that nothing is being intercepted.
+        why = f" ({discovery_error})" if discovery_error else ""
+        click.echo(f"{RED}✗ could not detect the active network service{why} — set the PAC "
+                   f"manually:{R}\n   {netproxy.pac_url()}")
+        failures.append(f"no active network service{why}: traffic is NOT being intercepted")
 
     config.write_runtime(state)
 
@@ -889,10 +914,21 @@ def _down_locked() -> None:
     # what we can: health knows the pid, and the OS knows which service carries the default route.
     if health and not runtime.get("proxyPid"):
         runtime = {**runtime, "proxyPid": health.get("pid")}
-    if not runtime.get("service") and (health or netproxy.active_service()):
-        runtime = {**runtime, "service": netproxy.active_service()}
+    discovery_error = None
+    if not runtime.get("service"):
+        discovered, discovery_error = _discover_service()
+        if health or discovered:
+            runtime = {**runtime, "service": discovered}
 
     if not health and not runtime:
+        if discovery_error:
+            # No proxy and no record, but the one read that could have found a PAC of ours still
+            # installed never answered. "Nothing to stop" is true of the proxy and unproven of the
+            # network, and exit 0 would claim both.
+            click.echo(f"{RED}✗ nothing to stop, but the proxy settings could not be checked: the "
+                       f"active network service could not be detected ({discovery_error}){R}\n"
+                       f"   check System Settings ▸ Network ▸ <service> ▸ Proxies by hand.")
+            raise SystemExit(1)
         click.echo(f"{DIM}nothing to stop — no proxy running and no runtime state{R}")
         return
 
@@ -900,6 +936,17 @@ def _down_locked() -> None:
     _terminate(runtime.get("watchdogPid"), "_watchdog")
 
     service = runtime.get("service")
+    unrestorable = False
+    if not service and discovery_error:
+        # No service to act on and no record of one, so there is nothing the PAC could be restored
+        # *on*. The proxy and the watchdog are still stopped below — leaving them alive would be a
+        # second failure on top of this one — but `down` must not then print "stopped" and exit 0,
+        # because the network is exactly as this command found it.
+        unrestorable = True
+        click.echo(f"{RED}✗ could not restore the proxy settings: the active network service "
+                   f"could not be detected ({discovery_error}) and none is recorded{R}\n"
+                   f"   the proxy is being stopped anyway; check System Settings ▸ Network ▸ "
+                   f"<service> ▸ Proxies by hand.")
     if service:
         try:
             previous = _restore_previous_pac(service, runtime)
@@ -928,6 +975,8 @@ def _down_locked() -> None:
     else:
         click.echo(f"{YELLOW}⚠ proxy still responding on port {config.CONTROL_PORT} after SIGTERM{R}")
         raise SystemExit(1)
+    if unrestorable:
+        raise SystemExit(1)   # the proxy is down; the network was never put back
 
 
 @cli.command()
@@ -947,7 +996,11 @@ def status(as_json: bool) -> None:
     running = (health or {}).get("profileFingerprint")
     foreign = bool(running) and running != config.PROFILE_FINGERPRINT
     runtime = config.read_runtime()
-    service = runtime.get("service") or netproxy.active_service()
+    # Discovery can fail the same way the PAC read below can, and it is reported the same way: as
+    # `pacError` with `service` null, not as a traceback that leaves `--json` printing nothing.
+    service, pac_error = runtime.get("service"), None
+    if not service:
+        service, pac_error = _discover_service()
     # What the last `up` acted on, not a fresh lookup: the question `status` answers is which
     # device this session trusted and relaunched, and re-resolving would report whatever is booted
     # now — a different device, with the old one's CA, reading as if it were the one in use.
@@ -957,7 +1010,6 @@ def status(as_json: bool) -> None:
     # the banner, again for the JSON field and a third time for the exit status let a PAC that
     # flips in between produce output that contradicts the exit code — a `status` whose text says
     # one thing and whose `$?` says another is worse than either being wrong.
-    pac_error = None
     try:
         pac = netproxy.pac_status(service) if service else None
     except netproxy.NetworkSetupError as error:
@@ -1011,8 +1063,11 @@ def status(as_json: bool) -> None:
             click.echo(_profile_mismatch(str(running)))
         elif pac_error and health is not None:
             # Not the banner: its "PAC is disabled/not ours" is a diagnosis this read never made.
-            click.echo(f"{BOLD}{YELLOW}🟠 PROXY UP, PAC UNREADABLE{R} — could not read the PAC on "
-                       f"'{service}': {pac_error}")
+            # `service` is None when discovery itself is what failed, and "on 'None'" would name a
+            # network service that does not exist.
+            where = f" on '{service}'" if service else ""
+            click.echo(f"{BOLD}{YELLOW}🟠 PROXY UP, PAC UNREADABLE{R} — could not read the PAC"
+                       f"{where}: {pac_error}")
         else:
             _banner(health, service, intercepting)
         if health and not foreign:
