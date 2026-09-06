@@ -668,6 +668,13 @@ Takes effect immediately — no restart, and the session file is updated.
 \b
     lyrebird override add '{"match":{"path":"/api/v1/orders/*"},"mode":"replace","status":500}'
 
+An override accepts these fields, and only these:
+
+\b
+""" + "\n".join(
+    f"    {field:<13} {description}" for field, description in rules.OVERRIDE_FIELD_HELP.items()
+) + """
+
 `match` accepts these fields, and only these:
 
 \b
