@@ -381,6 +381,13 @@ def _up_locked(bundle_id: str | None) -> None:
                    f"   xcrun simctl terminate booted <bundleid> && xcrun simctl launch booted <bundleid>\n"
                    f"   (or set simBundleId in profile.json)")
 
+    # The last look decides. Everything above reported its own step; this is the postcondition
+    # itself — proxy answering, PAC routing to it — observed once, at the end, and a step that
+    # succeeded a moment ago is no defence if the observation says otherwise now.
+    final = _health()
+    if final is None:
+        click.echo(f"{RED}✗ the proxy stopped answering on port {config.CONTROL_PORT} during startup{R}")
+        failures.append("the proxy stopped answering during startup")
     try:
         intercepting = netproxy.intercepting(service)
     except netproxy.NetworkSetupError as error:
@@ -390,7 +397,9 @@ def _up_locked(bundle_id: str | None) -> None:
         click.echo(f"{RED}✗ could not read the PAC on '{service}' after installing it: {error}{R}")
         failures.append(f"could not read the PAC on '{service}': {error}")
     else:
-        _banner(_health(), service, intercepting)
+        _banner(final, service, intercepting)
+        if service and not intercepting:
+            failures.append(f"PAC on '{service}' is not routing to the proxy — disabled, or not ours")
 
     # Exit non-zero unless the whole point of `up` was achieved. Reporting a warning and returning 0
     # meant a script — or an agent — could believe it was mocking when nothing was intercepted.

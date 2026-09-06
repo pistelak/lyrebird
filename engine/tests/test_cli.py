@@ -267,8 +267,18 @@ def _up_after_a_crash(profile, monkeypatch, pac_status, *, service="Wi-Fi", heal
     monkeypatch.setattr(cli, "_start_fresh_log", lambda: None)
     monkeypatch.setattr(cli, "trust_ca_in_sim", lambda: (True, "trusted"))
     monkeypatch.setattr(netproxy, "active_service", lambda: service)
-    monkeypatch.setattr(netproxy, "pac_status", pac_status)
-    monkeypatch.setattr(netproxy, "set_pac", lambda service: None)
+    installed = {"ours": False}   # `set_pac` installs ours, and every read after it sees that
+
+    def read(service):
+        if installed["ours"]:
+            return netproxy.PacStatus(netproxy.pac_url(), True, True)
+        return pac_status(service)
+
+    def install(service):
+        installed["ours"] = True
+
+    monkeypatch.setattr(netproxy, "pac_status", read)
+    monkeypatch.setattr(netproxy, "set_pac", install)
     monkeypatch.setattr(cli, "_pid_is_ours", lambda pid, marker: True)
 
 
@@ -317,6 +327,30 @@ def test_up_keeps_the_recorded_service_when_the_route_is_gone_so_down_can_still_
 
     assert result.exit_code == 0, result.output
     assert restored == [("Wi-Fi", _CORPORATE["url"], False)]
+
+
+def test_up_fails_when_its_final_look_finds_the_pac_not_routing(profile, runner, monkeypatch):
+    """Every step succeeded and then the PAC was switched off before the last look. The banner
+    said NOT INTERCEPTING; the exit code said 0, because only the steps fed it."""
+    _up_after_a_crash(profile, monkeypatch,
+                      lambda service: netproxy.PacStatus(netproxy.pac_url(), True, True))
+    monkeypatch.setattr(netproxy, "intercepting", lambda service: False)
+
+    result = runner.invoke(cli.cli, ["up"])
+
+    assert result.exit_code == 1
+    assert "NOT INTERCEPTING" in result.output
+
+
+def test_up_fails_when_the_proxy_stops_answering_before_the_final_look(profile, runner, monkeypatch):
+    _up_after_a_crash(profile, monkeypatch,
+                      lambda service: netproxy.PacStatus(netproxy.pac_url(), True, True),
+                      health=[None, _LIVE, None])   # dead at first, up for the wait, gone at the end
+
+    result = runner.invoke(cli.cli, ["up"])
+
+    assert result.exit_code == 1
+    assert "stopped answering" in result.output
 
 
 def test_up_keeps_the_recovery_record_of_a_half_restored_pac(profile, runner, monkeypatch):
