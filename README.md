@@ -28,7 +28,9 @@ This one makes every order request fail:
 bin/lyrebird use orders-outage
 ```
 
-The next matching `GET /api/v1/orders/…` gets the 500. Switch sessions to switch scenarios.
+The next matching `GET /api/v1/orders/…` gets the 500 — `use` changes what comes *after* it,
+and relaunches nothing. To have the app's *launch* requests meet a scenario, start the run
+with `bin/lyrebird up --use orders-outage`. Switch sessions to switch scenarios.
 
 There are two ways to answer a request:
 
@@ -116,15 +118,19 @@ working demo — `api.example.com` doesn't serve any of the example routes:
 - point one of the files in `sessions/` at a request your app actually makes
 
 ```bash
-bin/lyrebird up            # trusts a CA in the Simulator, routes your hosts through Lyrebird
-bin/lyrebird use orders-outage
+bin/lyrebird up --use orders-outage   # CA, host-scoped PAC, the scenario, then your app
 bin/lyrebird status
 
-bin/lyrebird down          # puts your proxy settings back
+bin/lyrebird down                     # puts your proxy settings back
 ```
 
-`up` relaunches your app if `simBundleId` is set. If it isn't, relaunch it yourself — `URLSession`
-holds on to the proxy configuration it saw at launch, so a running app won't notice Lyrebird.
+`up` relaunches your app if `simBundleId` is set, and `--use` selects the scenario *before* that
+launch — which is why they are one command: `URLSession` holds on to the proxy configuration it
+saw at launch, and the app's first requests go out while it starts, so a scenario chosen
+afterwards is one the launch never saw. `up --use` refuses to launch anything if the session does
+not exist or did not load whole, and exits non-zero with the proxy left running for you to
+`down`. If `simBundleId` isn't set, relaunch the app yourself; if something else owns the launch —
+a UI-test runner — pass `--no-relaunch` and start it once `up` has exited 0.
 
 There's an optional [menu-bar app](menubar/README.md).
 
@@ -136,7 +142,7 @@ postcondition was met rather than "the command ran", `status --json` is machine-
 `wait-ready --match` blocks until a rule actually fires instead of sleeping and hoping.
 
 ```bash
-lyrebird up && lyrebird use orders-outage
+lyrebird up --use orders-outage            # the scenario is live before the app is relaunched
 lyrebird wait-ready --match --timeout 30   # ✓ override ovr_9a99bd matched GET /api/v1/orders/42 → 500
 lyrebird down
 ```

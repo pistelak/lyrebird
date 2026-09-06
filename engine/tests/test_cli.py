@@ -10,6 +10,7 @@ import json
 import os
 import threading
 
+import click
 import pytest
 from click.testing import CliRunner
 
@@ -1790,3 +1791,286 @@ def test_explain_match_against_the_proxy_does_not_claim_its_session_loaded_whole
     result = runner.invoke(cli.cli, ["explain-match", "--json", "GET", "/api/items?kind=alpha"])
     assert result.exit_code == 0
     assert "problems" not in json.loads(result.output)
+
+# MARK: - Selecting the scenario before the app is launched
+#
+# An app makes its first requests *while it launches*, so a session selected after the relaunch is
+# a session the launch never saw — and an app that caches its launch response goes on showing the
+# old scenario however green a later `lyrebird use` looked. These tests therefore do not assert on
+# call order for its own sake: the fake `_relaunch` records what the app's launch request was
+# answered with, and that answer is the evidence.
+
+_SCENARIOS = {"default": 200, "orders-outage": 500}
+
+
+def _fake_proxy(monkeypatch, *, active="default", sessions=("default", "orders-outage"),
+                load_problems=(), not_whole=(), unreachable=False, steps=None):
+    """A live proxy the CLI can select sessions on, and an app whose launch makes one request.
+
+    `launched` holds what that request was answered with — the session that served it, that
+    scenario's status, and the sequence step it got. `events` holds what happened in what order,
+    for the cases where nothing is launched at all.
+
+    `load_problems` (the flat strings a person reads) and `not_whole` (the same problems keyed by
+    session) are set independently, because the reason the second field exists is that the first
+    cannot be turned into it. `not_whole=None` is a proxy too old to have either.
+    """
+    state = {"active": active, "sessions": list(sessions), "loadProblems": list(load_problems),
+             "notWhole": None if not_whole is None else dict(not_whole),
+             "steps": dict(steps or {}), "events": [], "launched": []}
+
+    def control(path, method="GET", payload=None, timeout=3.0):
+        assert (path, method) == ("/__mock__/sessions/active", "PUT"), (path, method)
+        state["events"].append(("activate", payload["name"]))
+        if unreachable:   # what `_control` prints when the proxy stops answering mid-`up`
+            click.echo("✗ proxy not reachable — is it running? (`lyrebird up`)")
+            raise SystemExit(1)
+        if payload["name"] not in state["sessions"]:   # the API's 404, with the detail it sends
+            click.echo(f"✗ no session named '{payload['name']}' in this profile")
+            raise SystemExit(1)
+        previous = state["active"]
+        state["active"] = payload["name"]
+        state["steps"][payload["name"]] = 1   # activating a session rewinds its sequences
+        return {"active": state["active"], "previous": {"name": previous, "overrideCount": 0}}
+
+    def relaunch(bundle_id):
+        state["events"].append(("relaunch", bundle_id))
+        state["launched"].append({"session": state["active"],
+                                  "status": _SCENARIOS[state["active"]],
+                                  "step": state["steps"].get(state["active"], 1)})
+        return True, bundle_id
+
+    monkeypatch.setattr(cli, "_control", control)
+    monkeypatch.setattr(cli, "_relaunch", relaunch)
+    return state
+
+
+def _live(state):
+    reading = {**_LIVE, "activeSession": state["active"], "sessions": state["sessions"],
+               "loadProblems": state["loadProblems"], "sessionsNotWhole": state["notWhole"]}
+    if state["notWhole"] is None:   # an engine older than the fields, which cannot say
+        del reading["loadProblems"]
+        del reading["sessionsNotWhole"]
+    return reading
+
+
+def _up_with_a_proxy(profile, monkeypatch, state, *, adopt=False, bundle_id="com.example.Store"):
+    """`up` against `state`'s proxy — either starting it, or adopting one already running."""
+    _up_after_a_crash(profile, monkeypatch,
+                      lambda service: netproxy.PacStatus(netproxy.pac_url(), True, True))
+    sim = f', "simBundleId": "{bundle_id}"' if bundle_id else ""
+    (profile / "profile.json").write_text(f'{{"hosts": ["api.example.com"]{sim}}}', encoding="utf-8")
+    # Health tracks the fake proxy, so the last look reports the session that was actually selected.
+    first = iter([] if adopt else [None])   # dead at the first look unless we are adopting one
+    monkeypatch.setattr(cli, "_health", lambda: next(first, _live(state)))
+
+
+@pytest.mark.parametrize("adopt", [False, True], ids=["fresh start", "adopting a running proxy"])
+def test_up_selects_the_session_before_it_relaunches_the_app(profile, runner, monkeypatch, adopt):
+    """The bug: `up` relaunched the app and only the documented `use` afterwards selected the
+    scenario, so the launch was answered by whatever session happened to be active — and an app
+    that cached that response kept the wrong state on screen for the rest of the run."""
+    state = _fake_proxy(monkeypatch)
+    _up_with_a_proxy(profile, monkeypatch, state, adopt=adopt)
+
+    result = runner.invoke(cli.cli, ["up", "--use", "orders-outage"])
+
+    assert result.exit_code == 0, result.output
+    assert state["launched"] == [{"session": "orders-outage", "status": 500, "step": 1}], \
+        "the app's launch request was answered by a session the caller did not ask for"
+    assert state["events"] == [("activate", "orders-outage"), ("relaunch", "com.example.Store")]
+
+
+def test_up_rewinds_the_session_it_selects_so_the_launch_starts_at_step_one(
+        profile, runner, monkeypatch):
+    """`--use` on the session that is already active is not a no-op: activation rewinds its
+    sequences, and without it the relaunch resumes mid-scenario at whatever step the last run
+    left behind."""
+    state = _fake_proxy(monkeypatch, active="orders-outage", steps={"orders-outage": 3})
+    _up_with_a_proxy(profile, monkeypatch, state, adopt=True)
+
+    result = runner.invoke(cli.cli, ["up", "--use", "orders-outage"])
+
+    assert result.exit_code == 0, result.output
+    assert state["launched"] == [{"session": "orders-outage", "status": 500, "step": 1}]
+
+
+def test_up_does_not_relaunch_under_a_fallback_when_the_session_is_unknown(
+        profile, runner, monkeypatch):
+    """Relaunching anyway would run the whole suite against the previous session and report every
+    step of `up` as a success."""
+    state = _fake_proxy(monkeypatch)
+    _up_with_a_proxy(profile, monkeypatch, state)
+
+    result = runner.invoke(cli.cli, ["up", "--use", "nope"])
+
+    assert result.exit_code == 1
+    assert state["launched"] == [], "the app was launched against the session already active"
+    assert "no session named 'nope'" in result.output
+    assert "default, orders-outage" in result.output, "say which sessions there are"
+    assert "NOT relaunched" in result.output
+    assert "lyrebird down" in result.output
+
+
+def test_up_does_not_relaunch_a_session_whose_overrides_were_dropped(profile, runner, monkeypatch):
+    """The session is in `sessions` and activates happily, but the rules the scenario is made of
+    did not survive the load — so the launch would meet a scenario that is not the one on disk."""
+    problem = "orders-outage.json: override[1]: unknown field 'statsu'"
+    state = _fake_proxy(monkeypatch, load_problems=[problem],
+                        not_whole={"orders-outage": [problem]})
+    _up_with_a_proxy(profile, monkeypatch, state)
+
+    result = runner.invoke(cli.cli, ["up", "--use", "orders-outage"])
+
+    assert result.exit_code == 1
+    assert state["launched"] == [] and state["events"] == []
+    assert "did not load whole" in result.output
+    assert "unknown field 'statsu'" in result.output
+
+
+def test_up_does_not_relaunch_when_the_named_session_was_replaced_by_an_empty_default(
+        profile, runner, monkeypatch):
+    """A malformed `default.json` is skipped and an empty in-memory `default` stands in for it.
+    The session list cannot tell those two apart, so only the load problem can."""
+    problem = "skipped default.json: Expecting value: line 1 column 1"
+    state = _fake_proxy(monkeypatch, load_problems=[problem], not_whole={"default": [problem]})
+    _up_with_a_proxy(profile, monkeypatch, state)
+
+    result = runner.invoke(cli.cli, ["up", "--use", "default"])
+
+    assert result.exit_code == 1
+    assert state["launched"] == [] and state["events"] == []
+    assert "session 'default' did not load whole" in result.output
+
+
+@pytest.mark.parametrize("problem", [
+    "skipped other.json: Expecting value: line 1 column 1",
+    # The store reports the *file* name, and a file may be named `orders-outage.json: backup.json`
+    # — a name it rejects, so no session is reported against it at all. The string it leaves in
+    # `loadProblems` nonetheless begins exactly like a problem with `orders-outage`, which is why
+    # the decision is taken from `sessionsNotWhole` and not from these strings.
+    "skipped orders-outage.json: backup.json: invalid session name "
+    "'orders-outage.json: backup' — use letters, digits, dot, dash or underscore",
+], ids=["another session", "a file whose name begins with this session's"])
+def test_up_ignores_a_load_problem_belonging_to_no_session_of_this_name(
+        profile, runner, monkeypatch, problem):
+    """Only the named session's own failure decides. A broken file nobody asked for is not a
+    reason to refuse to start the scenario they did — and `loadProblems` alone cannot tell the
+    two apart."""
+    state = _fake_proxy(monkeypatch, load_problems=[problem])
+    _up_with_a_proxy(profile, monkeypatch, state)
+
+    result = runner.invoke(cli.cli, ["up", "--use", "orders-outage"])
+
+    assert result.exit_code == 0, result.output
+    assert state["launched"] == [{"session": "orders-outage", "status": 500, "step": 1}]
+
+
+def test_up_does_not_relaunch_when_the_proxy_cannot_say_what_loaded(profile, runner, monkeypatch):
+    """Adopting a proxy started before `loadProblems` existed. Silence is not "the session loaded
+    whole": reading it as an empty list relaunches the app against a session nothing checked, and
+    prints exactly what a checked one prints."""
+    state = _fake_proxy(monkeypatch, not_whole=None)
+    _up_with_a_proxy(profile, monkeypatch, state, adopt=True)
+
+    result = runner.invoke(cli.cli, ["up", "--use", "orders-outage"])
+
+    assert result.exit_code == 1
+    assert state["launched"] == [] and state["events"] == []
+    assert "cannot say whether 'orders-outage' loaded whole" in result.output
+    assert "restart the proxy" in result.output
+
+
+@pytest.mark.parametrize("bundle_id", ["com.example.Store", None], ids=["simBundleId set", "unset"])
+def test_up_does_not_relaunch_when_the_activation_call_fails(
+        profile, runner, monkeypatch, bundle_id):
+    """The proxy stopped answering between the PAC install and the switch. Launching now would put
+    the app in front of exactly the session the caller was trying to replace — and asking for the
+    launch by hand is that same wrong launch, typed by a person. The final look still runs: the
+    proxy is up and the PAC is installed, and an operator not told so walks away believing the
+    network was left alone."""
+    state = _fake_proxy(monkeypatch, unreachable=True)
+    _up_with_a_proxy(profile, monkeypatch, state, bundle_id=bundle_id)
+
+    result = runner.invoke(cli.cli, ["up", "--use", "orders-outage"])
+
+    assert result.exit_code == 1
+    assert state["launched"] == []
+    assert state["events"] == [("activate", "orders-outage")]
+    assert "proxy not reachable" in result.output, "the API's own detail is kept"
+    assert "NOT relaunched" in result.output
+    assert "RELAUNCH THE APP NOW" not in result.output
+    assert "INTERCEPT ACTIVE" in result.output
+
+
+def test_up_keeps_the_reason_when_the_refusal_carries_it_instead_of_printing_it(
+        profile, runner, monkeypatch):
+    """`_control` prints its own error and exits 1, but a profile mismatch puts the message —
+    both fingerprints — *in* the SystemExit. Catching the exit to add "the app was not relaunched"
+    must not be what throws that away."""
+    state = _fake_proxy(monkeypatch)
+
+    def mismatched(name):
+        raise SystemExit("✗ that proxy is running a different profile (a1b2c3 ≠ d4e5f6)")
+
+    _up_with_a_proxy(profile, monkeypatch, state)
+    monkeypatch.setattr(cli, "_activate_session", mismatched)
+
+    result = runner.invoke(cli.cli, ["up", "--use", "orders-outage"])
+
+    assert result.exit_code == 1
+    assert state["launched"] == []
+    assert "a1b2c3 ≠ d4e5f6" in result.output
+    assert "NOT relaunched" in result.output
+
+
+@pytest.mark.parametrize("bundle_id", ["com.example.Store", None], ids=["simBundleId set", "unset"])
+def test_up_no_relaunch_launches_nothing_and_says_who_owns_it(
+        profile, runner, monkeypatch, bundle_id):
+    """With a UI runner owning the app, `up` launching it is a second launch racing the first —
+    and the reminder to launch one by hand is the same instruction to the operator."""
+    state = _fake_proxy(monkeypatch)
+    _up_with_a_proxy(profile, monkeypatch, state, bundle_id=bundle_id)
+
+    result = runner.invoke(cli.cli, ["up", "--no-relaunch"])
+
+    assert result.exit_code == 0, result.output
+    assert state["launched"] == []
+    assert "relaunch skipped" in result.output
+    assert "RELAUNCH THE APP NOW" not in result.output
+
+
+def test_up_use_with_no_relaunch_still_selects_the_session(profile, runner, monkeypatch):
+    """The caller launches the app itself, and needs the scenario live before it does."""
+    state = _fake_proxy(monkeypatch)
+    _up_with_a_proxy(profile, monkeypatch, state)
+
+    result = runner.invoke(cli.cli, ["up", "--use", "orders-outage", "--no-relaunch"])
+
+    assert result.exit_code == 0, result.output
+    assert state["events"] == [("activate", "orders-outage")]
+    assert state["active"] == "orders-outage"
+
+
+def test_up_leaves_the_active_session_alone_when_no_use_is_given(profile, runner, monkeypatch):
+    """`up` is not a session switch. Selecting one unasked would rewind a scenario the operator
+    set up by hand before running it."""
+    state = _fake_proxy(monkeypatch, active="orders-outage")
+    _up_with_a_proxy(profile, monkeypatch, state)
+
+    result = runner.invoke(cli.cli, ["up"])
+
+    assert result.exit_code == 0, result.output
+    assert state["events"] == [("relaunch", "com.example.Store")]
+
+
+@pytest.mark.parametrize("args", [["--relaunch", "com.example.Store", "--no-relaunch"],
+                                  ["--no-relaunch", "--relaunch", "com.example.Store"],
+                                  ["--use", "  "]])
+def test_up_refuses_a_contradictory_launch_request_before_it_starts_anything(profile, runner, args):
+    """Answering "which of these did you mean" after the network has been rewired is too late.
+    There is no profile here, and `up` must not get as far as complaining about that."""
+    result = runner.invoke(cli.cli, ["up", *args])
+
+    assert result.exit_code == 2, result.output
+    assert "no profile" not in result.output, "the usage error must come before any side effect"

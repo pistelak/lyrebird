@@ -354,6 +354,38 @@ def test_import_session_rejects_a_non_object(profile):
     assert subject.import_session({"session": []}) is None
 
 
+def test_a_created_session_does_not_inherit_the_problems_of_the_file_it_replaces(profile):
+    """`sessions_not_whole` says what is wrong with the session under a name *now*. A file that
+    would not load leaves no session, so creating one under that name is a recovery — and a stale
+    entry makes `up --use NAME` refuse to launch against rules that are all present."""
+    (profile / "sessions" / "orders-outage.json").write_text("{ not json", encoding="utf-8")
+    subject = make_store(profile)
+    assert "orders-outage" in subject.sessions_not_whole
+
+    subject.create_session("orders-outage")
+
+    assert subject.sessions_not_whole == {}
+    assert subject.load_problems, "the record of what startup found is not rewritten"
+
+
+def test_a_recreated_session_does_not_inherit_the_problems_of_the_one_deleted(profile):
+    """The other order: delete the half-loaded session, then make a new one under its name. The
+    entry has to go with the session, not linger for whatever takes the name next."""
+    (profile / "sessions" / "orders-outage.json").write_text(json.dumps({
+        "name": "orders-outage",
+        "overrides": [{"match": {"path": "/a"}, "mode": "replace", "status": 200},
+                      {"match": {"path": "/b"}, "mode": "replace", "statsu": 200}],
+    }), encoding="utf-8")
+    subject = make_store(profile)
+    assert "orders-outage" in subject.sessions, "it loaded, without one of its rules"
+    assert "orders-outage" in subject.sessions_not_whole
+
+    assert subject.delete_session("orders-outage")
+    assert subject.sessions_not_whole == {}
+    subject.create_session("orders-outage")
+    assert subject.sessions_not_whole == {}
+
+
 def test_cloning_an_unknown_session_is_an_error(profile):
     """Handing back an empty session instead is a false success the caller cannot see."""
     subject = make_store(profile)

@@ -208,6 +208,76 @@ def test_missing_session_name_is_a_bad_request(profile):
 def test_unknown_session_is_not_found(profile):
     status, _, body = call(profile, "PUT", "/__mock__/sessions/active", json_body={"name": "nope"})
     assert status == 404 and body["error"] == "unknown_session"
+    # The CLI prints `detail` when there is one and the slug otherwise, so without this the
+    # operator is told "unknown_session" — the category, not the mistake.
+    assert body["detail"] == "no session named 'nope' in this profile"
+
+
+def test_health_reports_a_session_that_did_not_load_whole(profile):
+    """`sessions` cannot carry this: a session whose invalid overrides were dropped is listed
+    there exactly like one that loaded whole. `up --use NAME` refuses to relaunch the app on the
+    strength of this, so it has to reach the CLI — keyed by session, and once per problem."""
+    (profile / "sessions" / "orders-outage.json").write_text(json.dumps({
+        "name": "orders-outage",
+        "overrides": [
+            {"match": {"method": "GET", "path": "/api/v1/orders/*"}, "mode": "replace", "status": 500},
+            {"match": {"method": "GET", "path": "/api/v1/x"}, "mode": "replace", "statsu": 500},
+            {"match": {"method": "GET", "path": "/api/v1/y"}, "mode": "replace", "sttaus": 500},
+        ],
+    }), encoding="utf-8")
+
+    status, _, body = call(profile, "GET", "/__mock__/health")
+
+    assert status == 200
+    assert "orders-outage" in body["sessions"], "it loaded, which is exactly the trap"
+    assert len(body["loadProblems"]) == 2, "one entry per problem, not per file"
+    assert body["sessionsNotWhole"] == {"orders-outage": body["loadProblems"]}
+
+
+def test_health_does_not_blame_a_session_for_a_file_merely_named_after_it(profile):
+    """The reason the answer is keyed by session rather than read out of the strings. This file's
+    name is rejected, so no session is reported against it — but the diagnostic it leaves behind
+    begins exactly like one about `orders-outage`, whose own file is perfectly good."""
+    good = {"name": "orders-outage", "overrides": [
+        {"match": {"method": "GET", "path": "/api/v1/orders/*"}, "mode": "replace", "status": 500}]}
+    (profile / "sessions" / "orders-outage.json").write_text(json.dumps(good), encoding="utf-8")
+    (profile / "sessions" / "orders-outage.json: backup.json").write_text("{", encoding="utf-8")
+
+    status, _, body = call(profile, "GET", "/__mock__/health")
+
+    assert status == 200
+    assert body["loadProblems"] and body["loadProblems"][0].startswith(
+        "skipped orders-outage.json: backup.json:"), "the trap, verbatim"
+    assert body["sessionsNotWhole"] == {}, "orders-outage loaded whole and must not be blamed"
+
+
+def test_health_forgets_a_session_once_a_good_one_is_imported_over_it(profile):
+    """The recovery path. A malformed `orders-outage.json` is how the entry gets there; importing
+    a good session under that name is what an operator does about it, and the point of doing it is
+    that `up --use orders-outage` stops refusing. An entry left behind would install every rule and
+    go on refusing to launch the app over a file that no longer decides anything."""
+    (profile / "sessions" / "orders-outage.json").write_text("{ not json", encoding="utf-8")
+
+    def import_a_good_one(subject):
+        assert subject.sessions_not_whole["orders-outage"], "the malformed file was recorded"
+        assert subject.import_session({"name": "orders-outage", "overrides": [
+            {"match": {"method": "GET", "path": "/api/v1/orders/*"},
+             "mode": "replace", "status": 500}]}) == "orders-outage"
+
+    status, _, body = call(profile, "GET", "/__mock__/health", prepare=import_a_good_one)
+
+    assert status == 200
+    # Empty is what the CLI reads: `up --use orders-outage` finds no problems and goes on to relaunch.
+    assert body["sessionsNotWhole"] == {}
+    assert "orders-outage" in body["sessions"]
+    assert body["loadProblems"], "what startup found stays on the record; it just no longer decides"
+
+
+def test_health_reports_no_load_problems_when_every_session_loaded(profile):
+    """The other half: empty is a real answer, and the CLI treats it as one."""
+    status, _, body = call(profile, "GET", "/__mock__/health")
+    assert status == 200
+    assert body["loadProblems"] == [] and body["sessionsNotWhole"] == {}
 
 
 # MARK: - What /health may disclose
