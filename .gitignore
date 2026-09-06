@@ -22,6 +22,8 @@ xcuserdata/
 # xcodegen output — project.yml is the source of truth (run `xcodegen generate`)
 menubar/Lyrebird.xcodeproj/
 menubar/Lyrebird/Info.plist
+acceptance/FixtureApp/FixtureApp.xcodeproj/
+acceptance/FixtureApp/FixtureApp/Info.plist
 
 # Claude Code — .claude/skills/ is tracked; per-machine state is not
 .claude/worktrees/

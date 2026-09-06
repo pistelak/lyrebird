@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "name": "fixture-replaced",
+  "notes": "One locally replaced HTTPS response. The status is deliberately not 200: a 503 the app could not have got from anywhere else proves the status came from the override rather than from a request that quietly succeeded elsewhere. `replace` needs no upstream, so api.example.com is never contacted and never has to resolve.",
+  "verified": false,
+  "overrides": [
+    {
+      "id": "ovr_fixture_replaced",
+      "match": { "method": "GET", "path": "/api/v1/fixture" },
+      "mode": "replace",
+      "status": 503,
+      "body": {
+        "scenario": "fixture-replaced",
+        "marker": "LYREBIRD-FIXTURE-REPLACED"
+      }
+    }
+  ]
+}

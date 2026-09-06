@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "name": "fixture-decoy",
+  "notes": "The scenario that must NOT answer once another one has been selected. It is activated first so that `up --use fixture-replaced` has something to displace: the fixture app's launch request carrying the replaced marker then proves the selection happened before the launch, which is the ordering `use`-after-`up` cannot give you.",
+  "verified": false,
+  "overrides": [
+    {
+      "id": "ovr_fixture_decoy",
+      "match": { "method": "GET", "path": "/api/v1/fixture" },
+      "mode": "replace",
+      "status": 200,
+      "body": {
+        "scenario": "fixture-decoy",
+        "marker": "LYREBIRD-FIXTURE-DECOY"
+      }
+    }
+  ]
+}

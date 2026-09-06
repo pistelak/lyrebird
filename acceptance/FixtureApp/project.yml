@@ -1,0 +1,37 @@
+name: FixtureApp
+options:
+  bundleIdPrefix: com.example
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+targets:
+  FixtureApp:
+    type: application
+    platform: iOS
+    sources:
+      - FixtureApp
+    info:
+      path: FixtureApp/Info.plist
+      properties:
+        CFBundleName: FixtureApp
+        CFBundleDisplayName: Lyrebird Fixture
+        # An iOS app with no launch screen runs letterboxed, which changes nothing here but makes
+        # a screenshot confusing for anyone who opens the simulator to see what happened.
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.lyrebird-fixture
+        PRODUCT_NAME: FixtureApp
+        SWIFT_VERSION: "5.0"
+        IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: NO
+        # Simulator-only, installed with `simctl install`, never distributed: signing it would
+        # need a team and a certificate the acceptance run has no business requiring.
+        CODE_SIGNING_ALLOWED: NO
+        CODE_SIGNING_REQUIRED: NO
+        CODE_SIGN_IDENTITY: ""
+        CODE_SIGN_STYLE: Manual
+        DEVELOPMENT_TEAM: ""
