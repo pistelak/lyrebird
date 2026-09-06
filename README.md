@@ -102,6 +102,12 @@ cd engine && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt 
 bin/lyrebird init          # creates ~/.config/lyrebird
 ```
 
+To call it as `lyrebird` from anywhere, link it onto your PATH:
+
+```bash
+mkdir -p "$HOME/.local/bin" && ln -s "$PWD/bin/lyrebird" "$HOME/.local/bin/lyrebird"   # ~/.local/bin must be on PATH
+```
+
 **Then edit `~/.config/lyrebird/profile.json` before starting.** What ships is a template, not a
 working demo — `api.example.com` doesn't serve any of the example routes:
 

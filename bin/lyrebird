@@ -1,7 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 # Lyrebird launcher — runs the engine CLI inside its own venv.
-ENGINE="$(cd "$(dirname "${BASH_SOURCE[0]}")/../engine" && pwd)"
+#
+# Resolve the launcher's real location first: `BASH_SOURCE[0]` is the path we were *invoked* by,
+# and the documented install is a symlink on PATH (`bin/lb` is one too), so deriving the engine
+# directory from the invoked path looked for `~/.local/engine`. `readlink -f` follows the whole
+# chain, relative targets included; it has shipped with macOS since 12.3 and the app targets 14.
+if ! SELF="$(readlink -f "${BASH_SOURCE[0]}")"; then
+  echo "lyrebird: cannot resolve the launcher's own path from '${BASH_SOURCE[0]}'" >&2
+  exit 1
+fi
+ENGINE_DIR="$(dirname "$SELF")/../engine"
+if ! ENGINE="$(cd "$ENGINE_DIR" 2>/dev/null && pwd)"; then
+  echo "lyrebird: no engine directory beside the launcher (looked for $ENGINE_DIR; launcher is $SELF)" >&2
+  exit 1
+fi
 
 if [[ ! -x "$ENGINE/.venv/bin/python" ]]; then
   cat >&2 <<EOF
