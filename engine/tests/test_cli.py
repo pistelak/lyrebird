@@ -106,6 +106,443 @@ def test_down_leaves_a_foreign_pac_alone(profile, runner, monkeypatch):
 
 
 
+def _unreadable_pac(service):
+    raise netproxy.NetworkSetupError("`networksetup -getautoproxyurl Wi-Fi` failed: 1")
+
+
+def test_down_refuses_to_claim_left_untouched_when_the_pac_cannot_be_read(profile, runner, monkeypatch):
+    """A failed `networksetup` used to parse as "no PAC, not ours", so `down` printed "left
+    untouched", deleted the runtime file, and the PAC it never read stayed pointing at a dead port."""
+    config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
+    config.write_runtime({"proxyPid": 99, "service": "Wi-Fi",
+                          "previousPac": {"url": "http://proxy.example.com/corp.pac", "enabled": True}})
+    touched = []
+    monkeypatch.setattr(cli, "_health", lambda: None)
+    monkeypatch.setattr(netproxy, "pac_status", _unreadable_pac)
+    monkeypatch.setattr(netproxy, "restore_pac", lambda *a: touched.append(a))
+    monkeypatch.setattr(cli, "_terminate", lambda pid, marker: None)
+
+    result = runner.invoke(cli.cli, ["down"])
+
+    assert result.exit_code == 1
+    assert "could not" in result.output and "not ours" not in result.output
+    assert touched == []
+    assert config.runtime_file().exists(), "the record of what to restore must survive a failed attempt"
+
+
+def test_down_finishes_a_restore_that_failed_half_way(profile, runner, monkeypatch):
+    """`restore_pac` hands the URL back before it sets the flag, so a failure between the two
+    leaves the previous URL with the wrong state. That is not a PAC somebody set by hand; it is
+    ours, half restored. Reading it as "not ours" left the corporate PAC enabled for good."""
+    config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
+    config.write_runtime({"proxyPid": 99, "service": "Wi-Fi",
+                          "previousPac": {"url": "http://proxy.example.com/corp.pac", "enabled": False}})
+    restored = []
+    stopped = {"terminated": []}
+    monkeypatch.setattr(cli, "_health", lambda: None if stopped["terminated"] else {"pid": 99})
+    monkeypatch.setattr(netproxy, "pac_status",
+                        lambda service: netproxy.PacStatus("http://proxy.example.com/corp.pac", True, False))
+    monkeypatch.setattr(netproxy, "restore_pac", lambda *a: restored.append(a))
+    monkeypatch.setattr(cli, "_terminate", lambda pid, marker: stopped["terminated"].append(pid))
+
+    result = runner.invoke(cli.cli, ["down"])
+
+    assert result.exit_code == 0, result.output
+    assert restored == [("Wi-Fi", "http://proxy.example.com/corp.pac", False)]
+    assert "not ours" not in result.output
+
+
+def test_up_says_when_it_cannot_read_the_pac_it_just_installed(profile, runner, monkeypatch):
+    """The banner's "PAC is disabled/not ours" is a diagnosis; a read that failed made none.
+    And the failure summary only names what was printed as it happened, so this must be."""
+    (profile / "profile.json").write_text('{"hosts": ["api.example.com"]}', encoding="utf-8")
+    config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(cli, "_health", lambda: {"pid": 1, "activeSession": "default", "sessions": ["default"],
+                                                "overrideCount": 0, "proxyPort": 8080})
+    monkeypatch.setattr(cli, "trust_ca_in_sim", lambda: (True, "trusted"))
+    monkeypatch.setattr(netproxy, "active_service", lambda: "Wi-Fi")
+    monkeypatch.setattr(netproxy, "pac_status",
+                        lambda service: netproxy.PacStatus("", False, False))
+    monkeypatch.setattr(netproxy, "set_pac", lambda service: None)
+    monkeypatch.setattr(cli, "_pid_is_ours", lambda pid, marker: True)
+    monkeypatch.setattr(netproxy, "intercepting", _unreadable_pac)
+
+    result = runner.invoke(cli.cli, ["up"])
+
+    assert result.exit_code == 1
+    assert "could not read the PAC" in result.output
+    assert "not ours" not in result.output
+
+
+def test_watchdog_keeps_the_runtime_file_when_the_restore_keeps_failing(profile, runner, monkeypatch):
+    """The watchdog used to suppress the failure and delete the file anyway, which made a
+    failed restore permanent and invisible: nothing was left for `down` to act on. And it must
+    try more than once: `networksetup` fails transiently during the network changes that kill
+    proxies in the first place."""
+    config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
+    config.write_runtime({"proxyPid": 99, "service": "Wi-Fi", "previousPac": {"url": "", "enabled": False}})
+    attempts = []
+    monkeypatch.setattr(cli, "_health", lambda: None)
+    monkeypatch.setattr(netproxy, "pac_status", lambda service: (attempts.append(1), _unreadable_pac(service)))
+    monkeypatch.setattr(cli.time, "sleep", lambda seconds: None)
+
+    assert runner.invoke(cli.cli, ["_watchdog", "Wi-Fi"]).exit_code == 0
+    assert len(attempts) == cli._WATCHDOG_RESTORE_ATTEMPTS
+    assert config.runtime_file().exists()
+
+
+def test_watchdog_restores_under_the_lock_up_takes_and_looks_again_once_it_holds_it(profile, runner, monkeypatch):
+    """`up` reuses a running watchdog. A replacement that starts after the watchdog's first look
+    but before its restore would have its PAC restored over and its runtime file deleted — so the
+    restore happens under `up`'s lock, and health is checked again once the lock is held."""
+    config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
+    config.write_runtime({"proxyPid": 99, "service": "Wi-Fi", "previousPac": {"url": "", "enabled": False}})
+    health = iter([None])   # dead at the first look; live by the time the lock is held
+    locked = []
+    restored = []
+
+    class Stop(Exception):
+        pass
+
+    def flock(handle, operation):
+        locked.append(operation)
+
+    def sleep(seconds):
+        raise Stop   # the first poll delay: by then it must be watching again, not restoring
+
+    monkeypatch.setattr(cli, "_health", lambda: next(health, {"pid": 2}))
+    monkeypatch.setattr(cli.fcntl, "flock", flock)
+    monkeypatch.setattr(netproxy, "pac_status", lambda service: netproxy.PacStatus(netproxy.pac_url(), True, True))
+    monkeypatch.setattr(netproxy, "restore_pac", lambda *a: restored.append(a))
+    monkeypatch.setattr(cli.time, "sleep", sleep)
+
+    result = runner.invoke(cli.cli, ["_watchdog", "Wi-Fi"])
+
+    assert isinstance(result.exception, Stop), result.output
+    assert locked and set(locked) == {cli.fcntl.LOCK_EX}, "the restore must wait for any `up` in progress"
+    assert restored == [], "the replacement owns the network now"
+    assert config.runtime_file().exists(), "the replacement's runtime file must survive"
+
+
+class _Stop(Exception):
+    pass
+
+
+def _watch_one_poll(monkeypatch, *, recorded_service, pac):
+    """A live proxy, a runtime record naming `recorded_service`, the PAC as `pac` reports it,
+    and a watchdog that runs exactly one poll before the sleep ends it. Returns the `set_pac`
+    calls it made."""
+    config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
+    config.write_runtime({"proxyPid": 99, "service": recorded_service, "previousPac": {"url": "", "enabled": False}})
+    repaired = []
+
+    def stop(seconds):
+        raise _Stop
+
+    monkeypatch.setattr(cli, "_health", lambda: {"pid": 99})
+    monkeypatch.setattr(netproxy, "pac_status", lambda service: pac)
+    monkeypatch.setattr(netproxy, "set_pac", lambda service: repaired.append(service))
+    monkeypatch.setattr(cli.time, "sleep", stop)
+    return repaired
+
+
+def test_watchdog_re_enables_its_own_service_pac_when_macos_switches_it_off(profile, runner, monkeypatch):
+    repaired = _watch_one_poll(monkeypatch, recorded_service="Wi-Fi",
+                               pac=netproxy.PacStatus(netproxy.pac_url(), False, True))
+    result = runner.invoke(cli.cli, ["_watchdog", "Wi-Fi"])
+    assert isinstance(result.exception, _Stop)
+    assert repaired == ["Wi-Fi"]
+
+
+def test_watchdog_leaves_a_pac_alone_once_the_route_has_moved_to_another_service(profile, runner, monkeypatch):
+    """Restoring "no previous PAC" on Wi-Fi leaves our URL installed and disabled — the shape
+    the live loop exists to undo. A Wi-Fi watchdog that outlived the move to Ethernet used to
+    switch it straight back on, and the next `down` restored Ethernet only."""
+    repaired = _watch_one_poll(monkeypatch, recorded_service="Ethernet",
+                               pac=netproxy.PacStatus(netproxy.pac_url(), False, True))
+    result = runner.invoke(cli.cli, ["_watchdog", "Wi-Fi"])
+    assert isinstance(result.exception, _Stop)
+    assert repaired == [], "the record names another service: not this watchdog's PAC to touch"
+
+
+def test_up_waits_for_the_lock_holder_and_gives_up_only_after_the_timeout(profile, monkeypatch):
+    """The holder is another `up`, or the watchdog restoring the network after a crash. Failing at
+    once used to say "another up is in progress" while a restore ran; starting anyway would
+    interleave an install with that restore on one network service."""
+    import fcntl
+
+    config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(cli.time, "sleep", lambda seconds: None)
+    with open(config.lock_file(), "w") as holder, open(config.lock_file(), "w") as waiter:
+        fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with pytest.raises(SystemExit, match="still in progress"):
+            cli._acquire_lock(waiter, timeout=0.2)
+        fcntl.flock(holder, fcntl.LOCK_UN)
+        cli._acquire_lock(waiter, timeout=0.2)   # released: acquired without error
+
+
+_CORPORATE = {"url": "http://proxy.example.com/corp.pac", "enabled": False}
+
+
+_LIVE = {"pid": 4321, "activeSession": "default", "sessions": ["default"], "overrideCount": 0,
+         "proxyPort": 8080}
+
+
+def _up_after_a_crash(profile, monkeypatch, pac_status, *, service="Wi-Fi", health=None):
+    """`up` with the proxy dead, a runtime file the watchdog kept (it could not restore), and the
+    PAC in whatever state `pac_status` reports. Everything that shells out is stubbed. `health` is
+    the sequence of answers `_health` gives; by default dead at the first look and live after."""
+    import subprocess
+
+    (profile / "profile.json").write_text('{"hosts": ["api.example.com"]}', encoding="utf-8")
+    config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
+    config.LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    config.write_runtime({"proxyPid": 99, "service": "Wi-Fi", "previousPac": _CORPORATE})
+    answers = iter([None] if health is None else health)
+
+    class Proc:
+        pid = 4321
+
+    monkeypatch.setattr(cli, "_health", lambda: next(answers, _LIVE))
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: Proc())
+    monkeypatch.setattr(cli, "_start_fresh_log", lambda: None)
+    monkeypatch.setattr(cli, "trust_ca_in_sim", lambda: (True, "trusted"))
+    monkeypatch.setattr(netproxy, "active_service", lambda: service)
+    installed = {"ours": False}   # `set_pac` installs ours, and every read after it sees that
+
+    def read(service):
+        if installed["ours"]:
+            return netproxy.PacStatus(netproxy.pac_url(), True, True)
+        return pac_status(service)
+
+    def install(service):
+        installed["ours"] = True
+
+    monkeypatch.setattr(netproxy, "pac_status", read)
+    monkeypatch.setattr(netproxy, "set_pac", install)
+    monkeypatch.setattr(cli, "_pid_is_ours", lambda pid, marker: True)
+    monkeypatch.setattr(cli, "_spawn_watchdog", lambda service: 4242)
+
+
+def test_up_keeps_the_recovery_record_the_watchdog_preserved(profile, runner, monkeypatch):
+    """Corporate PAC → Lyrebird → crash → every restore attempt fails → the watchdog keeps the
+    runtime file → `up`. Snapshotting the network now would read "ours, so nothing to restore" and
+    the corporate PAC would be gone for good at the next `down`."""
+    _up_after_a_crash(profile, monkeypatch, lambda service: netproxy.PacStatus(netproxy.pac_url(), True, True))
+
+    result = runner.invoke(cli.cli, ["up"])
+
+    assert result.exit_code == 0, result.output
+    assert config.read_runtime()["previousPac"] == _CORPORATE
+
+
+def test_up_keeps_the_recovery_record_when_it_cannot_read_the_pac(profile, runner, monkeypatch):
+    """The runtime file is rewritten before the PAC is read, so the record has to be in that first
+    write: an `up` that fails on the read used to leave a file with a pid and no `previousPac`,
+    and `down` then restored "nothing" over the corporate PAC once reads worked again."""
+    _up_after_a_crash(profile, monkeypatch, _unreadable_pac)
+
+    result = runner.invoke(cli.cli, ["up"])
+
+    assert result.exit_code == 1
+    assert "could not install" in result.output
+    assert config.read_runtime()["previousPac"] == _CORPORATE
+
+
+def test_up_keeps_the_recorded_service_when_the_route_is_gone_so_down_can_still_restore(profile, runner, monkeypatch):
+    """Crash, failed restore, Wi-Fi switched off, `up`. It used to record `service: null` beside
+    the kept PAC, and a `down` before the route came back then found no service, restored
+    nothing, and deleted the record — "stopped", with the corporate PAC never put back."""
+    _up_after_a_crash(profile, monkeypatch,
+                      lambda service: netproxy.PacStatus(netproxy.pac_url(), True, True), service=None)
+    assert runner.invoke(cli.cli, ["up"]).exit_code == 0
+    assert config.read_runtime()["service"] == "Wi-Fi"
+    assert config.read_runtime()["previousPac"] == _CORPORATE
+
+    restored = []
+    stopped = {"terminated": []}
+    monkeypatch.setattr(cli, "_health", lambda: None if stopped["terminated"] else _LIVE)
+    monkeypatch.setattr(netproxy, "restore_pac", lambda *a: restored.append(a))
+    monkeypatch.setattr(cli, "_terminate", lambda pid, marker: stopped["terminated"].append(pid))
+
+    result = runner.invoke(cli.cli, ["down"])
+
+    assert result.exit_code == 0, result.output
+    assert restored == [("Wi-Fi", _CORPORATE["url"], False)]
+
+
+def test_up_fails_when_its_final_look_finds_the_pac_not_routing(profile, runner, monkeypatch):
+    """Every step succeeded and then the PAC was switched off before the last look. The banner
+    said NOT INTERCEPTING; the exit code said 0, because only the steps fed it."""
+    _up_after_a_crash(profile, monkeypatch,
+                      lambda service: netproxy.PacStatus(netproxy.pac_url(), True, True))
+    monkeypatch.setattr(netproxy, "intercepting", lambda service: False)
+
+    result = runner.invoke(cli.cli, ["up"])
+
+    assert result.exit_code == 1
+    assert "NOT INTERCEPTING" in result.output
+
+
+def test_up_fails_when_the_proxy_stops_answering_before_the_final_look(profile, runner, monkeypatch):
+    _up_after_a_crash(profile, monkeypatch,
+                      lambda service: netproxy.PacStatus(netproxy.pac_url(), True, True),
+                      health=[None, _LIVE, None])   # dead at first, up for the wait, gone at the end
+
+    result = runner.invoke(cli.cli, ["up"])
+
+    assert result.exit_code == 1
+    assert "stopped answering" in result.output
+
+
+_ETHERNET_PAC = netproxy.PacStatus("http://proxy.example.org/eth.pac", True, False)
+
+
+def test_up_restores_the_old_service_before_switching_to_a_new_one(profile, runner, monkeypatch):
+    """Crash on Wi-Fi, failed restore, then Ethernet becomes the route and `up` runs. Writing a
+    record for Ethernet over Wi-Fi's used to leave Wi-Fi's PAC pointing at the dead proxy with
+    nothing left to say so — `down` restored Ethernet, deleted the file, and called it stopped."""
+    _up_after_a_crash(profile, monkeypatch,
+                      lambda service: netproxy.PacStatus(netproxy.pac_url(), True, True)
+                      if service == "Wi-Fi" else _ETHERNET_PAC,
+                      service="Ethernet")
+    restored = []
+    monkeypatch.setattr(netproxy, "restore_pac", lambda *a: restored.append(a))
+
+    result = runner.invoke(cli.cli, ["up"])
+
+    assert result.exit_code == 0, result.output
+    assert restored == [("Wi-Fi", _CORPORATE["url"], False)]
+    runtime = config.read_runtime()
+    assert runtime["service"] == "Ethernet"
+    assert runtime["previousPac"] == {"url": _ETHERNET_PAC.url, "enabled": True}
+
+
+def test_up_keeps_the_record_and_fails_when_the_old_service_cannot_be_restored(profile, runner, monkeypatch):
+    _up_after_a_crash(profile, monkeypatch,
+                      lambda service: _unreadable_pac(service) if service == "Wi-Fi" else _ETHERNET_PAC,
+                      service="Ethernet")
+
+    result = runner.invoke(cli.cli, ["up"])
+
+    assert result.exit_code == 1
+    assert "could not restore the previous PAC on 'Wi-Fi'" in result.output
+    runtime = config.read_runtime()
+    assert runtime["service"] == "Wi-Fi" and runtime["previousPac"] == _CORPORATE
+
+
+def test_up_replaces_a_watchdog_that_watches_another_service(profile, runner, monkeypatch):
+    """A watchdog is told its service on the command line. Reusing one from a run on Wi-Fi for a
+    run on Ethernet had it restore Wi-Fi's record and then delete Ethernet's."""
+    _up_after_a_crash(profile, monkeypatch,
+                      lambda service: netproxy.PacStatus(netproxy.pac_url(), True, True)
+                      if service == "Wi-Fi" else _ETHERNET_PAC,
+                      service="Ethernet")
+    config.write_runtime({**config.read_runtime(), "watchdogPid": 77})
+    terminated, spawned = [], []
+    monkeypatch.setattr(netproxy, "restore_pac", lambda *a: None)
+    monkeypatch.setattr(cli, "_terminate", lambda pid, marker: terminated.append((pid, marker)))
+    monkeypatch.setattr(cli, "_spawn_watchdog", lambda service: spawned.append(service) or 4242)
+
+    assert runner.invoke(cli.cli, ["up"]).exit_code == 0
+    assert (77, "_watchdog") in terminated
+    assert spawned == ["Ethernet"]
+    assert config.read_runtime()["watchdogPid"] == 4242
+
+
+def test_a_failed_install_on_the_new_service_cannot_let_the_old_watchdog_delete_its_record(
+    profile, runner, monkeypatch
+):
+    """Wi-Fi → Ethernet, and installing on Ethernet fails after `up` has already written
+    Ethernet's record. The Wi-Fi watchdog used to outlive that: at the proxy's next death it read
+    Ethernet's record, found Wi-Fi's PAC "not ours", and deleted the record — Ethernet left at
+    the dead proxy with its previous PAC forgotten."""
+    _up_after_a_crash(profile, monkeypatch,
+                      lambda service: netproxy.PacStatus(netproxy.pac_url(), True, True)
+                      if service == "Wi-Fi" else _ETHERNET_PAC,
+                      service="Ethernet")
+    config.write_runtime({**config.read_runtime(), "watchdogPid": 77})
+    terminated = []
+    monkeypatch.setattr(netproxy, "restore_pac", lambda *a: None)
+    monkeypatch.setattr(cli, "_terminate", lambda pid, marker: terminated.append((pid, marker)))
+    monkeypatch.setattr(netproxy, "set_pac", _unreadable_pac)
+
+    result = runner.invoke(cli.cli, ["up"])
+
+    assert result.exit_code == 1 and "could not install" in result.output
+    assert (77, "_watchdog") in terminated, "retired before Ethernet's record existed"
+    ethernet = {"url": _ETHERNET_PAC.url, "enabled": True}
+    assert config.read_runtime()["previousPac"] == ethernet
+
+    # And even a watchdog that somehow survived must not act on another service's record.
+    monkeypatch.setattr(cli, "_health", lambda: None)
+    assert runner.invoke(cli.cli, ["_watchdog", "Wi-Fi"]).exit_code == 0
+    assert config.read_runtime()["previousPac"] == ethernet
+
+
+def test_up_keeps_the_recovery_record_of_a_half_restored_pac(profile, runner, monkeypatch):
+    """A restore that failed between its two calls has handed the corporate URL back but left it
+    enabled. `down` already treats that as still Lyrebird's to finish; `up` must not read it as
+    somebody else's PAC and snapshot the wrong flag as the thing to restore."""
+    _up_after_a_crash(profile, monkeypatch,
+                      lambda service: netproxy.PacStatus(_CORPORATE["url"], True, False))
+
+    result = runner.invoke(cli.cli, ["up"])
+
+    assert result.exit_code == 0, result.output
+    assert config.read_runtime()["previousPac"] == _CORPORATE
+
+
+def test_watchdog_restores_on_a_later_attempt_after_a_transient_failure(profile, runner, fake_network, monkeypatch):
+    config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
+    config.write_runtime({"proxyPid": 99, "service": "Wi-Fi", "previousPac": {"url": "", "enabled": False}})
+    readings = iter([None])   # the first read fails, the second sees our PAC
+
+    def flaky(service):
+        if next(readings, "ok") is None:
+            _unreadable_pac(service)
+        return netproxy.PacStatus(netproxy.pac_url(), True, True)
+
+    monkeypatch.setattr(cli, "_health", lambda: None)
+    monkeypatch.setattr(netproxy, "pac_status", flaky)
+    monkeypatch.setattr(cli.time, "sleep", lambda seconds: None)
+
+    assert runner.invoke(cli.cli, ["_watchdog", "Wi-Fi"]).exit_code == 0
+    assert fake_network["restored"] == ("Wi-Fi", "", False)
+    assert not config.runtime_file().exists()
+
+
+def test_watchdog_clears_the_runtime_file_after_restoring(profile, runner, fake_network, monkeypatch):
+    config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
+    config.write_runtime({"proxyPid": 99, "service": "Wi-Fi", "previousPac": {"url": "", "enabled": False}})
+    monkeypatch.setattr(cli, "_health", lambda: None)
+
+    assert runner.invoke(cli.cli, ["_watchdog", "Wi-Fi"]).exit_code == 0
+    assert fake_network["restored"] == ("Wi-Fi", "", False)
+    assert not config.runtime_file().exists()
+
+
+def test_down_takes_the_lock_before_it_signals_the_watchdog_or_touches_the_pac(
+    profile, runner, fake_network, monkeypatch
+):
+    """A watchdog repair in flight holds the lock; `down` must wait for it. Signalling first only
+    kills the watchdog, not the `networksetup` it already started, and that child could re-enable
+    the PAC after `down`'s restore had read back clean — "stopped", with the PAC pointing at the
+    stopped proxy and its record deleted."""
+    config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
+    config.write_runtime({"proxyPid": 99, "watchdogPid": 98, "service": "Wi-Fi",
+                          "previousPac": {"url": "", "enabled": False}})
+    events = []
+    health_until_terminated(monkeypatch, fake_network, pid=99)
+    monkeypatch.setattr(cli, "_acquire_lock", lambda lock, timeout=0: events.append("lock"))
+    monkeypatch.setattr(cli, "_terminate", lambda pid, marker: events.append(f"terminate {marker}")
+                        or fake_network["terminated"].append((pid, marker)))
+    monkeypatch.setattr(netproxy, "restore_pac", lambda *a: events.append("restore"))
+
+    assert runner.invoke(cli.cli, ["down"]).exit_code == 0
+    assert events[:3] == ["lock", "terminate _watchdog", "restore"]
+
+
 def test_down_reports_a_proxy_that_did_not_stop(profile, runner, fake_network, monkeypatch):
     """SIGTERM is a request. Printing "stopped" over a proxy that is still serving is the lie this
     check exists to prevent."""
@@ -145,6 +582,28 @@ def test_status_succeeds_only_when_up_and_intercepting(profile, runner, monkeypa
     assert runner.invoke(cli.cli, ["status", *args]).exit_code == 0
 
 
+@pytest.mark.parametrize("args", [[], ["--json"]])
+def test_status_reports_an_unreadable_pac_as_unproven_not_off(profile, runner, monkeypatch, args):
+    """Same exit code as "off", different explanation: a person told DISABLED goes and switches it
+    on, which is not the fix for a `networksetup` that is failing."""
+    monkeypatch.setattr(cli, "_health",
+                        lambda: {"pid": 1, "sessions": ["default"], "activeSession": "default",
+                                 "overrideCount": 0, "simBundleId": None, "proxyPort": 8080})
+    monkeypatch.setattr(netproxy, "active_service", lambda: "Wi-Fi")
+    monkeypatch.setattr(netproxy, "pac_status", _unreadable_pac)
+
+    result = runner.invoke(cli.cli, ["status", *args])
+
+    assert result.exit_code == 1
+    if args:
+        payload = json.loads(result.output)
+        assert payload["intercepting"] is False and payload["pac"] is None
+        assert "networksetup" in payload["pacError"]
+    else:
+        assert "could not read the PAC" in result.output
+        assert "disabled" not in result.output.lower() and "not ours" not in result.output
+
+
 def test_status_fails_when_the_proxy_is_up_but_the_pac_is_off(profile, runner, monkeypatch):
     """Up is not the same as intercepting, and this is the gap the exit code exists to report."""
     monkeypatch.setattr(cli, "_health",
@@ -155,6 +614,69 @@ def test_status_fails_when_the_proxy_is_up_but_the_pac_is_off(profile, runner, m
                         lambda service: netproxy.PacStatus(netproxy.pac_url(), False, True))
 
     assert runner.invoke(cli.cli, ["status"]).exit_code == 1
+
+
+def test_importing_the_cli_does_not_parse_the_profile(profile, tmp_path):
+    """Regression, in a fresh process because an in-process test imports `config` before it can
+    arrange anything: a malformed *default* profile used to raise SystemExit during import, before
+    Click had seen `--profile` or the subcommand. `logs` never needs the profile; it must run
+    whether the default one is broken or the selected one is."""
+    import subprocess
+    import sys
+
+    broken = tmp_path / "broken"
+    broken.mkdir()
+    (broken / "profile.json").write_text("{not json", encoding="utf-8")
+    env = {**os.environ, "LYREBIRD_PROFILE": str(broken), "LYREBIRD_STATE_DIR": str(tmp_path / "state")}
+
+    for args in (["--profile", str(profile), "logs"], ["logs"]):
+        result = subprocess.run([sys.executable, str(config.ROOT / "cli.py"), *args],
+                                capture_output=True, text=True, env=env, check=False)
+        assert result.returncode == 0, f"{args}: {result.stderr}"
+        assert "(no log)" in result.stdout, f"{args}: {result.stdout!r}"
+
+
+def test_down_does_not_need_a_readable_profile(profile, runner, monkeypatch):
+    """`down` restores the network from runtime state and the live API. A broken profile.json is
+    the kind of thing you are trying to recover from, not a reason to be stuck."""
+    (profile / "profile.json").write_text("{not json", encoding="utf-8")
+    monkeypatch.setattr(cli, "_health", lambda: None)
+    monkeypatch.setattr(netproxy, "active_service", lambda: None)
+
+    result = runner.invoke(cli.cli, ["--profile", str(profile), "down"])
+
+    assert result.exit_code == 0, result.output
+    assert "nothing to stop" in result.output
+
+
+def test_up_still_aborts_loudly_on_a_malformed_profile(profile, runner):
+    """Moving the read out of import must not soften it: `up` is where a bad profile is refused."""
+    (profile / "profile.json").write_text("{not json", encoding="utf-8")
+
+    result = runner.invoke(cli.cli, ["up"])
+
+    assert result.exit_code != 0
+    assert "could not read" in result.output
+
+
+def test_up_refuses_a_profile_with_no_hosts_before_starting_anything(profile, runner, monkeypatch):
+    """With no hosts `up` used to trust the CA, install a DIRECT-only PAC, relaunch the app, print
+    INTERCEPT ACTIVE and exit 0 — every step a success, nothing intercepted."""
+    import subprocess
+
+    (profile / "profile.json").write_text('{"hosts": []}', encoding="utf-8")
+    config.reload_profile()
+
+    def must_not_start(*args, **kwargs):
+        raise AssertionError("the proxy must not be started for a profile that intercepts nothing")
+
+    monkeypatch.setattr(subprocess, "Popen", must_not_start)
+    monkeypatch.setattr(cli, "_health", must_not_start)
+
+    result = runner.invoke(cli.cli, ["up"])
+
+    assert result.exit_code != 0
+    assert "no hosts" in result.output
 
 
 def test_up_starts_the_log_on_a_new_inode(profile, tmp_path):
@@ -493,6 +1015,17 @@ def test_explain_match_names_the_winner_and_what_it_shadowed(profile, runner, mo
     assert result.exit_code == 0
     assert "ovr_alpha" in result.output
     assert "also matched" in result.output and "ovr_broad" in result.output
+
+
+def test_explain_match_reads_a_repeated_query_key_the_way_the_wire_does(profile, runner, monkeypatch):
+    """mitmproxy's MultiDict returns the first value; `dict(parse_qsl(...))` kept the last. For
+    `?kind=beta&kind=alpha` the proxy selects on beta while this command explained alpha — a
+    selection it then swore would happen."""
+    monkeypatch.setattr(cli, "_control", lambda *a, **k: _RULES)
+    result = runner.invoke(cli.cli, ["explain-match", "GET", "/api/items?kind=beta&kind=alpha"])
+    assert result.exit_code == 0
+    assert "rule wants 'alpha', request has 'beta'" in result.output
+    assert "ovr_alpha is selected" not in result.output
 
 
 def test_explain_match_says_why_each_rule_missed(profile, runner, monkeypatch):

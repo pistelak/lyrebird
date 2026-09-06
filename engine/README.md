@@ -32,8 +32,10 @@ Select one with `--profile PATH` (wins) or `LYREBIRD_PROFILE`; the default is
 `examples/`.
 
 `hosts` are **exact hostnames** — `api.example.com` does not imply `sub.api.example.com`. An empty
-list means *intercept nothing*, and a malformed profile aborts rather than falling back to a
-default.
+list means *intercept nothing*: the engine honours it, and `up` refuses to start on it, because
+there would be nothing for `up` to achieve. A malformed profile aborts rather than falling back to
+a default — when `up` or the proxy reads it. `down`, `status` and `logs` never parse the profile,
+so a broken one cannot stop you restoring the network.
 
 Sessions you save go into the profile — that is what it is for. Everything the tool
 writes for its own purposes stays out, in the macOS directory that matches how long the file
@@ -87,7 +89,8 @@ and what the PAC advertises — those are deliberately separate settings.
 ## Admin API (`/__mock__/*`)
 
 - `GET /health` (reports `intercepting` / `proxyUp` / `pacEnabled` / `simBundleId` / `sequences` /
-  `answers`) · `GET /recent`
+  `answers`, and `pacError` when the PAC could not be read — `intercepting` is then unproven, not
+  off) · `GET /recent`
 - `POST /reset` — start a fresh run in the active session: rewind sequence cursors and clear answer
   counts, for every rule or one named with `{"id": ...}`
 - `GET|POST /overrides`, `DELETE /overrides/{id}` — act on the **active session**

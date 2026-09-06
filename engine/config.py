@@ -292,12 +292,17 @@ def load_profile() -> Profile:
     return Profile(hosts=validated, sim_bundle_id=str(bundle_id) if bundle_id else None, exists=True)
 
 
-PROFILE = load_profile()
-INTERCEPT_HOSTS: list[str] = PROFILE.hosts
+# Not read at import. `configure()` resolves paths; the profile's *contents* are only needed by
+# the things that intercept — `up` and the addon — and they call `reload_profile()`. Parsing it here
+# meant a malformed profile.json killed every command during import, before Click had seen
+# `--profile` or the subcommand: including `down`, whose whole job is to restore the network.
+PROFILE = Profile(hosts=[], sim_bundle_id=None, exists=False)
+INTERCEPT_HOSTS: list[str] = []
 
 
 def reload_profile() -> None:
-    """Re-read profile.json after `configure()` has moved the paths."""
+    """Read profile.json, after `configure()` has resolved where it is. Aborts loudly on a malformed
+    one — see `load_profile` — so call it only from something that needs the hosts."""
     global PROFILE, INTERCEPT_HOSTS
     PROFILE = load_profile()
     INTERCEPT_HOSTS = PROFILE.hosts
