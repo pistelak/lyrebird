@@ -271,6 +271,7 @@ net; if not, take a copy before touching someone else's sessions.
 | `up` fails on CA | No booted simulator. Boot one first |
 | 421 / 415 from the API | Missing `Host: 127.0.0.1:8088` or `Content-Type: application/json` — or just use the CLI |
 | 409 `profile_mismatch` | Another profile's proxy holds the port. `lyrebird down` first, or pass the `--profile` that is running |
+| `path escapes …` when changing sessions or overrides (API: 400 `invalid_name`) | A session file resolves outside `sessions/` or outside the profile — usually a symlink. Symlink the whole profile instead |
 
 `lyrebird logs` prints the last 60 lines of the proxy log and writes the path to stderr, so
 `tail -f "$(lyrebird logs 2>&1 >/dev/null)"` follows it. When the proxy itself fails to start, `up` prints the last

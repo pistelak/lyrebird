@@ -156,6 +156,10 @@ and the CA under `~/Library/Application Support/Lyrebird/`, the proxy log under
 `~/Library/Logs/Lyrebird/`. So a profile in git changes when you change a scenario, never merely
 because the proxy ran.
 
+Where a profile sits has two consequences worth knowing before you move one: saving a session
+requires its file to resolve inside the profile, and the remembered active session is keyed by the
+profile's resolved path. [engine/README.md](engine/README.md#profiles) has both.
+
 ## Where it fits
 
 Proxyman and Charles are better for exploring traffic interactively. Raw mitmproxy scripting is

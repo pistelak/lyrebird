@@ -37,6 +37,17 @@ there would be nothing for `up` to achieve. A malformed profile aborts rather th
 a default — when `up` or the proxy reads it. `down`, `status` and `logs` never parse the profile,
 so a broken one cannot stop you restoring the network.
 
+The profile directory may itself be a symlink, or live in a repository you point `--profile` at:
+the path is resolved once at startup, and reaching the same directory through a link or by its real
+name is the same profile. Inside it, what counts is where a path *resolves*, not whether it is a
+link: a session file must resolve under the resolved `sessions/` directory *and* under the resolved
+profile. A `sessions/` linked out of the profile therefore fails every write that touches a session
+file — including `session new`, `session rm`, `override add`, `override clear`,
+`DELETE /overrides/{id}` and `POST /sessions/import` — with `path escapes …`; a single file linked
+out, or into a sibling directory inside the profile, fails only the writes to that session. Reads
+are not checked, so `status` lists the sessions, `use` still switches between them, and the proxy
+looks healthy. Move the whole profile, not the sessions.
+
 Sessions you save go into the profile — that is what it is for. Everything the tool
 writes for its own purposes stays out, in the macOS directory that matches how long the file
 deserves to live:
@@ -49,6 +60,13 @@ deserves to live:
 Runtime files are keyed by **control port**, not profile, so `lyrebird down` finds the running
 instance from any directory. `LYREBIRD_STATE_DIR` collapses both underneath one directory,
 which is how the tests keep their writes in a temp tree and how you get a single thing to delete.
+
+The active-session pointer and the log file are keyed by the **profile fingerprint** instead — the
+first 12 hex characters of a sha256 of the resolved profile path — so relocating a profile selects
+a different pointer and a different log. The state saved for the old path stays where it is, and at
+a path with no pointer of its own the active session starts as `default`; a path used before is
+remembered again. Nothing in the profile itself changes. The pointer is honoured only if the session
+it names is still there, and each `up` that starts the proxy replaces the log at the selected path.
 
 The split is not cosmetic. `tmutil isexcluded` reports Logs as excluded from Time Machine and
 Application Support as included, so a log left in the wrong directory gets backed up forever to no
@@ -103,6 +121,12 @@ and what the PAC advertises — those are deliberately separate settings.
 validation, or two sharing an id — and persists nothing. A session *file* is instead
 reported-and-dropped at startup, because the file is in front of you and the proxy must still start;
 an import is an API call, and reporting success for a rule that was discarded is worse than refusing.
+
+A write whose session file resolves outside `sessions/` or outside the profile is refused with
+**400** `{"error": "invalid_name", "detail": "path escapes …"}` before anything live changes —
+[Profiles](#profiles) has the layouts that cause it. A name that could not be a path component is a
+separate refusal, reported per endpoint: creating with one is the same **400** with a `detail` of
+`invalid session name …`, while activating or deleting it is simply a session that is not there.
 
 A `POST`, `PUT`, `PATCH` or `DELETE` carrying a body must send `Content-Type: application/json`,
 and the `Host` header must be a loopback name with the control port. Cross-origin requests are
