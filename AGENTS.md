@@ -73,6 +73,9 @@ lyrebird --profile PATH status --json
 {
   "proxyUp": true,
   "intercepting": true,
+  "profileMismatch": false,
+  "profileFingerprint": "3f0a1c4d9b22",
+  "runningProfileFingerprint": "3f0a1c4d9b22",
   "activeSession": "orders-outage",
   "overrideCount": 1,
   "answers": [ { "id": "ovr_9a99bd", "active": true, "count": 3 } ],
@@ -84,10 +87,19 @@ lyrebird --profile PATH status --json
 }
 ```
 
-Exit code is 0 only when the proxy is up **and** intercepting, so
+Exit code is 0 only when the proxy is up **and** intercepting **for the profile you named**, so
 `lyrebird status > /dev/null` works as a readiness check on its own. `--json` selects the output
 format and nothing else — both forms exit the same way, so `lyrebird status && …` is safe to
 write either way round.
+
+The control port can be held by a proxy started for a *different* profile. That proxy is
+intercepting, but not for you, so `status` exits non-zero and says so: `profileMismatch` is `true`
+with `intercepting` `false`, the two fingerprints name which proxy answered and which profile you
+asked about, and everything that describes a profile's state (`activeSession`, `overrideCount`,
+`sessions`, `sequences`, `answers`, `simBundleId`) is `null` — it is the other profile's, not
+yours. The fix is `lyrebird down`, or a different `--profile` / `LYREBIRD_CONTROL_PORT`; `up` will
+refuse until then. A proxy too old to report `profileFingerprint` is taken at face value, exactly
+as `up` takes it.
 
 **5. Relaunch the app after `up`, every time.**
 

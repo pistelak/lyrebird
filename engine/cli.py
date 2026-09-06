@@ -78,7 +78,8 @@ def _profile_mismatch(running: str) -> str:
     """
     return (f"{RED}a different profile is already running on port {config.CONTROL_PORT}{R}\n"
             f"  running: {running}   requested: {config.PROFILE_FINGERPRINT}\n"
-            f"  stop it first (`lyrebird down`) or use a different --profile / port.")
+            f"  stop it first (`lyrebird down`) or use a different --profile, or another port via\n"
+            f"  LYREBIRD_CONTROL_PORT.")
 
 
 def _error_body(error: urllib.error.HTTPError) -> dict:
@@ -593,11 +594,19 @@ def status(as_json: bool) -> None:
     """Show intercept state (honest about whether the PAC is actually enabled).
 
     The exit code reports the state, not the formatting: 0 only when the proxy is up *and*
-    intercepting, whichever way you asked. `--json` changes what is printed and never what it
-    means — a flag that decides how output is rendered must not also decide what success is, or
-    `lyrebird status && …` silently proceeds against a proxy that is mocking nothing.
+    intercepting *this* profile, whichever way you asked. `--json` changes what is printed and
+    never what it means — a flag that decides how output is rendered must not also decide what
+    success is, or `lyrebird status && …` silently proceeds against a proxy that is mocking
+    nothing.
     """
     health = _health()
+    # `/health` is unscoped by design (it is how `down` recovers across profiles), so the proxy
+    # answering on this port may be running someone else's. Its interception is not this
+    # profile's, and reporting it as such let `lyrebird --profile B status && …` proceed against
+    # a proxy mocking profile A's hosts and sessions. Same comparison `up` makes; a reading with
+    # no fingerprint is accepted the same way, because an older engine cannot say.
+    running = (health or {}).get("profileFingerprint")
+    foreign = bool(running) and running != config.PROFILE_FINGERPRINT
     service = config.read_runtime().get("service") or netproxy.active_service()
     # One observation of the PAC feeds the output and the exit code alike. Reading it once for
     # the banner, again for the JSON field and a third time for the exit status let a PAC that
@@ -610,38 +619,55 @@ def status(as_json: bool) -> None:
         # Unproven, which is different from seen to be off — the exit code is the same, the
         # explanation is not, and a person reading "DISABLED" would go and switch it on.
         pac, pac_error = None, str(error)
-    intercepting = pac is not None and pac.enabled and pac.ours
+    # A PAC pointing at this port is "ours" whoever started the proxy behind it, so a foreign
+    # profile fails the same way a disabled PAC does: nothing here is intercepting this profile.
+    intercepting = pac is not None and pac.enabled and pac.ours and not foreign
 
     if as_json:
+        # Every field below that describes a profile's state is whatever the proxy that answered
+        # said; when that proxy is running another profile, none of it is this profile's, so it
+        # is reported as unknown rather than handed over under this profile's name. `proxyUp`
+        # stays true — the port really is held — and `profileMismatch` says by whom.
+        mine = {} if foreign else (health or {})
         click.echo(json.dumps({
             "proxyUp": health is not None,
             "intercepting": intercepting,
+            "profileMismatch": foreign,
+            "profileFingerprint": config.PROFILE_FINGERPRINT,
+            "runningProfileFingerprint": running,
             "pacError": pac_error,
-            "activeSession": (health or {}).get("activeSession"),
-            "overrideCount": (health or {}).get("overrideCount"),
-            "sessions": (health or {}).get("sessions", []),
+            "activeSession": mine.get("activeSession"),
+            "overrideCount": mine.get("overrideCount"),
+            "sessions": None if foreign else (health or {}).get("sessions", []),
             # `null` when the running engine did not supply the field, never `[]`. A current
             # engine always sends both, with one entry per rule — so `[]` is a real state ("no
             # rules here") and a missing key is a capability signal ("this proxy cannot tell
             # you"). Defaulting to `[]` collapsed those into the claim that nothing has answered,
             # which is the shape this file exists to avoid. The exit code is computed separately
             # and still does not depend on either field existing.
-            "sequences": (health or {}).get("sequences"),
-            "answers": (health or {}).get("answers"),
-            "simBundleId": (health or {}).get("simBundleId"),
+            "sequences": mine.get("sequences"),
+            "answers": mine.get("answers"),
+            "simBundleId": mine.get("simBundleId"),
             "profile": str(config.PROFILE_DIR),
             "service": service,
             "pac": {"url": pac.url, "enabled": pac.enabled, "ours": pac.ours} if pac else None,
         }, indent=2))
     else:
         click.echo(f"{DIM}profile: {config.PROFILE_DIR}{R}")
-        if pac_error and health is not None:
+        if foreign:
+            # Not the banner: "PAC is disabled/not ours" would send the operator to `lyrebird up`,
+            # which refuses this exact situation. The remedy is to stop that proxy or aim
+            # elsewhere, so say which proxy answered and print both fingerprints to identify it.
+            click.echo(f"{BOLD}{YELLOW}🟠 PROXY UP, ANOTHER PROFILE{R} — nothing is intercepting "
+                       f"for this profile.")
+            click.echo(_profile_mismatch(str(running)))
+        elif pac_error and health is not None:
             # Not the banner: its "PAC is disabled/not ours" is a diagnosis this read never made.
             click.echo(f"{BOLD}{YELLOW}🟠 PROXY UP, PAC UNREADABLE{R} — could not read the PAC on "
                        f"'{service}': {pac_error}")
         else:
             _banner(health, service, intercepting)
-        if health:
+        if health and not foreign:
             click.echo(f"  sessions: {', '.join(health['sessions'])}")
             for state in health.get("sequences", []):
                 position = (f"next step {state['nextStep']}/{state['stepCount']}"
