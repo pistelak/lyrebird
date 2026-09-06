@@ -1,5 +1,6 @@
 """Store persistence, path containment, and the crash paths that used to take the proxy down."""
 
+import errno
 import json
 
 import pytest
@@ -578,3 +579,173 @@ def test_answer_states_report_an_inactive_rule_as_inactive(profile):
     subject = store.Store()
     subject.add_override({"id": "off", "active": False, "mode": "replace", "status": 200})
     assert subject.answer_states() == [{"id": "off", "active": False, "count": 0}]
+
+
+# MARK: - Write then publish
+#
+# Every mutator writes the file that records its change before the change becomes visible in
+# memory. These tests inject a failing write and assert the three things that used to drift apart:
+# the exception reaches the caller, live state is untouched, and the file is untouched. Before the
+# fix each one left the proxy answering with a rule no profile contained.
+
+def _refuse_writes(monkeypatch):
+    """Make every profile write fail the way a full disk does.
+
+    Monkeypatched rather than chmodded: a read-only directory does not stop root, which is how CI
+    containers run, and chmod on a tmp_path is flaky on macOS.
+    """
+    def refuse(path, text):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(config, "atomic_write", refuse)
+
+
+def test_a_rule_whose_write_fails_is_not_added(profile, monkeypatch):
+    subject = store.Store()
+    subject.add_override({"id": "kept", "mode": "replace", "status": 200})
+    before = (profile / "sessions" / "default.json").read_bytes()
+
+    _refuse_writes(monkeypatch)
+    with pytest.raises(OSError):
+        subject.add_override({"id": "new", "mode": "replace", "status": 500})
+
+    assert [o["id"] for o in subject.active_overrides()] == ["kept"]
+    assert (profile / "sessions" / "default.json").read_bytes() == before
+
+
+def test_a_replacement_whose_write_fails_leaves_the_old_rule_live_with_its_cursor(profile, monkeypatch):
+    """The cursor belongs to the rule that is still answering. Dropping it for a replacement that
+    never reached the disk would rewind a scenario mid-run."""
+    subject = store.Store()
+    subject.add_override(dict(SEQ))
+    _advanced_once(subject)
+    before = (profile / "sessions" / "default.json").read_bytes()
+
+    _refuse_writes(monkeypatch)
+    with pytest.raises(OSError):
+        subject.add_override({**SEQ, "sequence": {"steps": [{"status": 500}]}})
+
+    state = subject.sequence_states()[0]
+    assert state["stepCount"] == 2, "the two-step rule must still be the live one"
+    assert state["nextStep"] == 2, "its cursor must survive a replacement that did not happen"
+    assert (profile / "sessions" / "default.json").read_bytes() == before
+
+
+def test_a_replacement_whose_write_fails_leaves_a_captured_slot_crediting_the_live_rule(profile, monkeypatch):
+    """A captured slot is orphaned by a successful replacement, on purpose. If the replacement did
+    not happen, the rule that handed the slot out is still the live one, so its answers must still
+    land — otherwise a patch in flight during a failed write is silently uncounted."""
+    subject = store.Store()
+    subject.add_override({"id": "r", "mode": "patch", "patch": {}})
+    slot = subject.answer_slot("r")
+    store.credit(slot)
+    run_id = slot["runId"]
+
+    _refuse_writes(monkeypatch)
+    with pytest.raises(OSError):
+        subject.add_override({"id": "r", "mode": "replace", "status": 200})
+
+    assert subject.answer_slot("r") is slot, "the live rule kept its runtime entry"
+    assert slot["answers"] == 1 and slot["runId"] == run_id, "and the entry itself is untouched"
+    store.credit(slot)
+    assert subject.answer_states() == [{"id": "r", "active": True, "count": 2}]
+
+
+def test_a_rule_whose_removal_cannot_be_written_stays_live(profile, monkeypatch):
+    subject = store.Store()
+    subject.add_override(dict(SEQ))
+    _advanced_once(subject)
+    before = (profile / "sessions" / "default.json").read_bytes()
+
+    _refuse_writes(monkeypatch)
+    with pytest.raises(OSError):
+        subject.remove_override("seq")
+
+    assert [o["id"] for o in subject.active_overrides()] == ["seq"]
+    assert subject.sequence_states()[0]["nextStep"] == 2, "the cursor belongs to a rule still live"
+    assert (profile / "sessions" / "default.json").read_bytes() == before
+
+
+def test_overrides_stay_live_when_the_clear_cannot_be_written(profile, monkeypatch):
+    subject = store.Store()
+    subject.add_override(dict(SEQ))
+    _advanced_once(subject)
+    before = (profile / "sessions" / "default.json").read_bytes()
+
+    _refuse_writes(monkeypatch)
+    with pytest.raises(OSError):
+        subject.clear_overrides()
+
+    assert [o["id"] for o in subject.active_overrides()] == ["seq"]
+    assert subject.sequence_states()[0]["nextStep"] == 2
+    assert (profile / "sessions" / "default.json").read_bytes() == before
+
+
+@pytest.mark.parametrize("clone_from", [None, "default"], ids=["empty", "clone"])
+def test_a_session_whose_write_fails_does_not_exist(profile, monkeypatch, clone_from):
+    subject = store.Store()
+
+    _refuse_writes(monkeypatch)
+    with pytest.raises(OSError):
+        subject.create_session("scratch", clone_from)
+
+    assert "scratch" not in subject.sessions
+    assert not (profile / "sessions" / "scratch.json").exists()
+
+
+def test_an_import_whose_write_fails_does_not_exist(profile, monkeypatch):
+    subject = store.Store()
+
+    _refuse_writes(monkeypatch)
+    with pytest.raises(OSError):
+        subject.import_session({"session": {
+            "name": "imported",
+            "overrides": [{"id": "keep", "mode": "replace", "match": {"path": "/a"}}],
+        }})
+
+    assert "imported" not in subject.sessions
+    assert not (profile / "sessions" / "imported.json").exists()
+
+
+def test_a_switch_whose_pointer_write_fails_does_not_happen(profile, monkeypatch):
+    """`_activate` rewinds the destination's cursors. Doing that for a switch the state file never
+    recorded would restart a scenario that the next proxy start puts back where it was."""
+    subject = store.Store()
+    subject.create_session("other")
+    subject.set_active("other")
+    subject.add_override(dict(SEQ))
+    _advanced_once(subject)
+    subject.set_active("default")
+    before = config.STATE_FILE.read_bytes()
+
+    _refuse_writes(monkeypatch)
+    with pytest.raises(OSError):
+        subject.set_active("other")
+
+    assert subject.active_name == "default"
+    assert store._runtime(subject.sessions["other"])["seq"]["cursor"] == 1, \
+        "the destination's cursors were rewound for a switch that did not happen"
+    assert config.STATE_FILE.read_bytes() == before
+
+
+def test_deleting_the_active_session_raises_when_the_pointer_cannot_be_written(profile, monkeypatch):
+    """The fallback to `default` is a pointer write like any other. Failing it must raise rather
+    than return False: False is the answer for a delete refused by policy, and an operator who
+    reads it as that will never look at the disk."""
+    subject = store.Store()
+    subject.create_session("work")
+    subject.set_active("work")
+    subject.add_override(dict(SEQ))
+    _advanced_once(subject)
+    before_session = (profile / "sessions" / "work.json").read_bytes()
+    before_state = config.STATE_FILE.read_bytes()
+
+    _refuse_writes(monkeypatch)
+    with pytest.raises(OSError):
+        subject.delete_session("work")
+
+    assert subject.active_name == "work"
+    assert "work" in subject.sessions
+    assert subject.sequence_states()[0]["nextStep"] == 2
+    assert (profile / "sessions" / "work.json").read_bytes() == before_session
+    assert config.STATE_FILE.read_bytes() == before_state
