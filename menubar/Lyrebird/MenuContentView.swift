@@ -26,7 +26,12 @@ struct MenuContentView: View {
         }
         .padding(12)
         .frame(width: 340)
-        .sheet(isPresented: $showSettings) { SettingsView() }
+        // `@AppStorage` writes as the field is typed in, so everything on screen describes the
+        // previous settings until this runs: the profile is asked for again, and nothing read
+        // under the old one is kept.
+        .sheet(isPresented: $showSettings, onDismiss: { Task { await model.settingsChanged() } }) {
+            SettingsView()
+        }
     }
 
     private var header: some View {
@@ -44,8 +49,8 @@ struct MenuContentView: View {
             Button {
                 Task { await model.toggle() }
             } label: {
-                Label(model.status == .intercepting ? "Stop" : "Start",
-                      systemImage: model.status == .intercepting ? "stop.fill" : "play.fill")
+                Label(model.stopsRatherThanStarts ? "Stop" : "Start",
+                      systemImage: model.stopsRatherThanStarts ? "stop.fill" : "play.fill")
             }
             .disabled(model.busy)
 
@@ -84,7 +89,7 @@ struct MenuContentView: View {
                     .buttonStyle(.plain)
                 }
             } else {
-                Text("proxy not running").font(.caption).foregroundStyle(.secondary)
+                Text(model.sessionsPlaceholder).font(.caption).foregroundStyle(.secondary)
             }
         }
     }

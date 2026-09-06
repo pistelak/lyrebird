@@ -62,8 +62,8 @@ async def _guard(request: web.Request, handler: Handler) -> web.StreamResponse:
     # One proxy holds the control port, so a CLI invoked with `--profile B` while profile A is
     # running would otherwise switch A's session, add rules to A and reset A's counters — every
     # call reporting success for work done somewhere the operator was not looking. The header is a
-    # scoping declaration, not a credential: it is absent from older CLIs, the menu bar and curl,
-    # and those stay unchecked. Fingerprints only — the profile path belongs to whoever wrote it.
+    # scoping declaration, not a credential: it is absent from older CLIs and from curl, and those
+    # stay unchecked. Fingerprints only — the profile path belongs to whoever wrote it.
     # `is not None`, not truthiness: an empty header is a caller that said *something* and named
     # nobody, and reading it as absent let `X-Lyrebird-Profile:` sail past the check.
     requested = request.headers.get(_PROFILE_HEADER)

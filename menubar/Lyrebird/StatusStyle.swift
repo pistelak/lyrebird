@@ -1,15 +1,24 @@
 import SwiftUI
 
 extension AppModel.Status {
-    /// Bird outline when idle, filled when the proxy is up — a native template glyph for the menu bar.
-    var symbolName: String { self == .down ? "bird" : "bird.fill" }
+    /// Bird outline when the menu is reading no proxy of ours, filled when it is — a native
+    /// template glyph for the menu bar. An unreadable or foreign proxy is filled: something is
+    /// there, and the dot says it is not usable.
+    var symbolName: String {
+        switch self {
+        case .intercepting, .pacDisabled, .foreignProfile, .unreadable: return "bird.fill"
+        case .down, .profileUnknown: return "bird"
+        }
+    }
 
-    /// The status-dot colour, or nil (no dot) when stopped.
+    /// The status-dot colour, or nil (no dot) when there is nothing of ours to report.
     var dotColor: Color? {
         switch self {
         case .intercepting: return .green
-        case .pacDisabled: return .orange
-        case .down: return nil
+        // Up, and not intercepting for this profile — the same thing to the user as a disabled
+        // PAC, whatever the reason behind it.
+        case .pacDisabled, .foreignProfile, .unreadable: return .orange
+        case .down, .profileUnknown: return nil
         }
     }
 }

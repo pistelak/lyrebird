@@ -56,6 +56,19 @@ that is set the app passes `--profile` explicitly on every CLI call, because an 
 from Finder inherits no shell environment — relying on `LYREBIRD_PROFILE` would silently select
 the wrong profile. Left blank, the engine falls back to its own default.
 
+One proxy holds the control port, so the menu says which profile it means on every call it makes.
+It learns that profile's fingerprint from `lyrebird status --json` — at launch and again when the
+Settings sheet closes — and never computes it: the fingerprint is the engine's own
+`sha256(profile dir)[:12]`, and with the profile left blank the app cannot even see which directory
+the engine picked. It travels as `X-Lyrebird-Profile`, the header the control API compares against
+the running profile. A proxy running someone else's profile is then shown as exactly that, with
+that profile's fingerprint and no session list, traffic or Relaunch button borrowed from it; a
+proxy that answers something unreadable is shown as unreadable rather than as stopped. If the
+fingerprint cannot be established at all — a wrong launcher path, usually — the menu says the
+profile is unknown and sends nothing: an unscoped request is answered by whichever profile holds
+the port, which is the reading this is here to avoid. Start and Stop keep working in all of those,
+since the CLI does its own checking.
+
 The simulator bundle id to relaunch comes from the engine (`simBundleId` in your `profile.json`,
 surfaced via `GET /__mock__/health`), so the app ships with no app identifier of its own. Relaunch
 stays disabled until your profile sets one.
