@@ -133,7 +133,8 @@ and what the PAC advertises — those are deliberately separate settings.
     `"skipped …"` line that begins exactly like a problem with `orders-outage`. A file whose
     *name* was rejected appears in `loadProblems` only — it could never have become a session.
 - `POST /reset` — start a fresh run in the active session: rewind sequence cursors and clear answer
-  counts, for every rule or one named with `{"id": ...}`
+  counts, for every rule or one named with `{"id": ...}`. Returns `{"session": …, "reset": {id:
+  runId}}` — the run id per rule is what binds a later assertion to this boundary
 - `GET|POST /overrides`, `DELETE /overrides/{id}` — act on the **active session**
 - `DELETE /overrides` — **destructive**: deletes every override in the active session and rewrites
   its file. The only endpoint that does this.
@@ -295,8 +296,16 @@ separately from `matched`, so an exhausted `passThrough` (which answers nothing)
 
 ## Proving a rule was in play
 
-`GET /__mock__/health` also reports `answers[]`: one `{id, active, count}` per rule in the active
-session, counting the requests it has answered since the last `POST /reset`.
+`GET /__mock__/health` also reports `answers[]`: one `{id, active, count, runId}` per rule in the
+active session, counting the requests it has answered since the last `POST /reset` and naming the
+run they were counted in. The `runId` is the token `POST /reset` returned for that rule — the same
+one `sequences[]` reports — not a second identity: one boundary, read by both views.
+
+The three states a caller has to keep apart: no `runId` key means this engine cannot say which run
+its counts belong to; `"runId": null` means the rule has no run state at all — never reset, never
+near a request, or dropped by a session switch or a replacement under the same id; and a `runId`
+matching the one you hold, with `count: 0`, means your run happened and nothing answered in it.
+Only the last is evidence about the boundary you drew.
 
 The count is taken where the answer is produced — when a `replace` writes its response, and when a
 `patch` has actually merged into a JSON upstream — not when the request is recorded. That is what
@@ -309,6 +318,18 @@ buffer.
 `lyrebird assert-answered ID` exits non-zero unless that rule has answered since the reset, which is
 what lets a UI test fail when its mock never applied — a negative assertion ("this section is not
 shown") otherwise passes identically whether the override applied or never matched.
+
+Rule ids are reused, runs are not. `lyrebird reset ID --json` hands back the run id, and
+`assert-answered ID --run RUNID` requires the count to belong to it: a second reset, a rule replaced
+under the same id, or a session switch between the action and the assertion starts a new run whose
+count would otherwise be indistinguishable from the one the test earned. The run is re-checked on
+every poll, so a boundary destroyed mid-wait — including the rule vanishing with a session switch —
+fails the assertion instead of being waited out. With `--run`, exit 1 means the assertion was made
+in your run and failed, and exit 3 that it could not be made: the run moved, the rule is gone, or
+nothing could be read about it — an unreachable proxy, one too old to report runs, or another
+profile's proxy holding the port, which is re-checked on every poll too. Without `--run` the
+older, weaker reading applies — whichever run is current when the command looks — and every failure
+is exit 1, as before.
 
 Sequences are `replace`-only. A `patch` needs the upstream response, so it could not answer locally
 when exhausted, and a patch skipped by a streamed or non-JSON upstream would spend a step the app

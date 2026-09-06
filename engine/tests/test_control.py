@@ -466,7 +466,9 @@ def test_health_carries_a_rules_answer_count_over_the_wire(profile):
     status, _, body = call(profile, "GET", "/__mock__/health",
                            prepare=lambda s: store.credit(s.answer_slot("ovr_seq")))
     assert status == 200
-    assert body["answers"] == [{"id": "ovr_seq", "active": True, "count": 1}]
+    assert body["answers"] == [
+        {"id": "ovr_seq", "active": True, "count": 1, "runId": body["sequences"][0]["runId"]}], \
+        "with the run it was counted in, which is what binds an assertion to a reset boundary"
 
 
 def test_the_reset_route_stays_behind_the_guard(profile):

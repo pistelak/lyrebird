@@ -943,6 +943,26 @@ def test_reset_names_what_it_rewound(profile, runner, monkeypatch):
     result = runner.invoke(cli.cli, ["reset"])
     assert result.exit_code == 0
     assert "ovr_a" in result.output
+    assert "abc123" in result.output, "the run id is what `assert-answered --run` is given"
+
+
+def test_reset_json_hands_back_the_run_id_to_assert_with(profile, runner, monkeypatch):
+    """The boundary has to be retainable by a script, not just readable by a person: an id that
+    only exists inside a coloured line is an id no test harness can pass to the assertion."""
+    monkeypatch.setattr(cli, "_control",
+                        lambda *a, **k: {"session": "default", "reset": {"ovr_a": "abc123"}})
+    result = runner.invoke(cli.cli, ["reset", "ovr_a", "--json"])
+    assert result.exit_code == 0
+    assert json.loads(result.output) == {"session": "default", "reset": {"ovr_a": "abc123"}}
+
+
+def test_reset_json_reports_an_empty_reset_as_an_empty_map(profile, runner, monkeypatch):
+    """`--json` decides how this is printed and nothing else — same exit, same meaning, and an
+    empty map is a real answer rather than the absence of one."""
+    monkeypatch.setattr(cli, "_control", lambda *a, **k: {"session": "default", "reset": {}})
+    result = runner.invoke(cli.cli, ["reset", "--json"])
+    assert result.exit_code == 0
+    assert json.loads(result.output) == {"session": "default", "reset": {}}
 
 
 def test_reset_says_so_when_there_is_nothing_to_rewind(profile, runner, monkeypatch):
@@ -1088,7 +1108,8 @@ def test_status_json_carries_answer_counts(profile, runner, monkeypatch):
     monkeypatch.setattr(netproxy, "pac_status",
                         lambda service: netproxy.PacStatus(netproxy.pac_url(), True, True))
     result = runner.invoke(cli.cli, ["status", "--json"])
-    assert json.loads(result.output)["answers"] == [{"id": "ovr_a", "active": True, "count": 2}]
+    assert json.loads(result.output)["answers"] == [
+        {"id": "ovr_a", "active": True, "count": 2, "runId": "run1"}]
 
 
 def test_status_json_carries_sequences(profile, runner, monkeypatch):
@@ -1109,9 +1130,12 @@ def test_status_json_carries_sequences(profile, runner, monkeypatch):
 def _answers_over(*states):
     """Answer counts under the poll, sharing the envelope with `_health_over`.
 
-    Each state overlays the defaults below; `None` means the rule is gone from the session."""
+    Each state overlays the defaults below; `None` means the rule is gone from the session. The
+    default `runId` is the one a caller would be holding from `reset`, so a state that means to
+    change runs has to say so, and a command that stops reading the field fails here."""
     return _polling(states, lambda state: _health_payload(
-        answers=[] if state is None else [{"id": "ovr_a", "active": True, "count": 0, **state}]))
+        answers=[] if state is None
+        else [{"id": "ovr_a", "active": True, "count": 0, "runId": "run1", **state}]))
 
 
 def test_assert_answered_succeeds_when_the_rule_answered(profile, runner, monkeypatch):
@@ -1191,6 +1215,129 @@ def test_assert_answered_rejects_a_negative_timeout(profile, runner):
     result = runner.invoke(cli.cli, ["assert-answered", "ovr_a", "--timeout", "-1"])
     assert result.exit_code == 1
     assert "must not be negative" in result.output
+
+
+# MARK: - Binding the assertion to the run the caller started
+#
+# A count answers "has this rule answered in *some* run". The run a test set up ends whenever
+# anything resets the rule, replaces it under the same id, or switches session — and the rule id
+# looks identical on the other side of that. Every test here is a way the command could report a
+# stranger's evidence as the test's own, which is worse than reporting none: it is a green pass.
+
+def test_assert_answered_refuses_a_count_from_another_run(profile, runner, monkeypatch):
+    """The defect this option exists for: something reset the rule between the action and the
+    assertion, the app fetched again, and the count is now three — for a run the test never set
+    up. Reported as success it is a pass nobody earned."""
+    monkeypatch.setattr(cli, "_health", _answers_over({"count": 3, "runId": "run2"}))
+    monkeypatch.setattr(cli, "_get_json", lambda *a, **k: [])
+    result = runner.invoke(cli.cli, ["assert-answered", "ovr_a", "--run", "run1"])
+    assert result.exit_code == 3, "the assertion was not made, which is not 'it answered nothing'"
+    assert "run2" in result.output and "run1" in result.output
+    assert "answered 3" not in result.output
+
+
+def test_assert_answered_accepts_a_count_from_the_run_it_was_given(profile, runner, monkeypatch):
+    monkeypatch.setattr(cli, "_health", _answers_over({"count": 2, "runId": "run1"}))
+    result = runner.invoke(cli.cli, ["assert-answered", "ovr_a", "--run", "run1"])
+    assert result.exit_code == 0
+    assert "2 request(s)" in result.output and "run1" in result.output
+
+
+def test_assert_answered_refuses_a_run_that_ended_while_it_waited(profile, runner, monkeypatch):
+    """The same substitution, arriving mid-poll. Continuing to watch would eventually see the new
+    run answer and return success on evidence produced after the boundary was destroyed."""
+    monkeypatch.setattr(cli, "_health", _answers_over(
+        {"count": 0, "runId": "run1"}, {"count": 0, "runId": "run2"}, {"count": 5, "runId": "run2"}))
+    monkeypatch.setattr(cli.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(cli, "_get_json", lambda *a, **k: [])
+    result = runner.invoke(cli.cli, ["assert-answered", "ovr_a", "--run", "run1", "--timeout", "30"])
+    assert result.exit_code == 3
+    assert "not run run1" in result.output
+    assert "5 request(s)" not in result.output
+
+
+def test_assert_answered_tells_a_missing_run_from_a_run_with_no_answers(profile, runner, monkeypatch):
+    """`runId: null` says the rule has no run at all — its state was dropped by a session switch or
+    a replacement. That is not "the run you named happened and nothing answered", and the two need
+    different fixes, so they must not share an exit code."""
+    monkeypatch.setattr(cli, "_health", _answers_over({"count": 0, "runId": None}))
+    monkeypatch.setattr(cli, "_get_json", lambda *a, **k: [])
+    bound = runner.invoke(cli.cli, ["assert-answered", "ovr_a", "--run", "run1"])
+    assert bound.exit_code == 3
+    assert "no run at all" in bound.output
+
+    monkeypatch.setattr(cli, "_health", _answers_over({"count": 0, "runId": None}))
+    plain = runner.invoke(cli.cli, ["assert-answered", "ovr_a"])
+    assert plain.exit_code == 1, "the weaker assertion still just reports no answers"
+    assert "has not answered" in plain.output
+
+
+def test_assert_answered_refuses_a_proxy_that_cannot_report_run_identity(profile, runner, monkeypatch):
+    """An engine old enough to count answers but not to say which run they belong to. Ignoring
+    --run there would silently downgrade the assertion to the one it was called to avoid."""
+    monkeypatch.setattr(cli, "_health", lambda: _health_payload(
+        answers=[{"id": "ovr_a", "active": True, "count": 4}]))
+    result = runner.invoke(cli.cli, ["assert-answered", "ovr_a", "--run", "run1"])
+    assert result.exit_code == 3
+    assert "does not report which run" in result.output
+    assert "4 request(s)" not in result.output
+
+
+def test_assert_answered_without_a_run_reads_whatever_run_is_current(profile, runner, monkeypatch):
+    """The documented weaker semantics, pinned so they stay deliberate: no --run means the command
+    asks about the run the proxy is in when it looks, whichever run that turns out to be."""
+    monkeypatch.setattr(cli, "_health", _answers_over({"count": 3, "runId": "a-run-nobody-held"}))
+    result = runner.invoke(cli.cli, ["assert-answered", "ovr_a"])
+    assert result.exit_code == 0
+    assert "3 request(s)" in result.output
+
+
+def test_assert_answered_rejects_an_empty_run(profile, runner):
+    """An empty --run would compare equal to nothing and unequal to everything by accident; a run
+    that cannot be named is refused at the boundary instead."""
+    result = runner.invoke(cli.cli, ["assert-answered", "ovr_a", "--run", ""])
+    assert result.exit_code == 1
+    assert "must name a run id" in result.output
+
+
+def test_assert_answered_refuses_a_rule_that_vanishes_while_it_waits(profile, runner, monkeypatch):
+    """A session switched mid-wait to one that does not carry this id destroys the boundary rather
+    than answering the question about it. Reported as 1 it would read as "the mock did not apply",
+    which is a claim this command was in no position to make."""
+    monkeypatch.setattr(cli, "_health", _answers_over({"count": 0, "runId": "run1"}, None))
+    monkeypatch.setattr(cli.time, "sleep", lambda _seconds: None)
+    result = runner.invoke(cli.cli, ["assert-answered", "ovr_a", "--run", "run1", "--timeout", "30"])
+    assert result.exit_code == 3
+    assert "no rule 'ovr_a'" in result.output
+    assert "cannot be checked" in result.output
+
+
+def test_assert_answered_without_a_run_still_reports_a_missing_rule_as_one(profile, runner, monkeypatch):
+    """The weaker assertion keeps every exit code it had: only --run can produce 3."""
+    monkeypatch.setattr(cli, "_health", _answers_over(None))
+    result = runner.invoke(cli.cli, ["assert-answered", "ovr_a"])
+    assert result.exit_code == 1
+    assert "no rule 'ovr_a'" in result.output
+
+
+def test_assert_answered_cannot_prove_a_run_against_a_proxy_that_counts_but_cannot_name_runs(
+        profile, runner, monkeypatch):
+    """Version skew in the other field. An engine that cannot count at all certainly cannot say
+    which run its counts are in, so under --run both refusals have to arrive as the same code — a
+    harness branching on 3 must not have to learn which flavour of skew it hit."""
+    monkeypatch.setattr(cli, "_health", lambda: {"activeSession": "default", "sequences": []})
+    result = runner.invoke(cli.cli, ["assert-answered", "ovr_a", "--run", "run1"])
+    assert result.exit_code == 3
+    assert "does not report answer counts" in result.output
+
+
+def test_assert_answered_with_a_run_reports_an_unreachable_proxy_as_unproven(profile, runner, monkeypatch):
+    """"I could not ask" is not "the rule answered nothing in your run" — and under --run there is
+    a code that says so, so the one meaning left for 1 is a real, made assertion that failed."""
+    monkeypatch.setattr(cli, "_health", lambda: None)
+    result = runner.invoke(cli.cli, ["assert-answered", "ovr_a", "--run", "run1"])
+    assert result.exit_code == 3
+    assert "cannot reach the control API" in result.output
 
 
 # MARK: - explain-match
@@ -1426,6 +1573,67 @@ def test_a_command_reading_health_refuses_another_profiles_reading(profile, runn
     assert result.exit_code == 1
     assert FOREIGN_FINGERPRINT in result.output
     assert "answered 7" not in result.output, "no claim may be made from the wrong profile's state"
+
+
+def test_a_bound_assertion_reports_a_foreign_profile_as_unproven(profile, runner, monkeypatch):
+    """The port can change hands between the reset and the assertion. Refusing is right, but under
+    --run exit 1 claims "the rule is in your run and answered nothing" — about a run this command
+    never got to look at, in a store that is not even the one the reset drew its boundary in."""
+    monkeypatch.setattr(cli, "_health", lambda: _health_payload(
+        profileFingerprint=FOREIGN_FINGERPRINT,
+        answers=[{"id": "ovr_a", "active": True, "count": 7, "runId": "run1"}]))
+    monkeypatch.setattr(cli.time, "sleep",
+                        lambda _seconds: pytest.fail("a mismatch must fail before any polling"))
+
+    result = runner.invoke(cli.cli, ["assert-answered", "ovr_a", "--run", "run1", "--timeout", "30"])
+
+    assert result.exit_code == 3
+    assert FOREIGN_FINGERPRINT in result.output
+    assert "answered 7" not in result.output, "a matching run id from a stranger proves nothing"
+
+
+def test_a_bound_assertion_refuses_a_profile_that_changes_under_the_poll(profile, runner, monkeypatch):
+    """The same swap arriving mid-wait: this profile's proxy is stopped and another profile's is
+    started on the port. The fingerprint is re-read every poll, so the wait ends where it lost the
+    ability to answer — rather than burning its timeout on, or believing, a stranger's counters."""
+    monkeypatch.setattr(cli, "_health", _polling(
+        [{}, {"profileFingerprint": FOREIGN_FINGERPRINT}],
+        lambda state: _health_payload(
+            answers=[{"id": "ovr_a", "active": True, "count": 0, "runId": "run1"}], **state)))
+    monkeypatch.setattr(cli.time, "sleep", lambda _seconds: None)
+
+    result = runner.invoke(cli.cli, ["assert-answered", "ovr_a", "--run", "run1", "--timeout", "30"])
+
+    assert result.exit_code == 3
+    assert FOREIGN_FINGERPRINT in result.output
+
+
+def test_a_bound_assertion_refuses_a_profile_that_takes_the_port_before_the_diagnostic_read(
+        profile, runner, monkeypatch):
+    """The last call a failing assertion makes is the `/recent` read behind its "what did arrive"
+    hint, and unlike `/health` that one is scoped, so the API refuses it with a 409. Exiting 1 there
+    prints a profile mismatch under the code that means "your run was checked and nothing answered",
+    which is the one reading of exit 1 that has to stay true."""
+    monkeypatch.setattr(cli, "_health", _answers_over({"count": 0, "runId": "run1"}))
+    _answers_with_a_conflict(monkeypatch)
+
+    result = runner.invoke(cli.cli, ["assert-answered", "ovr_a", "--run", "run1"])
+
+    assert result.exit_code == 3
+    assert FOREIGN_FINGERPRINT in result.output
+
+
+def test_an_unbound_assertion_still_exits_one_when_the_diagnostic_read_is_refused(
+        profile, runner, monkeypatch):
+    """The same moment without --run: no boundary was claimed, so nothing here may start returning
+    a code the older contract never had."""
+    monkeypatch.setattr(cli, "_health", _answers_over({"count": 0, "runId": "run1"}))
+    _answers_with_a_conflict(monkeypatch)
+
+    result = runner.invoke(cli.cli, ["assert-answered", "ovr_a"])
+
+    assert result.exit_code == 1
+    assert FOREIGN_FINGERPRINT in result.output
 
 
 def test_a_health_reading_without_a_fingerprint_is_still_accepted(profile, runner, monkeypatch):

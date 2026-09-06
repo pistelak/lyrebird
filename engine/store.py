@@ -451,19 +451,32 @@ class Store:
         return _rule_runtime(self.active_session(), override_id)
 
     def answer_states(self) -> list[dict]:
-        """How many requests each rule in the active session has answered this run."""
+        """How many requests each rule in the active session has answered, and in which run.
+
+        `runId` is the same token `reset` hands back and `sequence_states` reports, so a caller can
+        demand that the count belong to the boundary it drew rather than to whatever run happens to
+        be current when it reads. Without it a count is only ever "some run's", and a reset, a rule
+        replaced under the same id, or a session switch silently substitutes another run's evidence.
+
+        `None` means this rule has no run at all — never reset, never near a request, or its runtime
+        dropped by a session switch or a replacement. That is a different fact from a count of zero
+        ("this run happened and the rule answered nothing") and must not be read as one.
+        """
         session = self.active_session()
         runtime = _runtime(session)
-        return [
-            {
+        states = []
+        for override in self.active_overrides():
+            # Read, never create: asking how many answers a rule has must not mint runtime state
+            # for a rule that has never been near a request. One lookup feeds both fields, so a
+            # count can never be reported under a run id it was not counted in.
+            entry = runtime.get(override["id"]) or {}
+            states.append({
                 "id": override["id"],
                 "active": rules.is_active(override),
-                # Read, never create: asking how many answers a rule has must not mint runtime state
-                # for a rule that has never been near a request.
-                "count": (runtime.get(override["id"]) or {}).get("answers", 0),
-            }
-            for override in self.active_overrides()
-        ]
+                "count": entry.get("answers", 0),
+                "runId": entry.get("runId"),
+            })
+        return states
 
     def bump_selected(self, override: dict) -> None:
         """Advance a rule whose trigger is `self`: it answered, so it moves.
