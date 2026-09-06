@@ -69,6 +69,159 @@ def test_startup_does_not_rewrite_existing_session_files(profile):
     assert path.read_text() == original
 
 
+def test_binary_junk_in_the_sessions_directory_does_not_block_startup(profile):
+    """Regression: `read_text` raises UnicodeDecodeError, which is a ValueError but neither an
+    OSError nor a JSONDecodeError — so a file of binary junk escaped every arm of the loader and
+    took the proxy down at startup, from the one directory operators are told to hand-edit."""
+    (profile / "sessions" / "junk.json").write_bytes(b"\xff\xfe\x00binary")
+    subject = make_store(profile)
+    assert subject.active_name == "default"
+    assert any("junk.json" in problem for problem in subject.load_problems)
+
+
+def test_an_unsupported_schema_version_is_skipped_and_named(profile):
+    (profile / "sessions" / "future.json").write_text(
+        json.dumps({"schemaVersion": 2, "name": "future", "overrides": []}))
+    subject = make_store(profile)
+    assert "future" not in subject.sessions, "a session this engine cannot read must not load"
+    assert any("future.json" in problem and "schemaVersion" in problem
+               for problem in subject.load_problems)
+
+
+# MARK: - The shared session loader
+#
+# `load_session_file` is what startup loads with, so an offline inspection command reports what the
+# proxy would do rather than a second opinion about it. These tests pin that it is the same answer.
+
+def _write(profile, name, payload):
+    path = profile / "sessions" / f"{name}.json"
+    path.write_text(payload if isinstance(payload, str) else json.dumps(payload))
+    return path
+
+
+def test_load_session_file_keeps_the_good_rules_and_names_the_dropped_ones(profile):
+    path = _write(profile, "partial", {
+        "name": "partial",
+        "overrides": [
+            {"id": "keep", "mode": "replace", "status": 200, "match": {"path": "/a"}},
+            {"id": "typo", "mode": "replace", "status": 200, "match": {"paths": "/b"}},
+            {"id": "keep", "mode": "replace", "status": 204, "match": {"path": "/c"}},
+        ],
+    })
+    session, problems = store.load_session_file(path)
+    assert [o["id"] for o in session["overrides"]] == ["keep"]
+    assert any("override[1]" in p and "paths" in p for p in problems), "name the rule and the field"
+    assert any("override[2]" in p and "duplicate id" in p for p in problems)
+    assert all(p.startswith("partial.json:") for p in problems), "every problem names its file"
+
+
+def test_load_session_file_reports_nothing_kept_as_a_none_session(profile):
+    """None and an empty session are different answers: one says the scenario is not loaded, the
+    other says it loaded and has no rules in it."""
+    session, problems = store.load_session_file(_write(profile, "broken", "{not json"))
+    assert session is None
+    assert problems and problems[0].startswith("skipped broken.json:")
+
+
+def test_load_session_file_refuses_a_file_whose_name_could_escape_the_profile(profile):
+    """The stem becomes a session name, and a session name becomes a path component."""
+    path = profile / "sessions" / "..json"
+    path.write_text("{}")
+    session, problems = store.load_session_file(path)
+    assert session is None
+    assert "invalid session name" in problems[0]
+
+
+def test_load_session_file_creates_nothing(profile):
+    """An offline inspection must leave the profile exactly as it found it — no directories, no
+    synthesised `default`, no active-session pointer."""
+    path = _write(profile, "s", {"name": "s", "overrides": []})
+    before = sorted(p.name for p in (profile / "sessions").iterdir())
+    store.load_session_file(path)
+    store.load_session_file(profile / "sessions" / "absent.json")
+    assert sorted(p.name for p in (profile / "sessions").iterdir()) == before
+    assert not config.STATE_FILE.exists()
+
+
+def test_startup_reports_exactly_what_the_shared_loader_reports(profile):
+    """The point of the extraction: an offline verdict that could differ from startup's would be a
+    second opinion, and the operator would have no way to know which one the proxy acts on."""
+    files = [
+        _write(profile, "good", {"name": "good", "overrides": []}),
+        _write(profile, "broken", "{not json"),
+        _write(profile, "partial", {"name": "partial", "overrides": [{"mode": "nonsense"}]}),
+        _write(profile, "future", {"schemaVersion": 7, "name": "future", "overrides": []}),
+    ]
+    offline = [problem for file in sorted(files) for problem in store.load_session_file(file)[1]]
+    assert make_store(profile).load_problems == offline
+
+
+def test_session_path_refuses_a_name_that_would_escape_the_sessions_directory(profile):
+    with pytest.raises(store.UnsafeName):
+        store.session_path("../../etc/passwd")
+
+
+def test_a_session_file_symlinked_out_of_the_profile_is_not_loaded(profile, tmp_path):
+    """Startup reaches its files through a glob, so nothing used to check them: a session symlinked
+    out of the profile loaded into the proxy while `session_path` refused that same session by
+    name — one file, two verdicts, and the permissive one was the one that ran."""
+    outside = tmp_path / "outside.json"
+    outside.write_text(json.dumps({"name": "outside", "overrides": []}))
+    link = profile / "sessions" / "sneaky.json"
+    link.symlink_to(outside)
+
+    session, problems = store.load_session_file(link)
+    assert session is None
+    assert "escapes" in problems[0]
+    assert "sneaky" not in make_store(profile).sessions, "and startup refuses it for the same reason"
+
+
+def test_the_loader_holds_a_file_to_the_same_containment_as_writing_it(profile, tmp_path):
+    """The rule is `session_path`'s, exactly: resolve inside `sessions/`. A link that leaves it,
+    even into the same profile, was already unwritable — `override add` on such a session raises
+    `UnsafeName` from `_write_session` — so loading it left a session the proxy would serve and
+    could never save."""
+    elsewhere = profile / "shared.json"
+    elsewhere.write_text(json.dumps({"name": "shared", "overrides": []}))
+    link = profile / "sessions" / "kept.json"
+    link.symlink_to(elsewhere)
+    with pytest.raises(store.UnsafeName):
+        store.session_path("kept")
+    session, problems = store.load_session_file(link)
+    assert session is None and "escapes" in problems[0]
+
+
+def test_a_session_file_that_points_at_itself_does_not_stop_the_proxy_starting(profile):
+    """`Path.resolve()` raises `RuntimeError("Symlink loop from …")`, which is not an OSError. The
+    containment check runs before the read, so an uncaught one is a single self-referencing file in
+    a hand-edited directory stopping the proxy from starting at all — where before the check
+    existed, `read_text` raised OSError and the file was simply skipped."""
+    loop = profile / "sessions" / "loop.json"
+    loop.symlink_to(loop)
+    (profile / "sessions" / "good.json").write_text(json.dumps({"name": "good", "overrides": []}))
+
+    session, problems = store.load_session_file(loop)
+    assert session is None
+    assert "cannot resolve path" in problems[0] and "loop.json" in problems[0]
+
+    subject = make_store(profile)
+    assert "good" in subject.sessions, "one unresolvable file must not cost the others"
+    assert any("loop.json" in problem for problem in subject.load_problems)
+
+
+def test_a_rule_whose_delay_is_not_a_finite_number_is_a_reported_problem(profile):
+    """`json.loads` turns `1e309` into `inf`, and `int(inf)` raises OverflowError — not a
+    ValidationError, and not even a ValueError — from inside validation. The loader's `except
+    ValidationError` never saw it, so one such rule took the whole file's diagnostics with it."""
+    path = _write(profile, "wild", {"name": "wild", "overrides": [
+        {"id": "ovr_slow", "mode": "replace", "status": 200, "delayMs": 1e309},
+        {"id": "ovr_ok", "mode": "replace", "status": 200, "match": {"path": "/a"}},
+    ]})
+    session, problems = store.load_session_file(path)
+    assert [o["id"] for o in session["overrides"]] == ["ovr_ok"], "the good rule still loads"
+    assert any("override[0]" in p and "finite" in p for p in problems)
+
+
 # MARK: - Overrides
 
 def test_add_override_tolerates_a_session_whose_overrides_lack_ids(profile):
