@@ -191,8 +191,8 @@ coding agent as the main case rather than an API bolted to a UI.
 Lyrebird decrypts TLS for the hostnames in your profile. That's the point, and it's worth knowing
 exactly what it does:
 
-- It creates **its own CA** and trusts it in the **booted Simulator only** — never your system
-  keychain, never your other browsers.
+- It creates **its own CA** and trusts it in **one Simulator only** — the booted one, or the one
+  you name with `--simulator`; never your system keychain, never your other browsers.
 - Only your exact hostnames are decrypted. `api.example.com` doesn't imply `sub.api.example.com`.
 - Response bodies are **never recorded**. Recent traffic keeps time, method, host, path, status
   and which override matched — never a request or response body.
@@ -206,7 +206,8 @@ the CA.
 ## More
 
 `bin/lyrebird` has `init`, `up`, `down`, `status`, `use`, `recent`, `override`, `session`,
-`sequence`, `wait-ready`, `trust-ca`, `untrust-ca` and `logs`. `bin/lb` is a shorter alias for it.
+`sequence`, `wait-ready`, `relaunch`, `trust-ca`, `untrust-ca` and `logs`. `bin/lb` is a shorter
+alias for it.
 
 - [Engine guide](engine/README.md) — the full rule schema, matching order, control API, ports, tests
 - [Menu-bar app](menubar/README.md) — building and signing the SwiftUI client

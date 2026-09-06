@@ -8,6 +8,7 @@ the user is left with a PAC pointing at a dead port and no indication why.
 
 import json
 import os
+import subprocess
 import threading
 
 import click
@@ -161,7 +162,8 @@ def test_up_says_when_it_cannot_read_the_pac_it_just_installed(profile, runner, 
     config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(cli, "_health", lambda: {"pid": 1, "activeSession": "default", "sessions": ["default"],
                                                 "overrideCount": 0, "proxyPort": 8080})
-    monkeypatch.setattr(cli, "trust_ca_in_sim", lambda: (True, "trusted"))
+    monkeypatch.setattr(cli, "trust_ca_in_sim", lambda simulator: (True, "trusted"))
+    fake_simctl(monkeypatch, [_PHONE])
     monkeypatch.setattr(netproxy, "active_service", lambda: "Wi-Fi")
     monkeypatch.setattr(netproxy, "pac_status",
                         lambda service: netproxy.PacStatus("", False, False))
@@ -286,16 +288,70 @@ def test_up_waits_for_the_lock_holder_and_gives_up_only_after_the_timeout(profil
 _CORPORATE = {"url": "http://proxy.example.com/corp.pac", "enabled": False}
 
 
+# Devices with the shape `simctl list devices --json` reports, and nothing that could reach a real
+# one: every simctl call goes through `cli._run`, which `fake_simctl` replaces wholesale. The ids
+# are short and readable rather than real-looking UUIDs — nothing parses them, they are only
+# compared — but they keep upper case, so `--simulator phone-1` still tests a case-insensitive
+# match. A device's `runtime` names the bucket it is listed under, which is the only place simctl
+# says what platform it is; these are shaped like the real identifiers so the same parse is run.
+_IOS_RUNTIME = "com.example.SimRuntime.iOS-18-0"
+_WATCH_RUNTIME = "com.example.SimRuntime.watchOS-11-0"
+
+_PHONE = {"udid": "PHONE-1", "name": "iPhone 17 Pro", "state": "Booted", "isAvailable": True}
+_PAD = {"udid": "PAD-1", "name": "iPad Pro 13-inch", "state": "Booted", "isAvailable": True}
+# The one that boots alongside a phone without anybody asking for it.
+_WATCH = {"udid": "WATCH-1", "name": "Apple Watch Series 11",
+          "state": "Booted", "isAvailable": True, "runtime": _WATCH_RUNTIME}
+
+
+def fake_simctl(monkeypatch, devices, *, list_status=0, keychain_status=0, launch_status=0):
+    """Stand in for every `xcrun simctl` call and record what was asked of it.
+
+    A test decides what is booted by setting each device's `state`, and what platform it is by
+    setting `runtime` (iOS unless it says otherwise) — no simulator on the machine running the
+    tests is read, booted, trusted or launched.
+    """
+    calls = []
+
+    def run(args):
+        assert args[0] == "xcrun", f"unexpected shell-out in a simctl test: {args}"
+        calls.append(args)
+        if "list" in args:
+            # Grouped under runtime identifiers, as simctl groups them: the platform is not a
+            # field on the device, it is the bucket the device is listed in.
+            buckets: dict = {_IOS_RUNTIME: []}
+            for device in devices:
+                entry = dict(device)
+                buckets.setdefault(entry.pop("runtime", _IOS_RUNTIME), []).append(entry)
+            payload = {"devices": buckets}
+            return subprocess.CompletedProcess(args, list_status, json.dumps(payload), "")
+        if "keychain" in args:
+            return subprocess.CompletedProcess(args, keychain_status, "",
+                                               "" if keychain_status == 0 else "keychain failed")
+        return subprocess.CompletedProcess(args, launch_status, "",
+                                           "" if launch_status == 0 else "failed to launch")
+
+    monkeypatch.setattr(cli, "_run", run)
+    return calls
+
+
+def simctl_calls(calls, subcommand):
+    return [call for call in calls if subcommand in call]
+
+
 _LIVE = {"pid": 4321, "activeSession": "default", "sessions": ["default"], "overrideCount": 0,
          "proxyPort": 8080}
 
 
-def _up_after_a_crash(profile, monkeypatch, pac_status, *, service="Wi-Fi", health=None):
+def _up_after_a_crash(profile, monkeypatch, pac_status, *, service="Wi-Fi", health=None,
+                      stub_trust=True):
     """`up` with the proxy dead, a runtime file the watchdog kept (it could not restore), and the
     PAC in whatever state `pac_status` reports. Everything that shells out is stubbed. `health` is
-    the sequence of answers `_health` gives; by default dead at the first look and live after."""
-    import subprocess
+    the sequence of answers `_health` gives; by default dead at the first look and live after.
 
+    `stub_trust=False` leaves the real `trust_ca_in_sim` in place, for the tests that are about
+    *which device* the CA goes to — a stub swallows the simctl call those tests exist to inspect.
+    """
     (profile / "profile.json").write_text('{"hosts": ["api.example.com"]}', encoding="utf-8")
     config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
     config.LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -308,7 +364,11 @@ def _up_after_a_crash(profile, monkeypatch, pac_status, *, service="Wi-Fi", heal
     monkeypatch.setattr(cli, "_health", lambda: next(answers, _LIVE))
     monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: Proc())
     monkeypatch.setattr(cli, "_start_fresh_log", lambda: None)
-    monkeypatch.setattr(cli, "trust_ca_in_sim", lambda: (True, "trusted"))
+    if stub_trust:
+        monkeypatch.setattr(cli, "trust_ca_in_sim", lambda simulator: (True, "trusted"))
+    # One booted simulator, so device resolution succeeds without reading this machine's. A test
+    # about several booted devices calls `fake_simctl` again with its own list.
+    fake_simctl(monkeypatch, [_PHONE])
     monkeypatch.setattr(netproxy, "active_service", lambda: service)
     installed = {"ours": False}   # `set_pac` installs ours, and every read after it sees that
 
@@ -2025,7 +2085,7 @@ def _fake_proxy(monkeypatch, *, active="default", sessions=("default", "orders-o
     """
     state = {"active": active, "sessions": list(sessions), "loadProblems": list(load_problems),
              "notWhole": None if not_whole is None else dict(not_whole),
-             "steps": dict(steps or {}), "events": [], "launched": []}
+             "steps": dict(steps or {}), "events": [], "launched": [], "devices": []}
 
     def control(path, method="GET", payload=None, timeout=3.0):
         assert (path, method) == ("/__mock__/sessions/active", "PUT"), (path, method)
@@ -2041,8 +2101,9 @@ def _fake_proxy(monkeypatch, *, active="default", sessions=("default", "orders-o
         state["steps"][payload["name"]] = 1   # activating a session rewinds its sequences
         return {"active": state["active"], "previous": {"name": previous, "overrideCount": 0}}
 
-    def relaunch(bundle_id):
+    def relaunch(bundle_id, simulator):
         state["events"].append(("relaunch", bundle_id))
+        state["devices"].append(simulator.udid)
         state["launched"].append({"session": state["active"],
                                   "status": _SCENARIOS[state["active"]],
                                   "step": state["steps"].get(state["active"], 1)})
@@ -2087,6 +2148,7 @@ def test_up_selects_the_session_before_it_relaunches_the_app(profile, runner, mo
     assert state["launched"] == [{"session": "orders-outage", "status": 500, "step": 1}], \
         "the app's launch request was answered by a session the caller did not ask for"
     assert state["events"] == [("activate", "orders-outage"), ("relaunch", "com.example.Store")]
+    assert state["devices"] == [_PHONE["udid"]], "the launch goes to the resolved device, by UDID"
 
 
 def test_up_rewinds_the_session_it_selects_so_the_launch_starts_at_step_one(
@@ -2282,3 +2344,364 @@ def test_up_refuses_a_contradictory_launch_request_before_it_starts_anything(pro
 
     assert result.exit_code == 2, result.output
     assert "no profile" not in result.output, "the usage error must come before any side effect"
+
+
+# MARK: - Which simulator the CA and the relaunch land on
+#
+# `booted` is what these tests exist to keep out of the simctl arguments: `simctl help` says that
+# with several devices booted it "will choose one of them", and says nothing about which. A CA
+# trusted on a device nobody chose reads exactly like a CA trusted on the right one — until the
+# app under test rejects the certificate on the device the runner is actually driving.
+
+
+def _generated_ca(monkeypatch, tmp_path):
+    """A CA file on disk, so `trust_ca_in_sim` gets as far as shelling out."""
+    cert = tmp_path / "mitmproxy-ca-cert.pem"
+    cert.write_text("-----BEGIN CERTIFICATE-----\n", encoding="utf-8")
+    monkeypatch.setattr(cli, "_ca_cert", lambda: cert)
+
+
+def test_trust_ca_uses_the_one_booted_simulator_without_being_told(profile, runner, monkeypatch, tmp_path):
+    """The convenient case stays convenient: one booted device needs no --simulator."""
+    _generated_ca(monkeypatch, tmp_path)
+    calls = fake_simctl(monkeypatch, [_PHONE])
+
+    result = runner.invoke(cli.cli, ["trust-ca"])
+
+    assert result.exit_code == 0, result.output
+    keychain = simctl_calls(calls, "keychain")
+    assert len(keychain) == 1 and _PHONE["udid"] in keychain[0]
+    assert "booted" not in keychain[0], "the device must be named by UDID, never left to simctl"
+    assert _PHONE["name"] in result.output
+
+
+def test_trust_ca_refuses_when_more_than_one_simulator_is_booted(profile, runner, monkeypatch, tmp_path):
+    """The bug this option exists for: `keychain booted` let simctl pick, so the CA could be
+    installed on a device the caller never meant and reported as a success."""
+    _generated_ca(monkeypatch, tmp_path)
+    calls = fake_simctl(monkeypatch, [_PHONE, _PAD])
+
+    result = runner.invoke(cli.cli, ["trust-ca"])
+
+    assert result.exit_code == 1
+    assert simctl_calls(calls, "keychain") == [], "nothing may be trusted while the target is a guess"
+    assert _PHONE["udid"] in result.output and _PAD["udid"] in result.output
+    assert "--simulator" in result.output
+
+
+def test_trust_ca_targets_the_named_simulator_among_several_booted(profile, runner, monkeypatch, tmp_path):
+    _generated_ca(monkeypatch, tmp_path)
+    calls = fake_simctl(monkeypatch, [_PHONE, _PAD])
+
+    result = runner.invoke(cli.cli, ["trust-ca", "--simulator", _PAD["name"]])
+
+    assert result.exit_code == 0, result.output
+    assert simctl_calls(calls, "keychain")[0][3] == _PAD["udid"]
+
+
+def test_trust_ca_accepts_a_udid_in_either_case(profile, runner, monkeypatch, tmp_path):
+    """A UDID copied out of an `xcodebuild -destination` line can arrive lowercased."""
+    _generated_ca(monkeypatch, tmp_path)
+    calls = fake_simctl(monkeypatch, [_PHONE, _PAD])
+    assert _PHONE["udid"].lower() != _PHONE["udid"], "this test needs an id with case to fold"
+
+    result = runner.invoke(cli.cli, ["trust-ca", "--simulator", _PHONE["udid"].lower()])
+
+    assert result.exit_code == 0, result.output
+    assert simctl_calls(calls, "keychain")[0][3] == _PHONE["udid"]
+
+
+def test_trust_ca_refuses_a_simulator_that_is_not_booted(profile, runner, monkeypatch, tmp_path):
+    """Absent and shut down are different problems with different answers, and neither answer is
+    "trust it somewhere else"."""
+    _generated_ca(monkeypatch, tmp_path)
+    calls = fake_simctl(monkeypatch, [{**_PAD, "state": "Shutdown"}])
+
+    result = runner.invoke(cli.cli, ["trust-ca", "--simulator", _PAD["name"]])
+
+    assert result.exit_code == 1
+    assert simctl_calls(calls, "keychain") == []
+    assert "not booted" in result.output
+    assert f"simctl boot {_PAD['udid']}" in result.output
+
+
+def test_trust_ca_refuses_a_simulator_that_does_not_exist(profile, runner, monkeypatch, tmp_path):
+    """Naming a device that is not there must not quietly fall back to the booted one — that is
+    the substituted default this codebase keeps having to remove."""
+    _generated_ca(monkeypatch, tmp_path)
+    calls = fake_simctl(monkeypatch, [_PHONE])
+
+    result = runner.invoke(cli.cli, ["trust-ca", "--simulator", "iPhone 4"])
+
+    assert result.exit_code == 1
+    assert simctl_calls(calls, "keychain") == []
+    assert "iPhone 4" in result.output
+    assert _PHONE["udid"] not in result.output, "it must not offer the device it was not asked for"
+
+
+def test_trust_ca_refuses_a_simulator_whose_runtime_is_missing(profile, runner, monkeypatch, tmp_path):
+    _generated_ca(monkeypatch, tmp_path)
+    unavailable = {**_PAD, "state": "Shutdown", "isAvailable": False,
+                   "availabilityError": "runtime profile not found"}
+    calls = fake_simctl(monkeypatch, [unavailable])
+
+    result = runner.invoke(cli.cli, ["trust-ca", "--simulator", _PAD["udid"]])
+
+    assert result.exit_code == 1
+    assert simctl_calls(calls, "keychain") == []
+    assert "runtime profile not found" in result.output
+
+
+def test_trust_ca_does_not_read_a_failed_device_listing_as_no_simulator(profile, runner, monkeypatch, tmp_path):
+    """"I could not ask" is not "there are none": one sends you to the log, the other sends you to
+    boot a simulator that may already be running."""
+    _generated_ca(monkeypatch, tmp_path)
+    calls = fake_simctl(monkeypatch, [_PHONE], list_status=1)
+
+    result = runner.invoke(cli.cli, ["trust-ca"])
+
+    assert result.exit_code == 1
+    assert simctl_calls(calls, "keychain") == []
+    assert "simctl list devices" in result.output
+    assert "no booted simulator" not in result.output
+
+
+def test_trust_ca_fails_when_simctl_refuses_the_certificate(profile, runner, monkeypatch, tmp_path):
+    """A command named for trusting a CA exits non-zero when it trusted nothing."""
+    _generated_ca(monkeypatch, tmp_path)
+    fake_simctl(monkeypatch, [_PHONE], keychain_status=1)
+
+    result = runner.invoke(cli.cli, ["trust-ca"])
+
+    assert result.exit_code == 1
+    assert "keychain failed" in result.output
+
+
+def _up_on_a_device(profile, monkeypatch, tmp_path, devices, **simctl):
+    """`up` for a profile that names an app, with the real CA trust and relaunch reaching a fake
+    simctl. Nothing is stubbed between `up` and the simctl arguments the tests below read."""
+    _up_after_a_crash(profile, monkeypatch,
+                      lambda service: netproxy.PacStatus(netproxy.pac_url(), True, True),
+                      stub_trust=False)
+    (profile / "profile.json").write_text(
+        '{"hosts": ["api.example.com"], "simBundleId": "com.example.Store"}', encoding="utf-8")
+    _generated_ca(monkeypatch, tmp_path)
+    return fake_simctl(monkeypatch, devices, **simctl)
+
+
+def test_up_neither_trusts_nor_relaunches_when_the_simulator_is_ambiguous(profile, runner,
+                                                                          monkeypatch, tmp_path):
+    """Two booted devices and no choice made: `up` says so and exits non-zero, rather than letting
+    simctl pick a device for the CA and pick again for the launch."""
+    calls = _up_on_a_device(profile, monkeypatch, tmp_path, [_PHONE, _PAD])
+
+    result = runner.invoke(cli.cli, ["up"])
+
+    assert result.exit_code == 1
+    assert simctl_calls(calls, "launch") == [] and simctl_calls(calls, "keychain") == []
+    assert "NOT trusted" in result.output and "nothing was relaunched" in result.output
+    assert "simulator" not in config.read_runtime(), "no device was used, so none may be recorded"
+
+
+def test_up_trusts_and_relaunches_on_the_simulator_it_was_given(profile, runner, monkeypatch, tmp_path):
+    """Both device operations go to the named device — not to the other booted one, and not to
+    `booted` — and `status` can say which device that was."""
+    calls = _up_on_a_device(profile, monkeypatch, tmp_path, [_PHONE, _PAD])
+
+    result = runner.invoke(cli.cli, ["up", "--simulator", _PAD["udid"]])
+
+    assert result.exit_code == 0, result.output
+    assert [call[3] for call in simctl_calls(calls, "keychain")] == [_PAD["udid"]]
+    assert [call[3] for call in simctl_calls(calls, "launch")] == [_PAD["udid"]]
+    assert [call[3] for call in simctl_calls(calls, "terminate")] == [_PAD["udid"]]
+    assert config.read_runtime()["simulator"] == {"udid": _PAD["udid"], "name": _PAD["name"]}
+
+
+def test_up_fails_when_the_ca_cannot_be_trusted_on_the_chosen_device(profile, runner, monkeypatch, tmp_path):
+    """The device was resolved, so the failure is simctl's — and `up` is still not allowed to
+    report interception it did not establish."""
+    _up_on_a_device(profile, monkeypatch, tmp_path, [_PAD], keychain_status=1)
+
+    result = runner.invoke(cli.cli, ["up", "--simulator", _PAD["name"]])
+
+    assert result.exit_code == 1
+    assert "keychain failed" in result.output
+
+
+def test_up_fails_when_the_app_cannot_be_launched_on_the_chosen_device(profile, runner, monkeypatch, tmp_path):
+    _up_on_a_device(profile, monkeypatch, tmp_path, [_PAD], launch_status=1)
+
+    result = runner.invoke(cli.cli, ["up", "--simulator", _PAD["name"]])
+
+    assert result.exit_code == 1
+    assert f"com.example.Store is not installed in {_PAD['name']}" in result.output
+
+
+def test_status_reports_the_simulator_the_last_up_used(profile, runner, monkeypatch):
+    """Reported from the runtime file rather than by looking again: the question is which device
+    this session trusted, and a fresh lookup would name whatever is booted now."""
+    config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
+    config.write_runtime({"proxyPid": 1, "service": "Wi-Fi",
+                          "simulator": {"udid": _PAD["udid"], "name": _PAD["name"]}})
+    monkeypatch.setattr(cli, "_health",
+                        lambda: {"pid": 1, "sessions": ["default"], "activeSession": "default",
+                                 "overrideCount": 0, "simBundleId": None, "proxyPort": 8080})
+    monkeypatch.setattr(netproxy, "pac_status",
+                        lambda service: netproxy.PacStatus(netproxy.pac_url(), True, True))
+
+    assert json.loads(runner.invoke(cli.cli, ["status", "--json"]).output)["simulator"] == {
+        "udid": _PAD["udid"], "name": _PAD["name"]}
+    plain = runner.invoke(cli.cli, ["status"])
+    assert _PAD["udid"] in plain.output
+    assert "not scoped to it" in plain.output, "device selection must not read as traffic isolation"
+
+
+def test_up_still_selects_the_session_when_there_is_no_simulator_to_relaunch_on(profile, runner,
+                                                                                monkeypatch):
+    """`--use` and `--simulator` fail independently.
+
+    A caller left to launch the app by hand still asked for that scenario, so the selection
+    happens; the relaunch does not, because there is no device to relaunch on; and `up` exits 1
+    about the device rather than reporting a run it did not set up.
+    """
+    state = _fake_proxy(monkeypatch)
+    _up_with_a_proxy(profile, monkeypatch, state)
+    fake_simctl(monkeypatch, [_PHONE, _PAD])
+
+    result = runner.invoke(cli.cli, ["up", "--use", "orders-outage"])
+
+    assert result.exit_code == 1
+    assert state["events"] == [("activate", "orders-outage")]
+    assert state["launched"] == [] and state["devices"] == []
+    assert "simulators are booted" in result.output
+    assert "nothing was relaunched" in result.output
+
+
+# MARK: - Eligibility: what counts as a device to choose between
+
+
+def test_a_booted_watch_does_not_make_the_only_iphone_ambiguous(profile, runner, monkeypatch, tmp_path):
+    """A paired watch boots alongside its phone. Counting it as a candidate would make "which one
+    did you mean?" the normal state of a Mac running a watch app's companion."""
+    _generated_ca(monkeypatch, tmp_path)
+    calls = fake_simctl(monkeypatch, [_PHONE, _WATCH])
+
+    result = runner.invoke(cli.cli, ["trust-ca"])
+
+    assert result.exit_code == 0, result.output
+    assert [call[3] for call in simctl_calls(calls, "keychain")] == [_PHONE["udid"]]
+
+
+def test_trust_ca_refuses_when_the_only_booted_simulator_is_not_ios(profile, runner, monkeypatch, tmp_path):
+    """Sole booted device is not the same as eligible: the CA belongs in the simulator running the
+    iOS app under test, and a watch is not it just because it is the only thing up."""
+    _generated_ca(monkeypatch, tmp_path)
+    calls = fake_simctl(monkeypatch, [_WATCH])
+
+    result = runner.invoke(cli.cli, ["trust-ca"])
+
+    assert result.exit_code == 1
+    assert simctl_calls(calls, "keychain") == []
+    assert "no booted iOS simulator" in result.output
+    assert _WATCH["name"] in result.output and "watchOS" in result.output
+
+
+def test_trust_ca_refuses_an_explicitly_named_watch(profile, runner, monkeypatch, tmp_path):
+    """Naming it does not make it usable — and the message says what is wrong with the device
+    rather than reporting it as missing or unbooted."""
+    _generated_ca(monkeypatch, tmp_path)
+    calls = fake_simctl(monkeypatch, [_PHONE, _WATCH])
+
+    result = runner.invoke(cli.cli, ["trust-ca", "--simulator", _WATCH["udid"]])
+
+    assert result.exit_code == 1
+    assert simctl_calls(calls, "keychain") == []
+    assert "watchOS simulator" in result.output
+    assert "not booted" not in result.output, "it is booted; that is not the problem"
+
+
+def test_trust_ca_refuses_a_booted_device_simctl_calls_unavailable(profile, runner, monkeypatch, tmp_path):
+    """Booted is simctl's word for the device's state, not a promise it can be used."""
+    _generated_ca(monkeypatch, tmp_path)
+    broken = {**_PAD, "isAvailable": False, "availabilityError": "runtime profile not found"}
+    calls = fake_simctl(monkeypatch, [broken])
+
+    for args in (["trust-ca"], ["trust-ca", "--simulator", _PAD["udid"]]):
+        result = runner.invoke(cli.cli, args)
+        assert result.exit_code == 1, f"{args}: {result.output}"
+        assert simctl_calls(calls, "keychain") == []
+
+
+# MARK: - `relaunch`: the app's button and the CLI take the same road
+
+
+def test_relaunch_uses_the_device_up_recorded_not_whatever_is_booted(profile, runner, monkeypatch):
+    """The menu-bar app's Relaunch runs this. It used to run `simctl launch booted`, which lets
+    simctl choose between two booted devices — half the time the one that never got the CA."""
+    (profile / "profile.json").write_text(
+        '{"hosts": ["api.example.com"], "simBundleId": "com.example.Store"}', encoding="utf-8")
+    config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
+    config.write_runtime({"proxyPid": 1, "service": "Wi-Fi",
+                          "simulator": {"udid": _PAD["udid"], "name": _PAD["name"]}})
+    calls = fake_simctl(monkeypatch, [_PHONE, _PAD])
+
+    result = runner.invoke(cli.cli, ["relaunch"])
+
+    assert result.exit_code == 0, result.output
+    assert [call[3] for call in simctl_calls(calls, "launch")] == [_PAD["udid"]]
+    assert [call[3] for call in simctl_calls(calls, "terminate")] == [_PAD["udid"]]
+    assert not any("booted" in call for call in calls), "simctl must never be left to choose"
+
+
+def test_relaunch_refuses_when_the_recorded_device_has_since_shut_down(profile, runner, monkeypatch):
+    """The recorded UDID is checked, not trusted: the CA lives on that device, so relaunching
+    anywhere else would put the app in front of a certificate it does not trust."""
+    (profile / "profile.json").write_text(
+        '{"hosts": ["api.example.com"], "simBundleId": "com.example.Store"}', encoding="utf-8")
+    config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
+    config.write_runtime({"proxyPid": 1, "service": "Wi-Fi",
+                          "simulator": {"udid": _PAD["udid"], "name": _PAD["name"]}})
+    calls = fake_simctl(monkeypatch, [_PHONE, {**_PAD, "state": "Shutdown"}])
+
+    result = runner.invoke(cli.cli, ["relaunch"])
+
+    assert result.exit_code == 1
+    assert simctl_calls(calls, "launch") == [], "it must not relaunch on the other booted device"
+    assert "not booted" in result.output and _PAD["udid"] in result.output
+
+
+def test_relaunch_refuses_rather_than_pick_between_two_booted_devices(profile, runner, monkeypatch):
+    """With no run recorded — no `up` yet, or one that failed to resolve a device — the rule is
+    `up`'s own: the single candidate, or a refusal that lists them."""
+    (profile / "profile.json").write_text(
+        '{"hosts": ["api.example.com"], "simBundleId": "com.example.Store"}', encoding="utf-8")
+    calls = fake_simctl(monkeypatch, [_PHONE, _PAD])
+
+    result = runner.invoke(cli.cli, ["relaunch"])
+
+    assert result.exit_code == 1
+    assert simctl_calls(calls, "launch") == []
+    assert "--simulator" in result.output
+
+
+def test_relaunch_says_what_is_missing_when_no_bundle_id_can_be_found(profile, runner, monkeypatch):
+    """`--relaunch`'s failure mode, in a command whose only job is the launch: it must not exit 0
+    having launched nothing."""
+    (profile / "profile.json").write_text('{"hosts": ["api.example.com"]}', encoding="utf-8")
+    calls = fake_simctl(monkeypatch, [_PHONE])
+
+    result = runner.invoke(cli.cli, ["relaunch"])
+
+    assert result.exit_code == 1
+    assert simctl_calls(calls, "launch") == []
+    assert "simBundleId" in result.output
+
+
+def test_relaunch_reports_a_launch_simctl_refused(profile, runner, monkeypatch):
+    calls = fake_simctl(monkeypatch, [_PHONE], launch_status=1)
+
+    result = runner.invoke(cli.cli, ["relaunch", "com.example.Store"])
+
+    assert result.exit_code == 1
+    assert simctl_calls(calls, "launch") != []
+    assert "com.example.Store is not installed" in result.output

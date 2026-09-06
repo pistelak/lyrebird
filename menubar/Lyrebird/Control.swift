@@ -83,14 +83,12 @@ enum Control {
     /// When a profile is configured it is passed explicitly: a Finder-launched app inherits no
     /// shell environment, so relying on `LYREBIRD_PROFILE` would silently pick the wrong profile.
     /// Unset means "let the engine use its default".
-    private static func lyrebird(_ arguments: [String]) async -> Result {
-        var argv: [String] = []
-        let profile = Config.profilePath
-        if !profile.isEmpty {
-            argv += ["--profile", profile]
-        }
-        argv += arguments
-        return await shell(Config.lyrebirdPath, argv,
+    static func arguments(_ command: [String], profile: String) -> [String] {
+        (profile.isEmpty ? [] : ["--profile", profile]) + command
+    }
+
+    private static func lyrebird(_ command: [String]) async -> Result {
+        return await shell(Config.lyrebirdPath, arguments(command, profile: Config.profilePath),
                            environment: controlEnvironment(for: Config.controlURL))
     }
 
@@ -98,8 +96,16 @@ enum Control {
 
     static func down() async -> Result { await lyrebird(["down"]) }
 
+    /// The argv Relaunch runs. Named separately so a test can read it without starting anything.
+    ///
+    /// It goes through the CLI rather than `xcrun simctl` directly, and that is the whole point:
+    /// `simctl launch booted` lets simctl pick when two simulators are booted, so the button could
+    /// relaunch the app on a device that never got Lyrebird's CA — while the menu went on saying
+    /// INTERCEPT ACTIVE. `lyrebird relaunch` uses the device `up` recorded, and refuses with its
+    /// own message when there is no single device it can mean. The app never names `booted`.
+    static func relaunchCommand(bundleId: String) -> [String] { ["relaunch", bundleId] }
+
     static func relaunch(bundleId: String) async -> Result {
-        _ = await shell("/usr/bin/xcrun", ["simctl", "terminate", "booted", bundleId])
-        return await shell("/usr/bin/xcrun", ["simctl", "launch", "booted", bundleId])
+        await lyrebird(relaunchCommand(bundleId: bundleId))
     }
 }
