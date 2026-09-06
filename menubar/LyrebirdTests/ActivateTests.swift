@@ -9,6 +9,10 @@ import XCTest
 ///
 /// One class on purpose: `StubURLProtocol`'s handler is process-wide, and XCTest runs classes,
 /// not methods, in parallel.
+///
+/// The models below are given a profile fingerprint because a menu that does not know which
+/// profile it is configured for sends no control requests at all — that is `ProfileScopingTests`'
+/// subject, not this file's.
 @MainActor
 final class ActivateTests: XCTestCase {
 
@@ -141,7 +145,7 @@ final class ActivateTests: XCTestCase {
             return (Stub.response(request, 404),
                     Data(#"{"error":"unknown_session","detail":"no session named 'orders-outage' — it was deleted"}"#.utf8))
         }
-        let model = AppModel(client: makeClient(), autoStart: false)
+        let model = AppModel(client: makeClient(), autoStart: false, expectedFingerprint: "a1b2c3")
 
         await model.activate("orders-outage")
 
@@ -158,7 +162,7 @@ final class ActivateTests: XCTestCase {
             guard request.httpMethod == "PUT" else { return Stub.read(request) }
             return (Stub.response(request, 404), Data(#"{"error":"unknown_session"}"#.utf8))
         }
-        let model = AppModel(client: makeClient(), autoStart: false)
+        let model = AppModel(client: makeClient(), autoStart: false, expectedFingerprint: "a1b2c3")
         await model.activate("orders-outage")
         XCTAssertNotNil(model.lastError)
 
@@ -176,7 +180,7 @@ final class ActivateTests: XCTestCase {
             guard request.httpMethod == "PUT" else { return Stub.read(request) }
             return (Stub.response(request, 404), Data(#"{"error":"unknown_session"}"#.utf8))
         }
-        let model = AppModel(client: makeClient(), autoStart: false)
+        let model = AppModel(client: makeClient(), autoStart: false, expectedFingerprint: "a1b2c3")
 
         await model.activate("orders-outage")
 

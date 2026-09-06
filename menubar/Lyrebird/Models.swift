@@ -8,6 +8,11 @@ struct Health: Codable, Sendable {
     var intercepting: Bool?
     /// Comes from the active profile, so the app never carries a default app identifier of its own.
     var simBundleId: String?
+    /// Which profile the answering proxy is running. The app never computes this — it is
+    /// `sha256(profile dir)[:12]` in the engine's `config`, and re-deriving it here would be a
+    /// second implementation of a rule only the engine owns. Optional because an older engine
+    /// does not send it, which the CLI accepts too.
+    var profileFingerprint: String?
 }
 
 struct SessionSummary: Codable, Sendable, Identifiable {
