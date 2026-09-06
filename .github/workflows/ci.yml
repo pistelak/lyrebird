@@ -49,3 +49,37 @@ jobs:
           xcodebuild -project Lyrebird.xcodeproj -scheme Lyrebird \
             -configuration Debug -derivedDataPath .build \
             -destination 'platform=macOS' build test
+
+      # A verifier that passes everything would let a hard-coded version through unnoticed, so
+      # prove it rejects each way the stamp can be wrong before trusting it below.
+      - name: Verifier rejects a wrong version
+        working-directory: menubar
+        run: |
+          app=.build/Build/Products/Debug/Lyrebird.app
+          if scripts/verify-version.sh "$app" 1.2.3 0; then
+            echo "verifier accepted a wrong marketing version" >&2
+            exit 1
+          fi
+          if scripts/verify-version.sh "$app" 0.0.0 7; then
+            echo "verifier accepted a wrong build version" >&2
+            exit 1
+          fi
+          if scripts/verify-version.sh /nonexistent.app 0.0.0 0; then
+            echo "verifier accepted a bundle with no Info.plist" >&2
+            exit 1
+          fi
+
+      - name: Default build carries the development placeholders
+        working-directory: menubar
+        run: scripts/verify-version.sh .build/Build/Products/Debug/Lyrebird.app 0.0.0 0
+
+      # The point of the change: values passed to xcodebuild must reach the shipped bundle. These
+      # are deliberately unlike the placeholders, so a plist that hard-codes a literal fails here.
+      - name: Command-line version overrides reach the bundle
+        working-directory: menubar
+        run: |
+          xcodebuild -project Lyrebird.xcodeproj -scheme Lyrebird \
+            -configuration Debug -derivedDataPath .build \
+            -destination 'platform=macOS' \
+            MARKETING_VERSION=9.9.9 CURRENT_PROJECT_VERSION=999 build
+          scripts/verify-version.sh .build/Build/Products/Debug/Lyrebird.app 9.9.9 999
