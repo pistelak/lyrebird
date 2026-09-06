@@ -250,6 +250,42 @@ def test_importing_overrides_that_are_not_a_list_is_refused(profile):
     assert "overrides must be a list" in body["detail"]
 
 
+def test_a_rule_with_an_unknown_field_is_refused_and_not_installed(profile):
+    """A 200 here told the caller their 503 rule was live when the proxy would answer 200 — the
+    typo'd field was kept, ignored, and never mentioned again."""
+    (profile / "profile.json").write_text('{"hosts": []}', encoding="utf-8")
+    config.reload_profile()
+    app = control.make_app(store.Store(), lambda: {"proxyUp": True})
+
+    async def main():
+        async with TestClient(TestServer(app)) as client:
+            headers = {"Host": config.CONTROL_HOST_HEADER, "Content-Type": "application/json"}
+            added = await client.post(
+                "/__mock__/overrides",
+                data=json.dumps({"mode": "replace", "match": {"path": "/api/items"},
+                                 "statsu": 503}),
+                headers=headers)
+            listed = await client.get("/__mock__/overrides", headers=headers)
+            return added.status, await added.json(), await listed.json()
+
+    status, body, listed = asyncio.run(main())
+    assert status == 400
+    assert body["error"] == "invalid_payload"
+    assert "'statsu'" in body["detail"]
+    assert listed == [], "a refused rule must leave nothing behind"
+
+
+def test_importing_a_session_whose_rule_carries_an_unknown_field_is_refused(profile):
+    """Import is all-or-nothing, and the file must not appear: a session on disk with the rule
+    dropped is the same lie as answering 200."""
+    status, _, body = call(profile, "POST", "/__mock__/sessions/import", json_body={
+        "session": {"name": "imp", "overrides": [
+            {"mode": "replace", "match": {"path": "/api/items"}, "statsu": 503}]}})
+    assert status == 400
+    assert "'statsu'" in body["detail"]
+    assert not (profile / "sessions" / "imp.json").exists()
+
+
 # MARK: - Answer evidence
 
 def test_health_reports_answer_counts_per_rule(profile):

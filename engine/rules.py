@@ -22,6 +22,11 @@ An *override* is a plain dict mirroring the on-disk JSON schema:
       }
     }
 
+Those fields plus `notes` — free text for the author, which the engine never reads — are the whole
+vocabulary; `OVERRIDE_FIELD_HELP` below is the list, and anything outside it is rejected rather than
+kept, because a field the engine ignores is a rule that answers with something its author did not
+write.
+
 A sequence holds a cursor counting the advance events applied so far; the cursor itself is runtime
 state and lives in the store, so everything here stays a pure function of (override, cursor).
 """
@@ -58,6 +63,28 @@ MATCHER_FIELD_HELP = {
     "bodyContains": "A substring that must appear in the request body.",
 }
 MATCHER_FIELDS = tuple(MATCHER_FIELD_HELP)
+
+# The top-level vocabulary, for the same three consumers and the same reason. `notes` is the one
+# field the engine never reads: JSON has no comments and sessions are written by hand, so an author
+# needs somewhere to say why a rule exists. Everything outside this table is a typo — including
+# `nots` — and a typo'd field is not a harmless extra: `statsu` leaves the rule answering with a
+# default status, which is a different response from the one its author wrote.
+OVERRIDE_FIELD_HELP = {
+    "id": "Stable name for the rule. Generated when omitted; derived from the rule's "
+          "content for session files.",
+    "active": "false switches the rule off without deleting it. Default true.",
+    "match": "Which requests this rule answers (see the matcher fields).",
+    "mode": "'replace' answers locally; 'patch' merges into the real response.",
+    "delayMs": "Delay the matched response by this many milliseconds.",
+    "status": "HTTP status of the answer (replace) or forced onto the real response (patch).",
+    "headers": "Response headers (replace).",
+    "body": "Response body, JSON or string (replace).",
+    "patch": "JSON deep-merged into the real response (patch).",
+    "patchStrategy": "'appendToArray' appends to arrays instead of replacing them (patch).",
+    "sequence": "Answer differently as a scenario progresses (replace only).",
+    "notes": "Free text for the author. Ignored by the engine.",
+}
+OVERRIDE_FIELDS = tuple(OVERRIDE_FIELD_HELP)
 
 # The three outcomes of resolving a rule against its cursor. A discriminated action rather than an
 # "effective override" the caller reinterprets: exhaustion under `error` and `passThrough` has no
@@ -455,6 +482,21 @@ def validate_override(override: Any) -> dict:
     if not is_plain_object(override):
         raise ValidationError("override must be a JSON object")
     result = dict(override)
+
+    # First, before any field-specific check: a typo reports itself rather than the secondary error
+    # it causes — `{"mod": "replace"}` must say `'mod'`, not "mode must be one of", which points at
+    # a field the author never wrote.
+    for key in result:
+        if key not in OVERRIDE_FIELDS:
+            raise ValidationError(
+                f"unknown field {key!r} — an override may only carry "
+                f"{', '.join(OVERRIDE_FIELDS)}"
+            )
+
+    # `notes` is text or nothing. Other optional fields read `None` as absence; here an explicit
+    # `null` is a mistake worth naming, since the only reason to write the key is to put words in it.
+    if "notes" in result and not isinstance(result["notes"], str):
+        raise ValidationError("notes must be a string")
 
     mode = result.get("mode")
     if mode not in VALID_MODES:

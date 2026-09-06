@@ -123,9 +123,32 @@ refused.
   upstream response whose content-type says JSON and whose body parses as JSON; streamed, oversized
   and non-JSON responses are passed through untouched and reported as `patchSkipped`.
 
-Only `mode` is required. `id` is derived from the rule when omitted and `active` defaults to true,
-so a hand-written session stays short — but an override with no `match` matches *every* request,
-so give it at least a path.
+Only `mode` is required. `id` is generated when omitted and `active` defaults to true, so a
+hand-written session stays short — but an override with no `match` matches *every* request, so give
+it at least a path.
+
+An override supports these fields and no others — an unknown one is rejected rather than kept,
+because a field the engine ignores is a rule that answers with a default instead of what its author
+wrote (`statsu: 503` used to load cleanly and reply 200):
+
+| field | |
+|---|---|
+| `id` | Stable name for the rule. Generated when omitted; derived from the rule's content for session files. |
+| `active` | `false` switches the rule off without deleting it. Default true. |
+| `match` | Which requests this rule answers (see the matcher fields). |
+| `mode` | `replace` answers locally; `patch` merges into the real response. |
+| `delayMs` | Delay the matched response by this many milliseconds. |
+| `status` | HTTP status of the answer (replace) or forced onto the real response (patch). |
+| `headers` | Response headers (replace). |
+| `body` | Response body, JSON or string (replace). |
+| `patch` | JSON deep-merged into the real response (patch). |
+| `patchStrategy` | `appendToArray` appends to arrays instead of replacing them (patch). |
+| `sequence` | Answer differently as a scenario progresses (replace only). |
+| `notes` | Free text for the author. Ignored by the engine. |
+
+`notes` is the only free-text field — JSON has no comments, and a rule usually needs a sentence
+saying why it exists. At startup an override that carries an unknown field is reported and skipped,
+naming the field; the rest of its session still loads. An import or `override add` is refused outright.
 
 `match` supports these fields and no others — an unknown one is rejected rather than ignored,
 because a typo'd field is not a stricter matcher but a missing constraint:
@@ -137,7 +160,7 @@ because a typo'd field is not a stricter matcher but a missing constraint:
 | `query` | Query parameters that must all be present with these exact values. Others are ignored. |
 | `bodyContains` | A substring that must appear in the request body. |
 
-The same list generates `lyrebird override add --help`, so the CLI can never advertise a different
+Both tables generate `lyrebird override add --help`, so the CLI can never advertise a different
 vocabulary from the one validation accepts.
 
 `delayMs` delays a matched response (that flow only). Most-specific wins: fewer wildcards first,

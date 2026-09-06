@@ -1082,6 +1082,18 @@ def test_control_surfaces_the_apis_detail_not_just_its_slug(profile, runner, mon
     assert "unknown field 'kind'" in result.output
 
 
+def test_override_add_help_lists_every_override_field(profile, runner):
+    """Validation now rejects anything outside this vocabulary, so a field missing from the help is
+    a rule the author cannot write and cannot find out about."""
+    result = runner.invoke(cli.cli, ["override", "add", "--help"])
+    assert result.exit_code == 0
+    # The block itself, not substrings: `body` is a substring of `bodyContains` in the matcher
+    # block below it, so `field in output` passes with the `body` entry deleted.
+    block = result.output.split("An override accepts these fields", 1)[1].split("`match` accepts", 1)[0]
+    listed = {line.split()[0] for line in block.splitlines() if line.startswith("    ")}
+    assert listed == set(rules.OVERRIDE_FIELDS)
+
+
 def test_override_add_help_lists_every_matcher_field(profile, runner):
     """The capability that already existed but could not be found from the tool itself."""
     result = runner.invoke(cli.cli, ["override", "add", "--help"])

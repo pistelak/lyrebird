@@ -146,6 +146,84 @@ def test_coerces_float_delay_to_int():
     assert rules.validate_override({"mode": "replace", "delayMs": 1500.0})["delayMs"] == 1500
 
 
+@pytest.mark.parametrize("field", ["statsu", "bdoy", "delay_ms", "matches", "Mode"])
+def test_validate_override_rejects_an_unknown_top_level_field(field):
+    """A kept-but-ignored field is not a harmless extra: `statsu: 503` used to validate, persist and
+    answer 200, so the rule replied with something its author never wrote."""
+    override = {"match": {"path": "/api/items"}, "mode": "replace", "status": 200, field: 503}
+    with pytest.raises(rules.ValidationError) as caught:
+        rules.validate_override(override)
+    assert f"{field!r}" in str(caught.value)
+    assert "an override may only carry" in str(caught.value)
+
+
+def test_validate_override_reports_the_typo_before_the_error_it_causes():
+    """`{"mod": "replace"}` has two problems, and only one of them is real. Reporting the missing
+    `mode` sends the reader to the field they did not misspell."""
+    with pytest.raises(rules.ValidationError) as caught:
+        rules.validate_override({"mod": "replace", "match": {"path": "/api/items"}})
+    assert "'mod'" in str(caught.value)
+    assert "mode must be one of" not in str(caught.value)
+
+
+@pytest.mark.parametrize("notes", ["", "why this rule exists"])
+def test_validate_override_accepts_notes_as_a_string(notes):
+    """JSON has no comments and sessions are written by hand, so `notes` is the one field the engine
+    keeps without reading — and it must survive the round trip a session load makes."""
+    override = {"mode": "replace", "match": {"path": "/api/items"}, "status": 200, "notes": notes}
+    assert rules.validate_override(override)["notes"] == notes
+    loaded = rules.normalise_session({"overrides": [override]}, "s")
+    assert not loaded["_problems"]
+    assert loaded["overrides"][0]["notes"] == notes
+
+
+@pytest.mark.parametrize("notes", [None, 7, True, {"why": "x"}, ["x"]])
+def test_validate_override_rejects_non_string_notes(notes):
+    """Text or nothing. An explicit `null` is a mistake worth naming here, unlike the other optional
+    fields, because the only reason to write the key at all is to put words in it."""
+    with pytest.raises(rules.ValidationError, match="notes must be a string"):
+        rules.validate_override({"mode": "replace", "match": {"path": "/api/items"},
+                                 "status": 200, "notes": notes})
+
+
+EVERY_FIELD_RULES = {
+    "replace": {"id": "ovr_items", "active": True, "match": {"path": "/api/items"},
+                "mode": "replace", "delayMs": 250, "status": 201,
+                "headers": {"Content-Type": "application/json"}, "body": {"items": []},
+                "notes": "the empty-state screen"},
+    "patch": {"match": {"path": "/api/features"}, "mode": "patch",
+              "patch": {"features": [{"id": "BETA", "enabled": True}]},
+              "patchStrategy": "appendToArray"},
+    "sequenced": {"match": {"path": "/api/orders"}, "mode": "replace",
+                  "sequence": {"steps": [{"status": 202}, {"status": 200}]}},
+}
+
+
+@pytest.mark.parametrize("rule", list(EVERY_FIELD_RULES.values()), ids=list(EVERY_FIELD_RULES))
+def test_a_rule_using_every_documented_field_validates(rule):
+    """Between them these three use every field in OVERRIDE_FIELDS, so a field the vocabulary
+    advertises but some later check refuses fails here rather than in front of the author who read
+    the help and believed it."""
+    assert rules.validate_override(rule) == rule
+
+
+def test_the_documented_override_fields_are_all_exercised_above():
+    """The other half of the pairing: a field added to the vocabulary but to no rule above would let
+    the test pass while nothing proves validation accepts it."""
+    used = set().union(*(set(rule) for rule in EVERY_FIELD_RULES.values()))
+    assert used == set(rules.OVERRIDE_FIELDS)
+
+
+def test_normalise_session_drops_a_rule_with_an_unknown_field_and_names_it():
+    """A saved session written before this check loads with the rule gone and the field named — the
+    rule never did what its author meant, and silently keeping it is how that stayed invisible."""
+    session = rules.normalise_session(
+        {"overrides": [{"mode": "replace", "match": {"path": "/api/items"}, "statsu": 503}]}, "s")
+    assert session["overrides"] == []
+    assert len(session["_problems"]) == 1
+    assert "override[0]: unknown field 'statsu'" in session["_problems"][0]
+
+
 def test_normalise_session_drops_invalid_overrides_and_reports_them():
     session = rules.normalise_session(
         {"overrides": [{"mode": "replace", "id": "ok"}, {"mode": "bogus", "id": "bad"}]}, "s")
