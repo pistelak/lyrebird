@@ -5,6 +5,7 @@ import os
 import tempfile
 
 import pytest
+from click.testing import CliRunner
 
 # config resolves its paths at import from the environment. Pointed at a directory that does not
 # exist, nothing a test does by accident — a bare `configure()`, a `reload_profile()` — can reach
@@ -12,7 +13,13 @@ import pytest
 os.environ.setdefault("LYREBIRD_PROFILE", os.path.join(tempfile.gettempdir(), "lyrebird-tests-absent"))
 os.environ.setdefault("LYREBIRD_STATE_DIR", os.path.join(tempfile.gettempdir(), "lyrebird-tests-state"))
 
-import config  # must follow the environment defaults above
+# Every engine import must follow the environment defaults above: `config` resolves its paths at
+# import, and the rest import it.
+import api
+import config
+import netproxy
+import store
+import supervisor
 
 
 @pytest.fixture
@@ -46,3 +53,37 @@ def _restore_resolved_paths():
     down after monkeypatch has put the environment back."""
     yield
     config.configure()
+
+
+@pytest.fixture
+def runner():
+    return CliRunner()
+
+
+@pytest.fixture
+def fake_network(monkeypatch):
+    """A Wi-Fi service whose PAC is currently ours and enabled."""
+    state = {"service": "Wi-Fi", "restored": None, "terminated": []}
+
+    monkeypatch.setattr(netproxy, "active_service", lambda: state["service"])
+    monkeypatch.setattr(netproxy, "pac_status",
+                        lambda service: netproxy.PacStatus(netproxy.pac_url(), True, True))
+
+    def restore(service, url, enabled):
+        state["restored"] = (service, url, enabled)
+
+    monkeypatch.setattr(netproxy, "restore_pac", restore)
+    monkeypatch.setattr(supervisor, "_terminate", lambda pid, marker: state["terminated"].append((pid, marker)))
+    return state
+
+
+@pytest.fixture
+def offline(monkeypatch):
+    """Fails the test if anything reaches the proxy, the network or the store."""
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("an offline command must not talk to the proxy or construct a Store")
+
+    monkeypatch.setattr(api, "_control", refuse)
+    monkeypatch.setattr(api, "_health", refuse)
+    monkeypatch.setattr(netproxy, "active_service", refuse)
+    monkeypatch.setattr(store.Store, "__init__", refuse)

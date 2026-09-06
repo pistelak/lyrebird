@@ -48,6 +48,11 @@ src = ["."]
 # generated `noqa` comments arguing with stylistic opinions — which is noise, not quality.
 select = ["E", "F", "I", "B", "UP", "C4"]
 
+[tool.ruff.lint.isort]
+# `cli_doubles` is a test-suite module, not a dependency: `src` points at engine/, so without this
+# it sorts in with click and pytest.
+known-first-party = ["cli_doubles"]
+
 # No formatter. The code is already consistently styled, so a formatter's real benefit — ending
 # style arguments on a team — is worth nothing here, while it would explode the hand-packed
 # constant tables and rewrap the CLI strings whose line breaks track sentences.
