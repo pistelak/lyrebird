@@ -1,8 +1,8 @@
 """macOS network-service and PAC parsing.
 
-This is the module that rewrites the user's system proxy configuration, and until now it had no
-tests at all. Both parsers sit behind a single `_run` seam, so they can be exercised without
-touching the network or shelling out.
+This is the module that rewrites the user's system proxy configuration. The seam is
+`subprocess.run`, so everything above it — including `_run`'s translation of a non-zero exit into
+`NetworkSetupError` — is exercised without touching the network or shelling out.
 """
 
 import subprocess
@@ -13,17 +13,18 @@ import netproxy
 
 
 def fake_run(monkeypatch, stdout="", returncode=0, stderr=""):
-    """Replace the one subprocess seam. Records the argv of every call for assertions."""
+    """Replace the one subprocess seam. Records the argv of every call for assertions.
+
+    Only the exit status is faked; turning a non-zero one into `NetworkSetupError` is left to the
+    real `_run`, which is the point of patching this far down.
+    """
     calls = []
 
-    def _run(args, check=False):
+    def _subprocess_run(args, *rest, **kwargs):
         calls.append(args)
-        result = subprocess.CompletedProcess(args, returncode, stdout, stderr)
-        if check and returncode != 0:
-            raise netproxy.NetworkSetupError(f"`{' '.join(args)}` failed: {stderr or returncode}")
-        return result
+        return subprocess.CompletedProcess(args, returncode, stdout, stderr)
 
-    monkeypatch.setattr(netproxy, "_run", _run)
+    monkeypatch.setattr(netproxy.subprocess, "run", _subprocess_run)
     return calls
 
 
@@ -82,10 +83,10 @@ SERVICE_ORDER = """An asterisk (*) denotes that a network service is disabled.
 def test_active_service_maps_the_default_route_to_a_service_name(monkeypatch):
     outputs = iter(["   gateway: 192.0.2.1\n  interface: en0\n", SERVICE_ORDER])
 
-    def _run(args, check=False):
+    def _subprocess_run(args, *rest, **kwargs):
         return subprocess.CompletedProcess(args, 0, next(outputs), "")
 
-    monkeypatch.setattr(netproxy, "_run", _run)
+    monkeypatch.setattr(netproxy.subprocess, "run", _subprocess_run)
     assert netproxy.active_service() == "Wi-Fi"
 
 
@@ -97,10 +98,10 @@ def test_active_service_is_none_without_a_default_route(monkeypatch):
 def test_active_service_is_none_when_no_service_matches(monkeypatch):
     outputs = iter(["  interface: utun9\n", SERVICE_ORDER])
 
-    def _run(args, check=False):
+    def _subprocess_run(args, *rest, **kwargs):
         return subprocess.CompletedProcess(args, 0, next(outputs), "")
 
-    monkeypatch.setattr(netproxy, "_run", _run)
+    monkeypatch.setattr(netproxy.subprocess, "run", _subprocess_run)
     assert netproxy.active_service() is None
 
 
@@ -122,12 +123,10 @@ def fake_networksetup(monkeypatch, url="", enabled=False, *, fail=(), inert=()):
     state = {"url": url, "enabled": enabled}
     calls = []
 
-    def _run(args, check=False):
+    def _subprocess_run(args, *rest, **kwargs):
         calls.append(args)
         verb = args[1]
         if verb in fail:
-            if check:
-                raise netproxy.NetworkSetupError(f"`{' '.join(args)}` failed: 1")
             return subprocess.CompletedProcess(args, 1, "", "failed")
         if verb == "-getautoproxyurl":
             out = f"URL: {state['url'] or '(null)'}\nEnabled: {'Yes' if state['enabled'] else 'No'}\n"
@@ -140,7 +139,7 @@ def fake_networksetup(monkeypatch, url="", enabled=False, *, fail=(), inert=()):
                 state["enabled"] = args[3] == "on"
         return subprocess.CompletedProcess(args, 0, "", "")
 
-    monkeypatch.setattr(netproxy, "_run", _run)
+    monkeypatch.setattr(netproxy.subprocess, "run", _subprocess_run)
     return calls, state
 
 
