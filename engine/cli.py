@@ -478,6 +478,18 @@ def _snapshot_pac(status: netproxy.PacStatus) -> dict:
 @cli.command()
 def down() -> None:
     """Stop the proxy and restore the previous proxy configuration."""
+    config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
+    with open(config.lock_file(), "w") as lock:
+        # The same lock `up` and the watchdog take, held from before the runtime record is read
+        # until the cleanup is done. A watchdog repair in flight finishes before its parent is
+        # signalled — SIGTERM reaches the watchdog, not the `networksetup` it already started,
+        # which would otherwise switch the PAC back on after the restore had read back clean.
+        # And no repair can start afterwards: the record it checks is gone.
+        _acquire_lock(lock)
+        _down_locked()
+
+
+def _down_locked() -> None:
     runtime = config.read_runtime()
     health = _health()
 

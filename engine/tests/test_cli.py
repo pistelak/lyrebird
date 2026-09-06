@@ -522,6 +522,27 @@ def test_watchdog_clears_the_runtime_file_after_restoring(profile, runner, fake_
     assert not config.runtime_file().exists()
 
 
+def test_down_takes_the_lock_before_it_signals_the_watchdog_or_touches_the_pac(
+    profile, runner, fake_network, monkeypatch
+):
+    """A watchdog repair in flight holds the lock; `down` must wait for it. Signalling first only
+    kills the watchdog, not the `networksetup` it already started, and that child could re-enable
+    the PAC after `down`'s restore had read back clean — "stopped", with the PAC pointing at the
+    stopped proxy and its record deleted."""
+    config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
+    config.write_runtime({"proxyPid": 99, "watchdogPid": 98, "service": "Wi-Fi",
+                          "previousPac": {"url": "", "enabled": False}})
+    events = []
+    health_until_terminated(monkeypatch, fake_network, pid=99)
+    monkeypatch.setattr(cli, "_acquire_lock", lambda lock, timeout=0: events.append("lock"))
+    monkeypatch.setattr(cli, "_terminate", lambda pid, marker: events.append(f"terminate {marker}")
+                        or fake_network["terminated"].append((pid, marker)))
+    monkeypatch.setattr(netproxy, "restore_pac", lambda *a: events.append("restore"))
+
+    assert runner.invoke(cli.cli, ["down"]).exit_code == 0
+    assert events[:3] == ["lock", "terminate _watchdog", "restore"]
+
+
 def test_down_reports_a_proxy_that_did_not_stop(profile, runner, fake_network, monkeypatch):
     """SIGTERM is a request. Printing "stopped" over a proxy that is still serving is the lie this
     check exists to prevent."""
