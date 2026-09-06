@@ -43,21 +43,19 @@ lyrebird --profile PATH up --use NAME --simulator <udid>   # `xcrun simctl list 
 ```
 
 With exactly one iOS simulator booted you can leave it out. With several booted and no choice
-made, `up` and `trust-ca` **refuse and list the booted devices** instead of passing simctl's
-`booted` keyword, which `simctl help` says "will choose one of them" — and never reports which.
-Only booted, available **iOS** simulators count, so a paired Apple Watch does not make the choice
-ambiguous. Absent, shut-down, unavailable and non-iOS devices are named and the command exits
-non-zero; nothing silently falls back to another device. `status` reports the device the last
-`up` used (`simulator` in `--json`), and `lyrebird relaunch [BUNDLEID]` relaunches the app on
-that same device — use it instead of `xcrun simctl launch booted <bundleid>` mid-run.
+made, `up` and `trust-ca` **refuse and list the booted devices** rather than let simctl pick one
+for you. `status` reports the device the last `up` used (`simulator` in `--json`), and
+`lyrebird relaunch [BUNDLEID]` relaunches the app on that same device — use it instead of
+`xcrun simctl launch booted <bundleid>` mid-run.
 
-**It does not isolate traffic.** The PAC is installed on a network service and scoped by
-hostname, so every simulator on the Mac — and the Mac itself — routes the profile's hosts through
-the proxy. `--simulator` decides where the CA is trusted and which app is relaunched, nothing
-more. A device that already trusts the CA — one an earlier `up` selected, say, since switching
-devices does not untrust anything — keeps getting mocked responses; one that never trusted it
-fails TLS on those hosts. Either way its traffic is not left alone, so do not treat device
+**It does not isolate traffic.** The PAC is installed on a network service and scoped by hostname,
+so every simulator on the Mac — and the Mac itself — routes the profile's hosts through the proxy;
+`--simulator` only decides where the CA is trusted and which app is relaunched. Do not treat device
 selection as a way to run two scenarios side by side.
+
+[engine/README.md — Which simulator](engine/README.md#which-simulator) has the rest: how names and
+UDIDs are matched, which devices count as candidates, and what happens on a device that does or
+does not trust the CA.
 
 ## Six things worth knowing before you start
 
@@ -105,7 +103,9 @@ entry in `recent` and can never come from a rule that merely matched and lost.
 then gathers is reported under that id. A second reset, a rule replaced under the same id
 (`override add`), or a session switch ends that run and starts another — and the rule id is
 identical on the other side, so without `--run` a count belonging to the new run reads exactly like
-the one your test earned. `--run` refuses that substitution instead of reporting it as success.
+the one your test earned. `--run` refuses that substitution instead of reporting it as success. The
+run is re-checked on every poll, so a boundary destroyed while `--timeout` is waiting — the rule
+vanishing with a session switch, say — fails the assertion there rather than being waited out.
 
 With `--run`, 1 means the assertion was made and failed; 3 means it could not be made at all:
 
@@ -123,9 +123,12 @@ profile's proxy taking the port mid-test: its counters describe someone else's r
 fingerprint is compared on every poll, so the wait ends there instead of running to its timeout.
 
 Without `--run` the command keeps its older, weaker meaning: "has this rule answered in whichever
-run the proxy is in when I look", and every failure is exit 1, as it always was. That is fine for a
-one-shot check by hand. It is not enough for a suite that resets more than once, replaces rules, or
-switches sessions.
+run the proxy is in when I look", and every failure is exit 1. That is fine for a one-shot check by
+hand. It is not enough for a suite that resets more than once, replaces rules, or switches sessions.
+
+[engine/README.md — Proving a rule was in play](engine/README.md#proving-a-rule-was-in-play)
+describes what the proxy reports underneath: the `answers[]` entries, the three `runId` states, and
+where in the request the count is taken.
 
 **4. `status --json` is the state query.**
 
@@ -308,10 +311,10 @@ open from driving the proxy. `engine/README.md` has the endpoint list.
 One proxy holds the control port, so the CLI also names the profile it means with an
 `X-Lyrebird-Profile` header: run it with a `--profile` other than the one that is running and the
 call is refused with **409** `profile_mismatch` instead of quietly acting on the running profile.
-Two routes answer whoever asks: `/__mock__/health`, which is how `down` discovers that another
-profile's proxy holds the port and still restores the network, and `/proxy.pac`, which macOS
-fetches. Direct callers may omit the header. The check lives in the running proxy, so restart it
-(`lyrebird down && lyrebird up`) after upgrading, or nothing is enforced.
+`/__mock__/health` and `/proxy.pac` are unscoped and answer whoever asks. The check lives in the
+running proxy, so restart it (`lyrebird down && lyrebird up`) after upgrading.
+[engine/README.md — Admin API](engine/README.md#admin-api-__mock__) has the header, the error body
+and why those two routes are exempt.
 
 ## Scenarios that move between states
 
@@ -340,14 +343,11 @@ scoped to the run, so anything in it happened after your reset), and a run alrea
 without ever serving it **fails immediately**, which is the usual symptom of the app making a
 request you did not expect.
 
-`status --json` carries `sequences[]` with `nextStep`, `exhausted`, `hasOverrun`, per-step serve
-counts in `serves`, and a `runId` that changes on every reset. It also carries `answers[]` — one
-`{id, active, count, runId}` per rule in the active session: how many requests it has answered
-since the last reset, and which run those answers belong to. That is what `assert-answered` reads,
-and the `runId` is the same token `reset` returned for that rule and `sequences[]` reports for it —
-one run per rule, described by both views, not two identities to keep straight. Only
-`assert-answered --run` takes a run id back from you, though: `sequence wait` baselines itself on
-whichever run is current when it starts.
+`status --json` carries `sequences[]` for the rules that have one and `answers[]` for every rule in
+the active session — [Sequences](engine/README.md#sequences) and
+[Proving a rule was in play](engine/README.md#proving-a-rule-was-in-play) list what is in each. The
+`runId` in both is the token `reset` returned for that rule, but only `assert-answered --run` takes
+one back from you: `sequence wait` baselines itself on whichever run is current when it starts.
 
 Both lists are `null`, not `[]`, when the running proxy did not report them — a proxy started from
 an engine older than the field, or one that is not up at all. An empty list means "the engine
