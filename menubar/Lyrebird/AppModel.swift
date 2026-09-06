@@ -15,10 +15,16 @@ final class AppModel {
 
     private var pollTask: Task<Void, Never>?
     private var refreshGeneration = 0
-    private var client: MockClient { MockClient(base: Config.controlURL) }
+    private let injectedClient: MockClient?
+    /// Rebuilt per use so a control URL edited in Settings takes effect without a relaunch. A test
+    /// injects one instead, built on a stub session.
+    private var client: MockClient { injectedClient ?? MockClient(base: Config.controlURL) }
 
-    init() {
-        start()
+    /// The app calls this with no arguments. `autoStart: false` lets a test exercise one action
+    /// without the poll loop firing refreshes underneath it.
+    init(client: MockClient? = nil, autoStart: Bool = true) {
+        self.injectedClient = client
+        if autoStart { start() }
     }
 
     func start() {
@@ -80,7 +86,17 @@ final class AppModel {
         guard !busy else { return }
         busy = true
         defer { busy = false }
-        await client.activate(name)
+        do {
+            try await client.activate(name)
+            lastError = nil
+        } catch {
+            // Name the session: the menu lists several, and the common failure — a 404 — means
+            // this one went away between the last refresh and the click, which the bare message
+            // would not say.
+            lastError = "activate '\(name)': \(error.localizedDescription)"
+        }
+        // Refresh either way, so the stale list that produced the 404 is corrected in the same
+        // tick the error appears.
         await refresh()
     }
 
