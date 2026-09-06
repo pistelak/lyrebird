@@ -205,9 +205,9 @@ the CA.
 
 ## More
 
-`bin/lyrebird` has `init`, `up`, `down`, `status`, `use`, `recent`, `override`, `session`,
-`sequence`, `wait-ready`, `relaunch`, `trust-ca`, `untrust-ca` and `logs`. `bin/lb` is a shorter
-alias for it.
+`bin/lyrebird` has `init`, `up`, `down`, `status`, `use`, `recent`, `validate`, `explain-match`,
+`reset`, `assert-answered`, `wait-ready`, `sequence`, `override`, `session`, `relaunch`,
+`trust-ca`, `untrust-ca` and `logs`. `bin/lb` is a shorter alias for it.
 
 - [Engine guide](engine/README.md) — the full rule schema, matching order, control API, ports, tests
 - [Menu-bar app](menubar/README.md) — building and signing the SwiftUI client

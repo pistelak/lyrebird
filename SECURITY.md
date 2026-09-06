@@ -22,13 +22,11 @@ on this repository, rather than opening a public issue.
   every added certificate from that simulator, or erase the device. To rotate the CA, run
   `lyrebird down` first, delete the directory, then `up` — a running proxy is reused, so the CA
   is only regenerated when mitmdump restarts.
-  Trusting the CA on one device does not confine interception to it — see the PAC below: routing
-  is per network service and per hostname, so every simulator on the Mac (and the Mac itself)
-  goes through the proxy for the profile's hosts. What differs per device is only whether it
-  trusts the CA: a device that does — including one an *earlier* `up` trusted, since nothing
-  removes the certificate when you select a different simulator — receives mocked responses just
-  like the selected one; a device that does not fails TLS on those hosts. Neither is traffic that
-  was left alone.
+  Trusting the CA on one device does not confine interception to it: routing is per network
+  service and per hostname — see the PAC below — so every simulator on the Mac, and the Mac
+  itself, goes through the proxy for the profile's hosts. What differs per device is only whether
+  it trusts the CA, and neither answer leaves that device's traffic alone;
+  [engine/README.md — Which simulator](engine/README.md#which-simulator) says what each one gets.
 - **Changes your active network service's proxy settings.** It installs a PAC pointing at the local
   proxy. Your previous PAC URL and enabled state are recorded and restored by `lyrebird down`, and
   by the watchdog if the proxy dies. A PAC that isn't Lyrebird's is left untouched.
@@ -52,7 +50,7 @@ that:
   `request.json()` ignores Content-Type, so without this a `text/plain` form post would reach the
   API with no CORS preflight.
 
-Session, preset and operation names arrive from that API and become filesystem paths, so they are
+Session names arrive from that API and become filesystem paths, so they are
 validated as single path components and the resolved path is confirmed to stay inside the profile
 before any read, write, listing or unlink. This constrains *names supplied through the API*. It
 does not sandbox the profile directory itself: session files found at startup are read from

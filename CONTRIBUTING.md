@@ -25,9 +25,11 @@ CI runs both.
 ## Acceptance checks
 
 The two lines above are fast and hermetic: they replace the simulator, the network and the proxy
-with doubles. Nothing in them can see a regression in CA trust, relaunch ordering, PAC routing or
-teardown, because each of those lives in the part they replace. The acceptance checks are where
-those are exercised, by driving a real app in a real simulator through a real proxy:
+with doubles. They check the orchestration — what is called, in what order, with what result — but
+nothing in them can prove that CA trust, the relaunch, PAC routing or teardown work against a real
+simulator and a real network service, because each of those lives in the part they replace. The
+acceptance checks are where those are exercised, by driving a real app in a real simulator through
+a real proxy:
 
 ```bash
 (cd engine && LYREBIRD_ACCEPTANCE_SIMULATOR=<udid-or-name> \

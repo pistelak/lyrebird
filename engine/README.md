@@ -89,18 +89,19 @@ is why it lives in `~/.config` and neither of the above does.
 
 `up` prints a **🔴 INTERCEPT ACTIVE** banner and starts a watchdog that notices within a couple of
 seconds if the proxy dies and makes a best-effort attempt to put your previous proxy settings
-back, so a crash is unlikely to strand the Mac pointing at a dead port. There is no idle self-shutdown. After `up`, **relaunch the simulator app** (URLSession caches
-the proxy config), or set `simBundleId` in the profile and Lyrebird relaunches it for you.
+back, so a crash is unlikely to strand the Mac pointing at a dead port. There is no idle
+self-shutdown.
 
-`up --use NAME` selects the session — and rewinds its sequences — *before* that relaunch, so the
-app's launch requests are answered by the scenario you named rather than by whatever was last
-active; `use NAME` on its own affects only the requests that follow it. `up` launches nothing at
-all if `NAME` does not exist, did not load whole, or the running proxy is older than the CLI and
-cannot say which of the two it is: it says so, exits 1, and leaves the proxy running for you to
-`down`. That is the same verdict `lyrebird validate NAME` gives offline, arriving later and after
-the network has been rewired, which is why validating first is worth the second. `--no-relaunch`
-hands the launch to the caller — a UI-test runner that starts the app itself — and suppresses both
-the relaunch and the reminder to do one by hand; it cannot be combined with `--relaunch BUNDLE`.
+After `up`, **relaunch the simulator app** — URLSession caches the proxy config it saw at launch —
+or set `simBundleId` in the profile and Lyrebird relaunches it for you. `up --use NAME` selects the
+session and rewinds its sequences *before* that relaunch, and launches nothing at all if `NAME`
+does not exist, did not load whole, or the running proxy is too old to say which of the two it is:
+it says so, exits 1, and leaves the proxy running for you to `down`. `--no-relaunch` hands the
+launch to the caller — a UI-test runner that starts the app itself — suppressing both the relaunch
+and the reminder to do one by hand; it cannot be combined with `--relaunch BUNDLE`.
+
+[The loop](../AGENTS.md#the-loop) in AGENTS.md has the reasoning: why selecting the scenario and
+relaunching the app are one command, and what to do when something else owns the launch.
 
 > **First run:** `up` generates Lyrebird's CA under
 > `~/Library/Application Support/Lyrebird/mitmproxy/` and trusts it in the booted simulator.
@@ -184,9 +185,8 @@ and are not checked. `GET /health` and `/proxy.pac` answer everyone — health i
 out which profile is running (`down` needs that across profiles), and macOS fetches the PAC. Because
 that reading is unscoped, a command that *interprets* it compares `profileFingerprint` itself: `up`
 refuses, and `status` reports no interception and exits non-zero rather than presenting another
-profile's proxy as this one's. The
-check runs in the proxy, so a proxy started before this change enforces nothing until you restart it
-(`lyrebird down && lyrebird up`).
+profile's proxy as this one's. The check runs in the proxy, so restart it
+(`lyrebird down && lyrebird up`) after upgrading.
 
 ### Override shape
 
@@ -209,7 +209,7 @@ it at least a path.
 
 An override supports these fields and no others — an unknown one is rejected rather than kept,
 because a field the engine ignores is a rule that answers with a default instead of what its author
-wrote (`statsu: 503` used to load cleanly and reply 200):
+wrote — a rule carrying `statsu: 503` would otherwise load cleanly and reply 200:
 
 | field | |
 |---|---|
@@ -240,8 +240,10 @@ because a typo'd field is not a stricter matcher but a missing constraint:
 | `query` | Query parameters that must all be present with these exact values. Others are ignored. |
 | `bodyContains` | A substring that must appear in the request body. |
 
-Both tables generate `lyrebird override add --help`, so the CLI can never advertise a different
-vocabulary from the one validation accepts.
+The help text of `lyrebird override add` and the validation that accepts or rejects a rule share
+one vocabulary, `OVERRIDE_FIELD_HELP` and `MATCHER_FIELD_HELP` in `rules.py`, so the CLI cannot
+advertise a field validation would refuse. The two tables above mirror that vocabulary; they are
+maintained by hand, so keep them in step with it.
 
 `delayMs` delays a matched response (that flow only). Most-specific wins: fewer wildcards first,
 then a longer path, then more constraints — so a rule that also pins a query parameter beats a
@@ -283,8 +285,8 @@ cursor; `advanceOn` decides what moves the cursor.
 Omit `advanceOn` and it defaults to **`self`** — the cursor moves each time this rule answers, which
 is what you want for "the first attempt fails, the second succeeds". Give it a matcher and the rule
 becomes **idempotent**: repeated calls all return the current step, and only a request matching that
-matcher moves it on. That is what makes delete-then-refresh reliable, because a screen that fetches
-its list twice on appear no longer desynchronises the scenario.
+matcher moves it on. That is what makes delete-then-refresh reliable: a screen that fetches
+its list twice on appear does not desynchronise the scenario.
 
 `self` is not the same as a matcher copied from `match`. Matching order picks the *most specific*
 rule, so a rule whose matcher fits a request may not be the rule that answered it — advancing on a
@@ -336,21 +338,13 @@ never credited, a patch dropped for a non-JSON upstream is never credited, an ex
 is, because it did answer. The evidence also outlives the request's entry in the bounded `/recent`
 buffer.
 
-`lyrebird assert-answered ID` exits non-zero unless that rule has answered since the reset, which is
-what lets a UI test fail when its mock never applied — a negative assertion ("this section is not
-shown") otherwise passes identically whether the override applied or never matched.
-
-Rule ids are reused, runs are not. `lyrebird reset ID --json` hands back the run id, and
-`assert-answered ID --run RUNID` requires the count to belong to it: a second reset, a rule replaced
-under the same id, or a session switch between the action and the assertion starts a new run whose
-count would otherwise be indistinguishable from the one the test earned. The run is re-checked on
-every poll, so a boundary destroyed mid-wait — including the rule vanishing with a session switch —
-fails the assertion instead of being waited out. With `--run`, exit 1 means the assertion was made
-in your run and failed, and exit 3 that it could not be made: the run moved, the rule is gone, or
-nothing could be read about it — an unreachable proxy, one too old to report runs, or another
-profile's proxy holding the port, which is re-checked on every poll too. Without `--run` the
-older, weaker reading applies — whichever run is current when the command looks — and every failure
-is exit 1, as before.
+`lyrebird assert-answered ID` reads `answers[]` and exits non-zero unless the rule has answered
+since the reset; `--run RUNID`, the token `lyrebird reset ID --json` hands back, additionally
+requires the count to belong to that run, so a boundary that moved under the test fails rather than
+passing on someone else's count.
+[Six things worth knowing before you start](../AGENTS.md#six-things-worth-knowing-before-you-start),
+item 3, has the exit-code table — 1 for an assertion made and failed, 3 for one that could not be
+made — and how a harness should act on each.
 
 Sequences are `replace`-only. A `patch` needs the upstream response, so it could not answer locally
 when exhausted, and a patch skipped by a streamed or non-JSON upstream would spend a step the app
@@ -374,43 +368,21 @@ missing the rule a test depends on. Two commands answer that from the file alone
 network change, nothing written to the profile:
 
 ```bash
-lyrebird validate                     # every file in <profile>/sessions/
-lyrebird validate orders-outage       # one of them
-lyrebird validate --json              # machine-readable
+lyrebird validate orders-outage                                          # does it load whole?
+lyrebird explain-match --session orders-outage GET '/api/v1/orders/42'   # which rule would win?
 ```
 
-```
-✓ orders-outage            1 rule(s)
-✗ partial                  1 rule(s) kept, 2 dropped
-    partial.json: override[1]: match: unknown field 'paths' — a matcher may only carry method, path, query, bodyContains
-    partial.json: override[2]: duplicate id 'ovr_ok' — ids must be unique within a session; this rule was skipped
-✗ broken                   not loaded at all
-    skipped broken.json: Expecting property name enclosed in double quotes: line 1 column 2 (char 1)
-```
-
-Exit code 0 only when every session named loads whole. `--json` gives
-`{"ok": bool, "problems": [], "sessions": [{"name", "file", "loaded", "ok", "overrideCount",
-"problems": []}]}`, where `loaded` false means the file was refused entirely and `overrideCount` is
-then `null` rather than `0` — a refused file has no rule count, and zero reads as a session that
-loaded empty. The top-level `problems` holds what went wrong with the *request* rather than with a
-file: a name that names nothing, a name that could not be one, a profile with no sessions in it.
-Every failure comes back in this shape, so `--json` never has to be parsed as prose.
-
-`explain-match --session NAME` runs the same ranking as the live command against a file:
-
-```bash
-lyrebird explain-match --session orders-outage GET '/api/v1/orders/42'
-```
-
-Output and `--json` shape match the live command, plus a `problems` list (present only with
-`--session`, because only then is there a file whose load problems were actually read). It exits
-non-zero if the file did not load whole even when a rule was selected. The proxy drops those rules
-too, so the winner named is the one it would pick; what is not true is that the ranking covers the
-rules in the file — and "my rule was never loaded" is the question this command gets run to answer.
+`validate` exits 0 only when every session named loads whole, and `explain-match --session` exits
+non-zero when the file did not load whole even if it selected a rule. Under `--json` the first
+gives `{"ok", "problems", "sessions": [{"name", "file", "loaded", "ok", "overrideCount",
+"problems"}]}` and the second gives the live command's shape plus a `problems` list, so neither
+has to be parsed as prose.
 
 Both read session files through `store.load_session_file`, the function `Store._load` loops over at
 startup, and rank with `rules.find_override` — so the verdict is the engine's, not a second opinion
 about it.
+
+[Making a scenario](../AGENTS.md#making-a-scenario) has the transcripts and how to read them.
 
 ## Files
 
@@ -424,6 +396,18 @@ addon) · `rules.py` (match/patch/validate, unit-tested) · `control.py` (aiohtt
 .venv/bin/python -m pytest tests/ -q
 ```
 
-Covers rule matching and merging, override validation, path containment, the control API's
-Host/Origin/Content-Type guard, and host-scoping agreement between the addon, mitmproxy's
-`allow_hosts` and the generated PAC.
+`test_rules.py` covers matching order, patch merging, sequences and override validation;
+`test_store.py` and `test_control.py` cover session persistence, path containment and the control
+API's Host/Origin/Content-Type guard; `test_config.py` pins the host-scoping agreement between the
+addon, mitmproxy's `allow_hosts` and the generated PAC, with `test_addon.py`, `test_netproxy.py`
+and `test_launcher.py` covering the mitmproxy options, the `networksetup` parsers and how
+`bin/lyrebird` finds its engine.
+
+The largest of them is `test_cli.py`, and it is almost entirely failure paths — an unreadable
+runtime file, a foreign PAC, nothing to stop, a proxy running someone else's profile — for `up`,
+`down`, the watchdog, `status` and the assertion commands.
+
+All of it is hermetic — the simulator, the network and the proxy are replaced with doubles — so it
+checks the orchestration but cannot prove that CA trust, relaunch, PAC routing or teardown work
+against a real simulator and a real network service; [CONTRIBUTING.md](../CONTRIBUTING.md) has the
+acceptance checks that do, and when to run them.
