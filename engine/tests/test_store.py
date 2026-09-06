@@ -286,34 +286,16 @@ def test_override_id_cannot_be_nulled_by_the_payload(profile):
     assert kept["id"] == "chosen"
 
 
-def test_import_session_normalises_and_persists(profile):
-    """The only path that merges an outside payload into a session."""
+def test_create_refuses_a_name_that_is_already_taken(profile):
+    """Silently replacing a session someone else may be using is a delete without a `delete`."""
     subject = make_store(profile)
-    name = subject.import_session({"session": {
-        "name": "imported",
-        "overrides": [{"id": "keep", "mode": "replace", "match": {"path": "/a"}}],
-    }})
-    assert name == "imported"
-    assert [o["id"] for o in subject.sessions["imported"]["overrides"]] == ["keep"]
-    saved = json.loads((profile / "sessions" / "imported.json").read_text())
-    assert "_problems" not in saved
-
-
-@pytest.mark.parametrize("overrides", [
-    pytest.param([{"id": "keep", "mode": "replace"}, {"id": "drop", "mode": "nonsense"}],
-                 id="invalid-override"),
-    pytest.param([{"id": "dup", "mode": "replace", "match": {"path": "/a"}},
-                  {"id": "dup", "mode": "replace", "match": {"path": "/b"}}], id="duplicate-id"),
-])
-def test_import_refuses_a_payload_it_cannot_keep_whole(profile, overrides):
-    """A file on disk is reported-and-dropped: it is in front of you, and the proxy must still
-    start. An import is an API call, and answering "imported" to a payload whose second override was
-    discarded tells the caller their rule is installed when it is not."""
-    subject = make_store(profile)
-    with pytest.raises(rules.ValidationError):
-        subject.import_session({"session": {"name": "imported", "overrides": overrides}})
-    assert "imported" not in subject.sessions, "nothing may be persisted from a refused import"
-    assert not (profile / "sessions" / "imported.json").exists()
+    subject.create_session("taken")
+    subject.set_active("taken")
+    kept = subject.add_override({"id": "keep", "mode": "replace", "match": {"path": "/a"}})
+    with pytest.raises(FileExistsError):
+        subject.create_session("taken")
+    assert [o["id"] for o in subject.sessions["taken"]["overrides"]] == [kept["id"]], \
+        "the refused create must not have touched the existing session"
 
 
 @pytest.mark.parametrize("overrides", [
@@ -321,37 +303,14 @@ def test_import_refuses_a_payload_it_cannot_keep_whole(profile, overrides):
     pytest.param(None, id="null"),
     pytest.param("[]", id="string"),
 ])
-def test_import_refuses_overrides_that_are_not_a_list(profile, overrides):
-    """Substituting [] for a malformed `overrides` would persist an empty session and answer
-    "imported" — success reported for a payload none of whose rules were kept."""
-    subject = make_store(profile)
-    with pytest.raises(rules.ValidationError, match="overrides must be a list"):
-        subject.import_session({"session": {"name": "imported", "overrides": overrides}})
-    assert "imported" not in subject.sessions
-    assert not (profile / "sessions" / "imported.json").exists()
-
-
-def test_import_refuses_a_name_that_is_already_taken(profile):
-    """The same refusal `create_session` makes — silently replacing a session someone else may be
-    using is a delete without a `delete`."""
-    subject = make_store(profile)
-    subject.create_session("taken")
-    subject.set_active("taken")
-    kept = subject.add_override({"id": "keep", "mode": "replace", "match": {"path": "/a"}})
-    with pytest.raises(FileExistsError):
-        subject.import_session({"session": {"name": "taken", "overrides": []}})
-    assert [o["id"] for o in subject.sessions["taken"]["overrides"]] == [kept["id"]], \
-        "the refused import must not have touched the existing session"
-
-
-def test_import_session_rejects_an_unsafe_name(profile):
-    subject = make_store(profile)
-    assert subject.import_session({"name": "../escape", "overrides": []}) is None
-
-
-def test_import_session_rejects_a_non_object(profile):
-    subject = make_store(profile)
-    assert subject.import_session({"session": []}) is None
+def test_a_session_whose_overrides_are_not_a_list_is_reported_not_emptied(profile, overrides):
+    """`normalise_session` substitutes [] for a malformed `overrides`, so the file loads — and the
+    problem has to be on the record, or a scenario with every rule lost reads as one with none."""
+    (profile / "sessions" / "broken.json").write_text(json.dumps(
+        {"name": "broken", "overrides": overrides}), encoding="utf-8")
+    session, problems = store.load_session_file(profile / "sessions" / "broken.json")
+    assert session is not None and session["overrides"] == []
+    assert problems == ["broken.json: overrides must be a list"]
 
 
 def test_a_created_session_does_not_inherit_the_problems_of_the_file_it_replaces(profile):
@@ -576,15 +535,6 @@ def test_replacing_a_rule_by_id_drops_its_cursor(profile):
     subject.add_override(dict(SEQ))
     _advanced_once(subject)
     subject.add_override({**SEQ, "sequence": {"steps": [{"status": 500}]}})
-    assert subject.sequence_states()[0]["nextStep"] == 1
-
-
-def test_removing_a_rule_drops_its_cursor(profile):
-    subject = store.Store()
-    subject.add_override(dict(SEQ))
-    _advanced_once(subject)
-    assert subject.remove_override("seq") is True
-    subject.add_override(dict(SEQ))
     assert subject.sequence_states()[0]["nextStep"] == 1
 
 
@@ -914,21 +864,6 @@ def test_a_replacement_whose_write_fails_leaves_a_captured_slot_crediting_the_li
         "and the run the caller was told about is still the one being counted"
 
 
-def test_a_rule_whose_removal_cannot_be_written_stays_live(profile, monkeypatch):
-    subject = store.Store()
-    subject.add_override(dict(SEQ))
-    _advanced_once(subject)
-    before = (profile / "sessions" / "default.json").read_bytes()
-
-    _refuse_writes(monkeypatch)
-    with pytest.raises(OSError):
-        subject.remove_override("seq")
-
-    assert [o["id"] for o in subject.active_overrides()] == ["seq"]
-    assert subject.sequence_states()[0]["nextStep"] == 2, "the cursor belongs to a rule still live"
-    assert (profile / "sessions" / "default.json").read_bytes() == before
-
-
 def test_overrides_stay_live_when_the_clear_cannot_be_written(profile, monkeypatch):
     subject = store.Store()
     subject.add_override(dict(SEQ))
@@ -954,20 +889,6 @@ def test_a_session_whose_write_fails_does_not_exist(profile, monkeypatch, clone_
 
     assert "scratch" not in subject.sessions
     assert not (profile / "sessions" / "scratch.json").exists()
-
-
-def test_an_import_whose_write_fails_does_not_exist(profile, monkeypatch):
-    subject = store.Store()
-
-    _refuse_writes(monkeypatch)
-    with pytest.raises(OSError):
-        subject.import_session({"session": {
-            "name": "imported",
-            "overrides": [{"id": "keep", "mode": "replace", "match": {"path": "/a"}}],
-        }})
-
-    assert "imported" not in subject.sessions
-    assert not (profile / "sessions" / "imported.json").exists()
 
 
 def test_a_switch_whose_pointer_write_fails_does_not_happen(profile, monkeypatch):

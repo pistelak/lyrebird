@@ -251,20 +251,18 @@ def test_health_does_not_blame_a_session_for_a_file_merely_named_after_it(profil
     assert body["sessionsNotWhole"] == {}, "orders-outage loaded whole and must not be blamed"
 
 
-def test_health_forgets_a_session_once_a_good_one_is_imported_over_it(profile):
-    """The recovery path. A malformed `orders-outage.json` is how the entry gets there; importing
-    a good session under that name is what an operator does about it, and the point of doing it is
-    that `up --use orders-outage` stops refusing. An entry left behind would install every rule and
-    go on refusing to launch the app over a file that no longer decides anything."""
+def test_health_forgets_a_session_once_a_good_one_is_created_over_it(profile):
+    """The recovery path. A malformed `orders-outage.json` is how the entry gets there; creating
+    a session under that name is what an operator does about it, and the point of doing it is
+    that `up --use orders-outage` stops refusing. An entry left behind would go on refusing to
+    launch the app over a file that no longer decides anything."""
     (profile / "sessions" / "orders-outage.json").write_text("{ not json", encoding="utf-8")
 
-    def import_a_good_one(subject):
+    def create_a_good_one(subject):
         assert subject.sessions_not_whole["orders-outage"], "the malformed file was recorded"
-        assert subject.import_session({"name": "orders-outage", "overrides": [
-            {"match": {"method": "GET", "path": "/api/v1/orders/*"},
-             "mode": "replace", "status": 500}]}) == "orders-outage"
+        subject.create_session("orders-outage")
 
-    status, _, body = call(profile, "GET", "/__mock__/health", prepare=import_a_good_one)
+    status, _, body = call(profile, "GET", "/__mock__/health", prepare=create_a_good_one)
 
     assert status == 200
     # Empty is what the CLI reads: `up --use orders-outage` finds no problems and goes on to relaunch.
@@ -382,37 +380,16 @@ def test_reset_is_still_behind_the_content_type_guard(profile):
     assert status == 415
 
 
-def test_importing_a_session_that_cannot_be_kept_whole_is_refused(profile):
-    """Answering 200 to a payload whose second override was discarded tells the caller their rule
-    is installed when it is not."""
-    status, _, body = call(profile, "POST", "/__mock__/sessions/import", json_body={
-        "session": {"name": "imp", "overrides": [
-            {"id": "dup", "mode": "replace", "match": {"path": "/a"}},
-            {"id": "dup", "mode": "replace", "match": {"path": "/b"}}]}})
-    assert status == 400
-    assert "duplicate id" in body["detail"]
-
-
-def test_importing_over_an_existing_session_is_a_conflict(profile):
-    """AGENTS.md promises the refusal: importing a session that already exists must not silently
+def test_creating_a_session_that_already_exists_is_a_conflict(profile):
+    """AGENTS.md promises the refusal: creating a session that already exists must not silently
     replace it."""
     seed(profile)
-    payload = {"session": {"name": "imp", "overrides": []}}
-    status, _, _ = call(profile, "POST", "/__mock__/sessions/import", json_body=payload)
+    payload = {"name": "scratch"}
+    status, _, _ = call(profile, "POST", "/__mock__/sessions", json_body=payload)
     assert status == 200
-    status, _, body = call(profile, "POST", "/__mock__/sessions/import", json_body=payload)
+    status, _, body = call(profile, "POST", "/__mock__/sessions", json_body=payload)
     assert status == 409
     assert body["error"] == "session_exists"
-
-
-def test_importing_overrides_that_are_not_a_list_is_refused(profile):
-    """`normalise_session` used to swap a malformed `overrides` for [] without recording a
-    problem, so the import persisted an empty session and answered 200."""
-    seed(profile)
-    status, _, body = call(profile, "POST", "/__mock__/sessions/import", json_body={
-        "session": {"name": "imp", "overrides": {"keep": {"mode": "replace"}}}})
-    assert status == 400
-    assert "overrides must be a list" in body["detail"]
 
 
 def test_a_rule_with_an_unknown_field_is_refused_and_not_installed(profile):
@@ -438,17 +415,6 @@ def test_a_rule_with_an_unknown_field_is_refused_and_not_installed(profile):
     assert body["error"] == "invalid_payload"
     assert "'statsu'" in body["detail"]
     assert listed == [], "a refused rule must leave nothing behind"
-
-
-def test_importing_a_session_whose_rule_carries_an_unknown_field_is_refused(profile):
-    """Import is all-or-nothing, and the file must not appear: a session on disk with the rule
-    dropped is the same lie as answering 200."""
-    status, _, body = call(profile, "POST", "/__mock__/sessions/import", json_body={
-        "session": {"name": "imp", "overrides": [
-            {"mode": "replace", "match": {"path": "/api/items"}, "statsu": 503}]}})
-    assert status == 400
-    assert "'statsu'" in body["detail"]
-    assert not (profile / "sessions" / "imp.json").exists()
 
 
 # MARK: - Answer evidence

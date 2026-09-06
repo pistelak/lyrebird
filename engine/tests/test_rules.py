@@ -441,8 +441,8 @@ def test_advance_matcher_is_none_for_the_self_default():
 # MARK: - Unique ids
 
 def test_duplicate_override_ids_are_reported_and_dropped():
-    """Ids address a rule: add replaces by id, remove deletes every rule carrying one, and sequence
-    state is keyed by it. Two rules sharing an id would share a cursor."""
+    """Ids address a rule: add replaces by id, reset names one by id, and sequence state is keyed
+    by it. Two rules sharing an id would share a cursor."""
     session = rules.normalise_session({"overrides": [
         {"id": "dup", "mode": "replace", "match": {"path": "/a"}},
         {"id": "dup", "mode": "replace", "match": {"path": "/b"}},

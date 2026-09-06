@@ -176,13 +176,6 @@ def make_app(store: Store, meta_provider: Callable[[], dict[str, Any]]) -> web.A
         store.clear_overrides()
         return web.json_response({"cleared": cleared, "session": store.active_name})
 
-    @routes.delete("/__mock__/overrides/{id}")
-    async def overrides_remove(request: web.Request) -> web.StreamResponse:
-        if not store.remove_override(request.match_info["id"]):
-            return web.json_response({"error": "unknown_override", "id": request.match_info["id"]},
-                                     status=404)
-        return web.json_response({"removed": request.match_info["id"]})
-
     # MARK: - Run state
 
     @routes.post("/__mock__/reset")
@@ -236,23 +229,6 @@ def make_app(store: Store, meta_provider: Callable[[], dict[str, Any]]) -> web.A
                                       "detail": f"no session named '{name}' in this profile"},
                                      status=404)
         return web.json_response({"active": store.active_name, "previous": previous})
-
-    @routes.get("/__mock__/sessions/{name}/export")
-    async def sessions_export(request: web.Request) -> web.StreamResponse:
-        session = store.export_session(request.match_info["name"])
-        if session is None:
-            return web.json_response({"error": "unknown_session"}, status=404)
-        return web.json_response(session)
-
-    @routes.post("/__mock__/sessions/import")
-    async def sessions_import(request: web.Request) -> web.StreamResponse:
-        try:
-            name = store.import_session(await _safe_json(request))
-        except FileExistsError as error:
-            return web.json_response({"error": "session_exists", "name": str(error)}, status=409)
-        if name is None:
-            return web.json_response({"error": "session_name_required"}, status=400)
-        return web.json_response({"imported": name})
 
     @routes.delete("/__mock__/sessions/{name}")
     async def sessions_delete(request: web.Request) -> web.StreamResponse:

@@ -554,7 +554,7 @@ def derived_id(override: Mapping[str, Any]) -> str:
 
 
 def normalise_session(session: Any, name: str) -> dict:
-    """Coerce a session read from disk or an import payload into a shape the store can rely on.
+    """Coerce a session read from disk into a shape the store can rely on.
 
     Two failure grades, deliberately different: an invalid *override* is dropped into `_problems`
     rather than taking the whole session (or the proxy) down, and the caller reports it; a session
@@ -590,8 +590,8 @@ def normalise_session(session: Any, name: str) -> dict:
     raw_overrides = result.get("overrides")
     if not isinstance(raw_overrides, list):
         # An absent key is a legitimately empty session. A present one that is not a list is a
-        # payload whose rules cannot be kept — substituting [] without saying so would persist an
-        # empty session and report success, which is the exact lie strict import exists to refuse.
+        # file whose rules cannot be kept — substituting [] without saying so would load an empty
+        # session and report nothing, so a scenario with every rule lost reads as one with none.
         if "overrides" in result:
             problems.append("overrides must be a list")
         raw_overrides = []
@@ -601,7 +601,7 @@ def normalise_session(session: Any, name: str) -> dict:
         except ValidationError as error:
             problems.append(f"override[{index}]: {error}")
             continue
-        # An id is only needed to address the rule later (delete it, or show what matched). Writing
+        # An id is only needed to address the rule later (replace or reset it, or show what matched). Writing
         # a session by hand is the documented workflow, so derive one rather than dropping the rule
         # for omitting something the author had no reason to invent. Derived from the content, so
         # it stays the same across restarts without rewriting the file.
@@ -610,10 +610,10 @@ def normalise_session(session: Any, name: str) -> dict:
         # `matched: null`, which reads as "nothing answered".
         if validated.get("id") is None:
             validated["id"] = derived_id(validated)
-        # Ids address a rule: `add_override` replaces by id, `remove_override` deletes *every* rule
-        # carrying one, and sequence state is keyed by it. Two rules sharing an id therefore share a
-        # cursor and cannot be removed independently — so the duplicate is reported and dropped
-        # rather than loaded into a session where it would misbehave quietly.
+        # Ids address a rule: `add_override` replaces by id, and sequence state is keyed by it. Two
+        # rules sharing an id would share a cursor and could not be replaced independently — so the
+        # duplicate is reported and dropped rather than loaded into a session where it would
+        # misbehave quietly.
         if validated["id"] in seen_ids:
             problems.append(
                 f"override[{index}]: duplicate id {validated['id']!r} — ids must be unique within a "

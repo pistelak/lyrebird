@@ -42,9 +42,9 @@ the path is resolved once at startup, and reaching the same directory through a 
 name is the same profile. Inside it, what counts is where a path *resolves*, not whether it is a
 link: a session file must resolve under the resolved `sessions/` directory *and* under the resolved
 profile. A `sessions/` linked out of the profile therefore fails every write that touches a session
-file — including `session new`, `session rm`, `override add`, `override clear`,
-`DELETE /overrides/{id}` and `POST /sessions/import` — with `path escapes …`; a single file linked
-out, or into a sibling directory inside the profile, fails only the writes to that session.
+file — including `session new`, `session rm`, `override add` and `override clear` — with
+`path escapes …`; a single file linked out, or into a sibling directory inside the profile, fails
+only the writes to that session.
 
 Reads are held to the same rule, so such a file is not loaded at all: startup skips it with
 `path escapes …` in its load problems, and `lyrebird validate` names it. That is the point — a
@@ -158,16 +158,14 @@ and what the PAC advertises — those are deliberately separate settings.
 - `POST /reset` — start a fresh run in the active session: rewind sequence cursors and clear answer
   counts, for every rule or one named with `{"id": ...}`. Returns `{"session": …, "reset": {id:
   runId}}` — the run id per rule is what binds a later assertion to this boundary
-- `GET|POST /overrides`, `DELETE /overrides/{id}` — act on the **active session**
+- `GET|POST /overrides` — act on the **active session**
 - `DELETE /overrides` — **destructive**: deletes every override in the active session and rewrites
   its file. The only endpoint that does this.
-- `GET /sessions` · `POST /sessions` · `PUT /sessions/active`
-  · `GET /sessions/{name}/export` · `POST /sessions/import` · `DELETE /sessions/{name}`
+- `GET /sessions` · `POST /sessions` · `PUT /sessions/active` · `DELETE /sessions/{name}`
 
-`POST /sessions/import` refuses (**400**) a payload it cannot keep whole — an override that fails
-validation, or two sharing an id — and persists nothing. A session *file* is instead
-reported-and-dropped at startup, because the file is in front of you and the proxy must still start;
-an import is an API call, and reporting success for a rule that was discarded is worse than refusing.
+`POST /overrides` refuses (**400**) a rule that fails validation and installs nothing. A session
+*file* is instead reported-and-dropped at startup, because the file is in front of you and the
+proxy must still start; an API call answering 200 for a rule it discarded is worse than refusing.
 
 A write whose session file resolves outside `sessions/` or outside the profile is refused with
 **400** `{"error": "invalid_name", "detail": "path escapes …"}` before anything live changes —
@@ -230,7 +228,7 @@ wrote (`statsu: 503` used to load cleanly and reply 200):
 
 `notes` is the only free-text field — JSON has no comments, and a rule usually needs a sentence
 saying why it exists. At startup an override that carries an unknown field is reported and skipped,
-naming the field; the rest of its session still loads. An import or `override add` is refused outright.
+naming the field; the rest of its session still loads. An `override add` is refused outright.
 
 `match` supports these fields and no others — an unknown one is rejected rather than ignored,
 because a typo'd field is not a stricter matcher but a missing constraint:
