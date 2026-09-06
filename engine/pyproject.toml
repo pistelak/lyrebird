@@ -20,6 +20,16 @@ license = "MIT"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]     # flat layout: puts engine/ on sys.path so tests can `import config`
+markers = [
+    "acceptance: drives a real simulator, a real proxy and the Mac's proxy settings (needs Xcode; see CONTRIBUTING.md)",
+]
+# The default run is the fast one, and stays exactly what it was: `pytest tests/ -q` collects
+# tests/acceptance and deselects every check in it. The acceptance run asks for them explicitly —
+# `pytest -m acceptance tests/acceptance -q` — and a `-m` on the command line replaces this one.
+# The marker is not left to each module to remember: tests/acceptance/conftest.py applies it to
+# everything it collects, so a check added there without it cannot join the fast suite and rewire
+# somebody's network.
+addopts = "-m 'not acceptance'"
 # mitmproxy's transitive dependencies emit deprecation warnings we cannot act on; silencing them
 # keeps a real warning from our own code visible.
 filterwarnings = [

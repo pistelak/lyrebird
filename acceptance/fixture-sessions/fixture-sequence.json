@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "name": "fixture-sequence",
+  "notes": "A two-step sequence with no advanceOn, so the trigger is the rule's own calls: the fixture app makes exactly one request per launch, so the first launch gets step 1 and the second gets step 2. onExhausted is left at the default `error`, which means an unplanned third request answers 500 and shows up in the app's own record rather than passing for a repeat of step 2.",
+  "verified": false,
+  "overrides": [
+    {
+      "id": "ovr_fixture_sequence",
+      "match": { "method": "GET", "path": "/api/v1/fixture" },
+      "mode": "replace",
+      "sequence": {
+        "steps": [
+          {
+            "status": 200,
+            "body": {
+              "scenario": "fixture-sequence",
+              "step": 1,
+              "marker": "LYREBIRD-FIXTURE-STEP-ONE"
+            }
+          },
+          {
+            "status": 200,
+            "body": {
+              "scenario": "fixture-sequence",
+              "step": 2,
+              "marker": "LYREBIRD-FIXTURE-STEP-TWO"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

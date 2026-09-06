@@ -22,6 +22,104 @@ From the repository root. Each line is a subshell, so neither depends on the oth
 
 CI runs both.
 
+## Acceptance checks
+
+The two lines above are fast and hermetic: they replace the simulator, the network and the proxy
+with doubles. Nothing in them can see a regression in CA trust, relaunch ordering, PAC routing or
+teardown, because each of those lives in the part they replace. The acceptance checks are where
+those are exercised, by driving a real app in a real simulator through a real proxy:
+
+```bash
+(cd engine && LYREBIRD_ACCEPTANCE_SIMULATOR=<udid-or-name> \
+   .venv/bin/python -m pytest -m acceptance tests/acceptance -q)
+```
+
+**Prerequisites.** Xcode with a simulator runtime, `xcodegen` (`brew install xcodegen`), and the
+engine venv from *Setup*. Exactly one simulator may be booted while they run: the harness passes
+`up --simulator` so the CA and the relaunch are bound to the device it means, but it still installs
+the app and reads its container itself, and a second booted device makes "which one" a question
+nothing here can answer. Boot one yourself, or name one in `LYREBIRD_ACCEPTANCE_SIMULATOR` (udid or
+device name) and the run boots it and shuts it down again.
+
+With nothing booted and nothing named the run **skips** and says so; a name that matches no device,
+two booted simulators, or a Lyrebird PAC already enabled on the network service **fail** — the
+machine could have run the check, and the answer would not have meant anything. Once the
+prerequisites pass nothing skips.
+
+**What it checks.** It is one test with six phases, not six tests: they share one proxy, one app
+and one container of evidence, and each depends on the state the last left, so separate test
+functions would only have looked independent. Each phase prints its name, so a failure says how far
+the procedure got. The phases: a locally replaced HTTPS response reaching the app's screen; the scenario
+being selected *before* the launch that meets it (a decoy answers the same request differently, so
+getting the right one cannot be luck); a two-step sequence moving on at the next launch, confirmed
+from both ends with `sequence wait`; `up --use <unknown>` refusing, launching nothing and leaving
+the proxy for `down`; `down` putting the previous proxy settings back; and the watchdog putting
+them back when the proxy is killed outright. They go through the shipped commands wherever there is
+one — `up --simulator`, `lyrebird relaunch`, `assert-answered --run` — so the path a user takes is
+the path that is checked; `simctl` is called directly only for what Lyrebird has no command for
+(install, uninstall, boot, shutdown, reading the app's container).
+
+**What it does to your machine.** It builds and installs the fixture app, adds Lyrebird's CA to
+that simulator's keychain, and switches the *active network service's* auto-proxy URL to a PAC on a
+loopback port for about a minute. Traffic for `api.example.com` goes to the proxy; everything else
+stays `DIRECT`.
+
+**The profile.** Made by the run, not committed: `lyrebird init` writes the bundled example
+profile into a temporary directory and the harness points its `simBundleId` at the fixture app.
+Nothing profile-shaped lives in the repository outside `engine/examples`, and the pre-push privacy
+scanner enforces that.
+
+**Cleanup.** It runs `down` however the run ended — a failing check, a Ctrl-C, or a `kill`, all of
+which take the same path: SIGTERM and SIGHUP are turned into the `KeyboardInterrupt` pytest already
+unwinds, so every finalizer runs and the report is still printed. It then reads the PAC back from
+`networksetup` and fails if the settings are not the ones recorded before anything started, so a
+restore that did not happen cannot pass unnoticed. (With no PAC URL configured to begin with,
+"restored" means *disabled*: macOS rejects an empty PAC URL, so `down` can only switch ours off and
+the URL stays in the field — the same thing an ordinary `lyrebird down` leaves behind.) If `down`
+did not restore them, the harness kills the proxy this run started — after `ps` confirms the pid is
+still that process — gives the watchdog its window, and failing that sets the recorded values back
+itself; and it still fails, saying so, because a cleanup that depends on the command it is checking
+is not a cleanup. The fixture app is uninstalled and a simulator this run booted is shut down
+again, both checked rather than assumed.
+
+Only the *first* signal acts. Everything after it is teardown — restoring the network,
+uninstalling the app, shutting the simulator down — and a second signal in the middle of that
+leaves the machine worse than the first one found it: three SIGTERMs in quick succession used to
+leave the simulator booted and the app installed, with the finalizers dying in interpreter
+shutdown. So later signals are recorded and dropped, as is a first one that lands during the
+restore itself (by then `down` has stopped the watchdog, and a restore abandoned between two
+`networksetup` calls leaves the Mac routed at a port with no proxy behind it and nothing running
+that would notice) — it is re-raised the moment the network is back. What remains is bounded by its
+own timeouts, and `kill -9` is still `kill -9`.
+
+**What a hard kill leaves.** `kill -9` on the pytest process runs nothing, and the proxy is started
+detached, so it and its watchdog survive with the PAC still installed. Nothing can promise
+otherwise. The remedy needs only the control port, and the installed PAC names it:
+
+```bash
+networksetup -getautoproxyurl Wi-Fi          # → URL: http://127.0.0.1:PORT/proxy.pac
+LYREBIRD_CONTROL_PORT=PORT lyrebird down     # finds the live proxy and restores the network
+```
+
+The temporary profile is gone by then, but `down` does not need it: it discovers the proxy on that
+port. Failing that, `networksetup -setautoproxystate <service> off` switches the routing off and
+leaves the stale URL in the field, which is what an ordinary `down` leaves anyway.
+
+Two things are deliberately left on disk. **The CA stays trusted in that simulator** — `simctl`
+offers no way to remove one root certificate; `xcrun simctl keychain <udid> reset` clears added
+certificates, or erase the device. And the profile, state directory, proxy log and CA private key
+live in pytest's temporary tree (`/private/var/folders/…/pytest-of-$USER/`), which keeps the last
+few runs by design; delete that directory if you would rather they were gone. The generated
+`FixtureApp.xcodeproj`, its `Info.plist` and `acceptance/FixtureApp/.build` stay in the checkout
+and are ignored by git.
+
+**Why they are not in CI.** GitHub's macOS runners have no booted simulator and no business having
+their network settings rewritten, and the whole point of these checks is that both are real. They
+are the check to run by hand before a release, or after touching `up`, `down`, the watchdog, the
+PAC, or CA trust.
+
+`acceptance/README.md` describes the fixture app and the profile it is driven with.
+
 ## What lands on `main` and what goes through a pull request
 
 Scale the landing to the change:
