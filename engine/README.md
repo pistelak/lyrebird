@@ -389,9 +389,14 @@ about it.
 
 ## Files
 
-`../bin/lyrebird` (launcher) → `cli.py` (supervisor: CA + PAC + watchdog) · `addon.py` (mitmproxy
-addon) · `rules.py` (match/patch/validate, unit-tested) · `control.py` (aiohttp API) ·
-`store.py` · `netproxy.py` · `config.py` (paths, ports, host scoping) · `examples/`.
+`../bin/lyrebird` (launcher) → `cli.py`, which holds the `lyrebird` group and registers the
+commands its siblings define: `supervisor.py` (start, stop, PAC, watchdog) · `simulator.py` (which
+device, CA trust, relaunch) · `scenario.py` (sessions and rules on the running proxy) ·
+`evidence.py` (runs, sequences, answer counts) · `offline.py` (`validate`, `explain-match` — reads
+files; the live `explain-match` only reads the proxy) · `api.py` (control-API calls and their profile scoping) · `ui.py`
+(colours, banner, log tail). Behind them: `addon.py` (mitmproxy addon) · `rules.py`
+(match/patch/validate, unit-tested) · `control.py` (aiohttp API) · `store.py` · `netproxy.py` ·
+`config.py` (paths, ports, host scoping) · `examples/`.
 
 ## Tests
 

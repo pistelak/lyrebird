@@ -53,8 +53,9 @@ select = ["E", "F", "I", "B", "UP", "C4"]
 # constant tables and rewrap the CLI strings whose line breaks track sentences.
 
 [tool.mypy]
-files = ["addon.py", "cli.py", "config.py",
-         "control.py", "netproxy.py", "rules.py", "store.py"]
+files = ["addon.py", "api.py", "cli.py", "config.py",
+         "control.py", "evidence.py", "netproxy.py", "offline.py", "rules.py",
+         "scenario.py", "simulator.py", "store.py", "supervisor.py", "ui.py"]
 mypy_path = "."            # flat layout: `import config` must resolve from engine/
 python_version = "3.12"
 disallow_untyped_defs = true
