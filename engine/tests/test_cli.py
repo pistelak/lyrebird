@@ -741,6 +741,76 @@ def test_status_fails_when_the_proxy_is_up_but_the_pac_is_off(profile, runner, m
     assert runner.invoke(cli.cli, ["status"]).exit_code == 1
 
 
+# `/health` is unscoped, so the proxy holding the control port may belong to another profile. The
+# three below pin the comparison `up` already makes: an enabled, owned PAC plus a proxy that is
+# intercepting is *not* this profile's interception unless the fingerprints agree.
+
+def _status_health(fingerprint=None):
+    payload = {"pid": 1, "sessions": ["default", "orders-outage"], "activeSession": "orders-outage",
+               "overrideCount": 3, "simBundleId": "com.example.Store", "proxyPort": 8080}
+    if fingerprint is not None:
+        payload["profileFingerprint"] = fingerprint
+    return lambda: payload
+
+
+@pytest.mark.parametrize("args", [[], ["--json"]])
+def test_status_refuses_a_foreign_profiles_interception_in_either_format(profile, runner,
+                                                                        monkeypatch, args):
+    """Regression: the PAC on this port is "ours" whoever started the proxy behind it, so a proxy
+    running profile A made `lyrebird --profile B status` print INTERCEPT ACTIVE and exit 0 — and
+    `lyrebird status && …` went on to drive a proxy mocking someone else's hosts and sessions."""
+    monkeypatch.setattr(cli, "_health", _status_health("feedfacef00d"))
+    _status_network(monkeypatch)
+
+    result = runner.invoke(cli.cli, ["status", *args])
+
+    assert result.exit_code == 1
+    if args:
+        payload = json.loads(result.output)
+        assert payload["profileMismatch"] is True and payload["intercepting"] is False
+        assert payload["proxyUp"] is True, "the port is genuinely held; say so"
+        assert payload["runningProfileFingerprint"] == "feedfacef00d"
+        assert payload["profileFingerprint"] == config.PROFILE_FINGERPRINT
+        # The other proxy's state is not this profile's, and null says so where `[]` would claim
+        # this profile has no sessions.
+        assert payload["sessions"] is None and payload["activeSession"] is None
+        assert payload["overrideCount"] is None and payload["simBundleId"] is None
+    else:
+        assert "INTERCEPT ACTIVE" not in result.output
+        # Both fingerprints, because "a different profile" alone does not say which is which.
+        assert "feedfacef00d" in result.output and config.PROFILE_FINGERPRINT in result.output
+        assert "lyrebird down" in result.output, "the remedy, and it is not `up` — `up` refuses"
+        assert "LYREBIRD_CONTROL_PORT" in result.output, "the other way out: aim at another port"
+        assert "lyrebird up" not in result.output
+        assert "orders-outage" not in result.output, "another profile's session, reported as ours"
+
+
+def test_status_reports_interception_when_the_fingerprints_agree(profile, runner, monkeypatch):
+    """The other half: the check compares fingerprints, it does not just distrust the field."""
+    monkeypatch.setattr(cli, "_health", _status_health(config.PROFILE_FINGERPRINT))
+    _status_network(monkeypatch)
+
+    result = runner.invoke(cli.cli, ["status", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["profileMismatch"] is False and payload["intercepting"] is True
+    assert payload["activeSession"] == "orders-outage"
+
+
+def test_status_trusts_an_engine_too_old_to_send_a_fingerprint(profile, runner, monkeypatch):
+    """A proxy from before the field existed cannot say whose it is, and `up` accepts that reading
+    too. Treating silence as a mismatch would break `status` against every running older engine."""
+    monkeypatch.setattr(cli, "_health", _status_health())
+    _status_network(monkeypatch)
+
+    result = runner.invoke(cli.cli, ["status", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["profileMismatch"] is False and payload["runningProfileFingerprint"] is None
+
+
 def test_importing_the_cli_does_not_parse_the_profile(profile, tmp_path):
     """Regression, in a fresh process because an in-process test imports `config` before it can
     arrange anything: a malformed *default* profile used to raise SystemExit during import, before

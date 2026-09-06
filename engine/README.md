@@ -112,7 +112,10 @@ The CLI sends `X-Lyrebird-Profile: <fingerprint>` on every call, so a command ru
 cannot read or change the profile A that actually holds the port: a mismatch is **409**
 `{"error": "profile_mismatch", "running": …, "requested": …}`. Direct callers may omit the header
 and are not checked. `GET /health` and `/proxy.pac` answer everyone — health is how a caller finds
-out which profile is running (`down` needs that across profiles), and macOS fetches the PAC. The
+out which profile is running (`down` needs that across profiles), and macOS fetches the PAC. Because
+that reading is unscoped, a command that *interprets* it compares `profileFingerprint` itself: `up`
+refuses, and `status` reports no interception and exits non-zero rather than presenting another
+profile's proxy as this one's. The
 check runs in the proxy, so a proxy started before this change enforces nothing until you restart it
 (`lyrebird down && lyrebird up`).
 
