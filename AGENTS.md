@@ -161,6 +161,14 @@ POST/PUT/PATCH/DELETE with a body must send
 `Content-Type: application/json` (**415** if not). Both exist to stop a web page you happen to have
 open from driving the proxy. `engine/README.md` has the endpoint list.
 
+One proxy holds the control port, so the CLI also names the profile it means with an
+`X-Lyrebird-Profile` header: run it with a `--profile` other than the one that is running and the
+call is refused with **409** `profile_mismatch` instead of quietly acting on the running profile.
+Two routes answer whoever asks: `/__mock__/health`, which is how `down` discovers that another
+profile's proxy holds the port and still restores the network, and `/proxy.pac`, which macOS
+fetches. Direct callers may omit the header. The check lives in the running proxy, so restart it
+(`lyrebird down && lyrebird up`) after upgrading, or nothing is enforced.
+
 ## Scenarios that move between states
 
 A rule can hold a list of steps instead of one response — for "delete a row, refresh, it's gone", or
@@ -250,6 +258,7 @@ net; if not, take a copy before touching someone else's sessions.
 | A sequence is one step ahead | Something else called the endpoint. Narrow `match`, or use `advanceOn` |
 | `up` fails on CA | No booted simulator. Boot one first |
 | 421 / 415 from the API | Missing `Host: 127.0.0.1:8088` or `Content-Type: application/json` — or just use the CLI |
+| 409 `profile_mismatch` | Another profile's proxy holds the port. `lyrebird down` first, or pass the `--profile` that is running |
 
 `lyrebird logs` prints the last 60 lines of the proxy log and writes the path to stderr, so
 `tail -f "$(lyrebird logs 2>&1 >/dev/null)"` follows it. When the proxy itself fails to start, `up` prints the last

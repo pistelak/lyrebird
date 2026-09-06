@@ -46,6 +46,7 @@ import rules
 
 MITMDUMP = config.ROOT / ".venv" / "bin" / "mitmdump"
 CONTROL = config.CONTROL_ORIGIN
+_PROFILE_HEADER = "X-Lyrebird-Profile"   # says which profile this call means; see `_profile_mismatch`
 _DOWN_WAIT_SECONDS = 5.0   # how long `down` waits for SIGTERM to take effect
 _WATCHDOG_RESTORE_ATTEMPTS = 5   # `networksetup` fails transiently; one try is not a restore
 _LOCK_WAIT_SECONDS = 60.0   # how long `up` waits for another `up`, or a watchdog restore, to finish
@@ -68,13 +69,63 @@ def _ca_cert() -> Path:
     return config.mitmproxy_confdir() / "mitmproxy-ca-cert.pem"
 
 
+def _profile_mismatch(running: str) -> str:
+    """The one sentence for "the port is held by someone else's proxy", wherever we learn it.
+
+    `up` learns it from `/health` before it starts anything; every other command learns it from a
+    409. Both name the two fingerprints and both remedies, because "a different profile" without
+    them leaves the operator no way to tell which one they are looking at.
+    """
+    return (f"{RED}a different profile is already running on port {config.CONTROL_PORT}{R}\n"
+            f"  running: {running}   requested: {config.PROFILE_FINGERPRINT}\n"
+            f"  stop it first (`lyrebird down`) or use a different --profile / port.")
+
+
+def _error_body(error: urllib.error.HTTPError) -> dict:
+    """The API's JSON body, or {} when there is nothing usable to read — never a partial dict."""
+    try:
+        body = json.loads(error.read().decode())
+    except (ValueError, OSError):
+        return {}
+    return body if isinstance(body, dict) else {}
+
+
+def _refuse_a_foreign_profile(error: urllib.error.HTTPError, body: dict) -> None:
+    """Exits when the API says the request named a profile it is not running.
+
+    Shared by both callers so a scoped read fails the same way a scoped mutation does: the read
+    would otherwise report another profile's sessions, counters and traffic as this profile's.
+    """
+    if error.code == 409 and body.get("error") == "profile_mismatch":
+        raise SystemExit(_profile_mismatch(body.get("running") or "unknown"))
+
+
 def _get_json(path: str, timeout: float = 1.5) -> Any:
-    request = urllib.request.Request(f"{CONTROL}{path}", headers={"Host": config.CONTROL_HOST_HEADER})
+    request = urllib.request.Request(
+        f"{CONTROL}{path}",
+        headers={"Host": config.CONTROL_HOST_HEADER, _PROFILE_HEADER: config.PROFILE_FINGERPRINT})
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.loads(response.read().decode())
-    except Exception:  # any failure means 'not reachable', which is the answer
+    except urllib.error.HTTPError as error:
+        # A mismatch is an answer, not an outage: returning None here would say "not reachable"
+        # about a proxy that is up and talking, and the caller would go looking for a dead port.
+        _refuse_a_foreign_profile(error, _error_body(error))
         return None
+    except Exception:  # any other failure means 'not reachable', which is the answer
+        return None
+
+
+def _require_same_profile(health: dict) -> None:
+    """Exits when a health reading describes a proxy running some other profile.
+
+    `/health` is deliberately unscoped at the API — that is how `down` recovers across profiles —
+    so a command that goes on to *interpret* a health reading has to make the comparison itself.
+    A reading with no fingerprint is accepted, as `up` accepts one: an older engine cannot say.
+    """
+    running = health.get("profileFingerprint")
+    if running and running != config.PROFILE_FINGERPRINT:
+        raise SystemExit(_profile_mismatch(running))
 
 
 def _health() -> dict | None:
@@ -84,10 +135,11 @@ def _health() -> dict | None:
 def _control(path: str, method: str = "GET", payload: Any = None, timeout: float = 3.0) -> Any:
     """Call the control API, or exit with its error message.
 
-    Exists so nothing outside this function has to remember the loopback Host header or the
-    JSON content-type the API requires — both of which otherwise fail as a bare 421 or 415.
+    Exists so nothing outside this function has to remember the loopback Host header, the profile
+    this call means, or the JSON content-type the API requires — the first and last of which
+    otherwise fail as a bare 421 or 415, and the middle of which would mutate a stranger's profile.
     """
-    headers = {"Host": config.CONTROL_HOST_HEADER}
+    headers = {"Host": config.CONTROL_HOST_HEADER, _PROFILE_HEADER: config.PROFILE_FINGERPRINT}
     data = None
     if payload is not None:
         data = json.dumps(payload).encode()
@@ -97,15 +149,16 @@ def _control(path: str, method: str = "GET", payload: Any = None, timeout: float
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.loads(response.read().decode())
     except urllib.error.HTTPError as error:
-        try:
-            # `detail` first: the API sends the sentence that names the problem ("match: unknown
-            # field 'kind' — a matcher may only carry method, path, query, bodyContains") and
-            # `error` only a slug for it. Printing the slug throws away the half that tells you
-            # what to do, which is how a supported matcher field ends up looking unsupported.
-            body = json.loads(error.read().decode())
-            detail = body.get("detail") or body.get("error") or error.reason
-        except (ValueError, OSError):
-            detail = error.reason
+        body = _error_body(error)
+        # Before the generic path: `detail` is absent on a mismatch, so the slug alone would print
+        # "profile_mismatch" and neither fingerprint — the two facts that identify which proxy
+        # answered and which one the caller meant.
+        _refuse_a_foreign_profile(error, body)
+        # `detail` first: the API sends the sentence that names the problem ("match: unknown
+        # field 'kind' — a matcher may only carry method, path, query, bodyContains") and
+        # `error` only a slug for it. Printing the slug throws away the half that tells you
+        # what to do, which is how a supported matcher field ends up looking unsupported.
+        detail = body.get("detail") or body.get("error") or error.reason
         click.echo(f"{RED}✗ {detail}{R}")
         raise SystemExit(1) from None
     except OSError:
@@ -276,13 +329,7 @@ def _up_locked(bundle_id: str | None) -> None:
     existing = _health()
 
     if existing:
-        running_profile = existing.get("profileFingerprint")
-        if running_profile and running_profile != config.PROFILE_FINGERPRINT:
-            raise SystemExit(
-                f"{RED}a different profile is already running on port {config.CONTROL_PORT}{R}\n"
-                f"  running: {running_profile}   requested: {config.PROFILE_FINGERPRINT}\n"
-                f"  stop it first (`lyrebird down`) or use a different --profile / port."
-            )
+        _require_same_profile(existing)
         click.echo(f"{YELLOW}proxy already running{R} (session '{existing['activeSession']}')")
         proxy_pid = existing.get("pid", 0)
     else:
@@ -774,6 +821,7 @@ def sequence_wait(override_id: str, step: int, timeout: int) -> None:
         # "Could not read it" is a different claim from "there is nothing here".
         click.echo(f"{RED}✗ cannot reach the control API — is the proxy up?{R}")
         raise SystemExit(1)
+    _require_same_profile(health)
     state = _find_sequence(health, override_id)
     if state is None:
         click.echo(f"{RED}✗ no sequence '{override_id}' in the active session{R}")
@@ -818,6 +866,10 @@ def sequence_wait(override_id: str, step: int, timeout: int) -> None:
             unreachable = True   # transient until the deadline says otherwise; keep polling
         else:
             unreachable = False
+            # Re-checked every poll: the proxy that answered the first read can be stopped and
+            # another profile's started on the port mid-wait, and this wait's baseline — a run id
+            # from a different profile's store — would then be compared against a stranger's.
+            _require_same_profile(current_health)
             current = _find_sequence(current_health, override_id)
             if current is None or current.get("runId") != run_id:
                 what = "was removed" if current is None else "was reset"
@@ -907,6 +959,7 @@ def assert_answered(override_id: str, timeout: int) -> None:
             # zero-answer message would send someone to debug a rule that may be perfectly fine.
             click.echo(f"{RED}✗ cannot reach the control API — is the proxy up?{R}")
             raise SystemExit(1)
+        _require_same_profile(health)
         if "answers" not in health:
             click.echo(f"{RED}✗ this proxy does not report answer counts — restart it "
                        f"(`lyrebird down && lyrebird up`) to pick up the current engine.{R}")

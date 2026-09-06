@@ -9,6 +9,10 @@ send cross-origin requests to 127.0.0.1, and a DNS-rebinding attack can make a h
 ours, a cross-origin Origin is refused, and any mutating request with a body must declare JSON —
 aiohttp's `request.json()` ignores Content-Type, so without that last check a `text/plain` form
 post would reach the API with no CORS preflight.
+
+`_guard` also refuses a request that names a profile other than the running one (409). That is not
+a security check — it is scoping, and it stops a CLI pointed at profile B from quietly mutating
+profile A, which holds the control port.
 """
 
 from __future__ import annotations
@@ -25,6 +29,13 @@ from store import Store, UnsafeName
 
 _CSP = "default-src 'none'; frame-ancestors 'none'"
 _BODY_METHODS = ("POST", "PUT", "PATCH", "DELETE")
+
+# The header a caller uses to say which profile it means, and the two routes that must answer
+# whoever asks. `/__mock__/health` is the discovery endpoint — it is how `down` finds out that some
+# *other* profile's proxy holds the port, and that cross-profile recovery is the whole reason `down`
+# works after a crash. `/proxy.pac` is fetched by macOS, which knows nothing about profiles.
+_PROFILE_HEADER = "X-Lyrebird-Profile"
+_UNSCOPED_PATHS = frozenset({"/__mock__/health", "/proxy.pac"})
 
 
 def _allowed_hosts() -> set[str]:
@@ -47,6 +58,20 @@ async def _guard(request: web.Request, handler: Handler) -> web.StreamResponse:
     origin = request.headers.get("Origin")
     if origin and origin.lower() not in _allowed_origins():
         return web.json_response({"error": "cross_origin_denied"}, status=403)
+
+    # One proxy holds the control port, so a CLI invoked with `--profile B` while profile A is
+    # running would otherwise switch A's session, add rules to A and reset A's counters — every
+    # call reporting success for work done somewhere the operator was not looking. The header is a
+    # scoping declaration, not a credential: it is absent from older CLIs, the menu bar and curl,
+    # and those stay unchecked. Fingerprints only — the profile path belongs to whoever wrote it.
+    # `is not None`, not truthiness: an empty header is a caller that said *something* and named
+    # nobody, and reading it as absent let `X-Lyrebird-Profile:` sail past the check.
+    requested = request.headers.get(_PROFILE_HEADER)
+    if (requested is not None and request.path not in _UNSCOPED_PATHS
+            and requested != config.PROFILE_FINGERPRINT):
+        return web.json_response({"error": "profile_mismatch",
+                                  "running": config.PROFILE_FINGERPRINT,
+                                  "requested": requested}, status=409)
 
     if request.method in _BODY_METHODS and request.can_read_body:
         content_type = (request.headers.get("Content-Type") or "").split(";")[0].strip().lower()
