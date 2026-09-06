@@ -617,14 +617,10 @@ def _select_before_relaunch(name: str, health: dict | None) -> str | None:
 
     try:
         _activate_session(name)
-    except SystemExit as refusal:
-        # `_control` printed the API's own sentence on its way out — except on a profile mismatch,
-        # which carries its message *in* the exception, and swallowing that would drop both
-        # fingerprints. What `_control` could not know either way is what the failure costs here:
-        # the relaunch is off, because launching now would put the app in front of exactly the
-        # session the caller was trying to replace.
-        if isinstance(refusal.code, str):
-            click.echo(refusal.code)
+    except SystemExit:
+        # `_control` has already printed why on its way out. What it could not know is what the
+        # failure costs here: the relaunch is off, because launching now would put the app in
+        # front of some session other than the one the caller named.
         known = [str(session) for session in (health or {}).get("sessions") or []]
         listing = f"\n   sessions in this profile: {', '.join(known)}" if known else ""
         click.echo(f"{RED}   could not select '{name}' — the app was NOT relaunched.{R}{listing}\n"

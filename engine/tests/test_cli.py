@@ -2273,24 +2273,25 @@ def test_up_does_not_relaunch_when_the_activation_call_fails(
     assert "INTERCEPT ACTIVE" in result.output
 
 
-def test_up_keeps_the_reason_when_the_refusal_carries_it_instead_of_printing_it(
+def test_up_prints_both_fingerprints_when_the_activation_is_refused_for_another_profile(
         profile, runner, monkeypatch):
-    """`_control` prints its own error and exits 1, but a profile mismatch puts the message —
-    both fingerprints — *in* the SystemExit. Catching the exit to add "the app was not relaunched"
-    must not be what throws that away."""
+    """The port changed hands before the switch, so the PUT is answered by a proxy running someone
+    else's profile. `_control` prints the two fingerprints on its way out; what it cannot know is
+    what the refusal costs here, so `up` adds that the app was NOT relaunched — and neither
+    sentence may be lost to the other."""
+    real_control = cli._control   # the 409 has to travel the path it travels in production
     state = _fake_proxy(monkeypatch)
-
-    def mismatched(name):
-        raise SystemExit("✗ that proxy is running a different profile (a1b2c3 ≠ d4e5f6)")
-
     _up_with_a_proxy(profile, monkeypatch, state)
-    monkeypatch.setattr(cli, "_activate_session", mismatched)
+    monkeypatch.setattr(cli, "_control", real_control)
+    _answers_with_a_conflict(monkeypatch, {"error": "profile_mismatch", "running": "a1b2c3",
+                                           "requested": "d4e5f6"})
 
     result = runner.invoke(cli.cli, ["up", "--use", "orders-outage"])
 
     assert result.exit_code == 1
     assert state["launched"] == []
-    assert "a1b2c3 ≠ d4e5f6" in result.output
+    assert "a1b2c3" in result.output, "say which profile actually holds the port"
+    assert config.PROFILE_FINGERPRINT in result.output, "and which one was asked for"
     assert "NOT relaunched" in result.output
 
 
