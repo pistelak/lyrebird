@@ -328,6 +328,30 @@ def _up_locked(bundle_id: str | None) -> None:
     # restore it on and lets `down` delete it.
     service = netproxy.active_service() or runtime.get("service")
     recorded = runtime.get("previousPac")
+    recorded_service = runtime.get("service")
+    if recorded and recorded_service and recorded_service != service:
+        # The route moved — Wi-Fi to Ethernet — since the record was written. The record belongs
+        # to the old service, and it is about to be replaced by one for the new: put the old
+        # service back *first*, or nothing will remember that its PAC still points at us. A
+        # record that is not ours any more (settings changed by hand) is simply dropped.
+        #
+        # The old service's watchdog goes first of all. It is told its service on its command
+        # line; left alive it would answer the proxy's next death by reading the new record,
+        # finding the old service's PAC "not ours", and deleting it. Its live loop is no safer:
+        # it re-enables our PAC wherever it finds it disabled — which is exactly what restoring
+        # "no previous PAC" leaves behind. The lock this `up` holds keeps that loop out until the
+        # signal lands, and the loop checks whose record it is once it gets in.
+        _terminate(runtime.get("watchdogPid"), "_watchdog")
+        runtime = {**runtime, "watchdogPid": None}
+        try:
+            _restore_previous_pac(recorded_service, runtime)
+        except netproxy.NetworkSetupError as error:
+            click.echo(f"{RED}✗ could not restore the previous PAC on '{recorded_service}' before "
+                       f"switching to '{service}': {error}{R}\n"
+                       f"   the record is kept; run `lyrebird down` once '{recorded_service}' can "
+                       f"be reached.")
+            raise SystemExit(1) from None
+        recorded = None
     state = {"proxyPid": proxy_pid, "service": service}
     if recorded:
         # Kept until a successful read says otherwise. The record is what the watchdog left when
@@ -357,8 +381,11 @@ def _up_locked(bundle_id: str | None) -> None:
                        f"   the proxy is running — stop it with `lyrebird down`.")
             raise SystemExit(1) from None
 
+        # A watchdog watches one service, given on its command line. One left over from a run on
+        # another service would restore that service's record and then delete this one's.
         watchdog_pid = runtime.get("watchdogPid")
-        if not _pid_is_ours(watchdog_pid, "_watchdog"):
+        if not (_pid_is_ours(watchdog_pid, "_watchdog") and recorded_service == service):
+            _terminate(watchdog_pid, "_watchdog")
             watchdog_pid = _spawn_watchdog(service)
         state["watchdogPid"] = watchdog_pid
         click.echo(f"✓ PAC installed on '{service}' (configured hosts → proxy, everything else DIRECT)")
@@ -1064,16 +1091,31 @@ def watchdog(service: str) -> None:
             if _restore_after_death(service):
                 return
             continue   # a replacement proxy is live: go back to watching it
+        _repair_pac(service)
+        time.sleep(2)
+
+
+def _repair_pac(service: str) -> None:
+    """The watchdog's live loop: macOS silently disables our PAC while the proxy is alive, so
+    switch it back on.
+
+    Under the lock `up` holds, and only while the runtime record still names this service. An
+    `up` that moves the route to another service restores this one — and restoring "no previous
+    PAC" leaves our URL installed, disabled — exactly what this loop exists to undo. Unlocked, it
+    undid it in the gap before its own SIGTERM landed, and the next `down` restored the new
+    service only.
+    """
+    with open(config.lock_file(), "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if config.read_runtime().get("service") != service:
+            return   # migrated away from, or `down` has been: not ours to touch any more
         try:
             pac = netproxy.pac_status(service)
         except netproxy.NetworkSetupError:
-            time.sleep(2)   # unknown is not "off": neither reinstall nor give up, just ask again
-            continue
+            return   # unknown is not "off": neither reinstall nor give up, just ask again
         if not (pac.enabled and pac.ours) and pac.url in ("", netproxy.pac_url()):
             with contextlib.suppress(netproxy.NetworkSetupError):
-                # macOS silently disabled our PAC while the proxy is alive
                 netproxy.set_pac(service)
-        time.sleep(2)
 
 
 def _restore_after_death(service: str) -> bool:
@@ -1094,9 +1136,15 @@ def _restore_after_death(service: str) -> bool:
         fcntl.flock(lock, fcntl.LOCK_EX)
         if _health() is not None:
             return False
+        runtime = config.read_runtime()
+        if runtime.get("service") not in (None, service):
+            # The record is another service's — an `up` moved the route and then failed before
+            # it could replace this watchdog. Restoring *our* service from it would read the PAC
+            # there as "not ours" and delete a record that still matters. Leave it for `down`.
+            return True
         for _ in range(_WATCHDOG_RESTORE_ATTEMPTS):
             try:
-                _restore_previous_pac(service, config.read_runtime())
+                _restore_previous_pac(service, runtime)
             except netproxy.NetworkSetupError:
                 time.sleep(2)
                 continue

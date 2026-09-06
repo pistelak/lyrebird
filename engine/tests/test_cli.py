@@ -219,9 +219,50 @@ def test_watchdog_restores_under_the_lock_up_takes_and_looks_again_once_it_holds
     result = runner.invoke(cli.cli, ["_watchdog", "Wi-Fi"])
 
     assert isinstance(result.exception, Stop), result.output
-    assert locked == [cli.fcntl.LOCK_EX], "the restore must wait for any `up` in progress"
+    assert locked and set(locked) == {cli.fcntl.LOCK_EX}, "the restore must wait for any `up` in progress"
     assert restored == [], "the replacement owns the network now"
     assert config.runtime_file().exists(), "the replacement's runtime file must survive"
+
+
+class _Stop(Exception):
+    pass
+
+
+def _watch_one_poll(monkeypatch, *, recorded_service, pac):
+    """A live proxy, a runtime record naming `recorded_service`, the PAC as `pac` reports it,
+    and a watchdog that runs exactly one poll before the sleep ends it. Returns the `set_pac`
+    calls it made."""
+    config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
+    config.write_runtime({"proxyPid": 99, "service": recorded_service, "previousPac": {"url": "", "enabled": False}})
+    repaired = []
+
+    def stop(seconds):
+        raise _Stop
+
+    monkeypatch.setattr(cli, "_health", lambda: {"pid": 99})
+    monkeypatch.setattr(netproxy, "pac_status", lambda service: pac)
+    monkeypatch.setattr(netproxy, "set_pac", lambda service: repaired.append(service))
+    monkeypatch.setattr(cli.time, "sleep", stop)
+    return repaired
+
+
+def test_watchdog_re_enables_its_own_service_pac_when_macos_switches_it_off(profile, runner, monkeypatch):
+    repaired = _watch_one_poll(monkeypatch, recorded_service="Wi-Fi",
+                               pac=netproxy.PacStatus(netproxy.pac_url(), False, True))
+    result = runner.invoke(cli.cli, ["_watchdog", "Wi-Fi"])
+    assert isinstance(result.exception, _Stop)
+    assert repaired == ["Wi-Fi"]
+
+
+def test_watchdog_leaves_a_pac_alone_once_the_route_has_moved_to_another_service(profile, runner, monkeypatch):
+    """Restoring "no previous PAC" on Wi-Fi leaves our URL installed and disabled — the shape
+    the live loop exists to undo. A Wi-Fi watchdog that outlived the move to Ethernet used to
+    switch it straight back on, and the next `down` restored Ethernet only."""
+    repaired = _watch_one_poll(monkeypatch, recorded_service="Ethernet",
+                               pac=netproxy.PacStatus(netproxy.pac_url(), False, True))
+    result = runner.invoke(cli.cli, ["_watchdog", "Wi-Fi"])
+    assert isinstance(result.exception, _Stop)
+    assert repaired == [], "the record names another service: not this watchdog's PAC to touch"
 
 
 def test_up_waits_for_the_lock_holder_and_gives_up_only_after_the_timeout(profile, monkeypatch):
@@ -280,6 +321,7 @@ def _up_after_a_crash(profile, monkeypatch, pac_status, *, service="Wi-Fi", heal
     monkeypatch.setattr(netproxy, "pac_status", read)
     monkeypatch.setattr(netproxy, "set_pac", install)
     monkeypatch.setattr(cli, "_pid_is_ours", lambda pid, marker: True)
+    monkeypatch.setattr(cli, "_spawn_watchdog", lambda service: 4242)
 
 
 def test_up_keeps_the_recovery_record_the_watchdog_preserved(profile, runner, monkeypatch):
@@ -351,6 +393,91 @@ def test_up_fails_when_the_proxy_stops_answering_before_the_final_look(profile, 
 
     assert result.exit_code == 1
     assert "stopped answering" in result.output
+
+
+_ETHERNET_PAC = netproxy.PacStatus("http://proxy.example.org/eth.pac", True, False)
+
+
+def test_up_restores_the_old_service_before_switching_to_a_new_one(profile, runner, monkeypatch):
+    """Crash on Wi-Fi, failed restore, then Ethernet becomes the route and `up` runs. Writing a
+    record for Ethernet over Wi-Fi's used to leave Wi-Fi's PAC pointing at the dead proxy with
+    nothing left to say so — `down` restored Ethernet, deleted the file, and called it stopped."""
+    _up_after_a_crash(profile, monkeypatch,
+                      lambda service: netproxy.PacStatus(netproxy.pac_url(), True, True)
+                      if service == "Wi-Fi" else _ETHERNET_PAC,
+                      service="Ethernet")
+    restored = []
+    monkeypatch.setattr(netproxy, "restore_pac", lambda *a: restored.append(a))
+
+    result = runner.invoke(cli.cli, ["up"])
+
+    assert result.exit_code == 0, result.output
+    assert restored == [("Wi-Fi", _CORPORATE["url"], False)]
+    runtime = config.read_runtime()
+    assert runtime["service"] == "Ethernet"
+    assert runtime["previousPac"] == {"url": _ETHERNET_PAC.url, "enabled": True}
+
+
+def test_up_keeps_the_record_and_fails_when_the_old_service_cannot_be_restored(profile, runner, monkeypatch):
+    _up_after_a_crash(profile, monkeypatch,
+                      lambda service: _unreadable_pac(service) if service == "Wi-Fi" else _ETHERNET_PAC,
+                      service="Ethernet")
+
+    result = runner.invoke(cli.cli, ["up"])
+
+    assert result.exit_code == 1
+    assert "could not restore the previous PAC on 'Wi-Fi'" in result.output
+    runtime = config.read_runtime()
+    assert runtime["service"] == "Wi-Fi" and runtime["previousPac"] == _CORPORATE
+
+
+def test_up_replaces_a_watchdog_that_watches_another_service(profile, runner, monkeypatch):
+    """A watchdog is told its service on the command line. Reusing one from a run on Wi-Fi for a
+    run on Ethernet had it restore Wi-Fi's record and then delete Ethernet's."""
+    _up_after_a_crash(profile, monkeypatch,
+                      lambda service: netproxy.PacStatus(netproxy.pac_url(), True, True)
+                      if service == "Wi-Fi" else _ETHERNET_PAC,
+                      service="Ethernet")
+    config.write_runtime({**config.read_runtime(), "watchdogPid": 77})
+    terminated, spawned = [], []
+    monkeypatch.setattr(netproxy, "restore_pac", lambda *a: None)
+    monkeypatch.setattr(cli, "_terminate", lambda pid, marker: terminated.append((pid, marker)))
+    monkeypatch.setattr(cli, "_spawn_watchdog", lambda service: spawned.append(service) or 4242)
+
+    assert runner.invoke(cli.cli, ["up"]).exit_code == 0
+    assert (77, "_watchdog") in terminated
+    assert spawned == ["Ethernet"]
+    assert config.read_runtime()["watchdogPid"] == 4242
+
+
+def test_a_failed_install_on_the_new_service_cannot_let_the_old_watchdog_delete_its_record(
+    profile, runner, monkeypatch
+):
+    """Wi-Fi → Ethernet, and installing on Ethernet fails after `up` has already written
+    Ethernet's record. The Wi-Fi watchdog used to outlive that: at the proxy's next death it read
+    Ethernet's record, found Wi-Fi's PAC "not ours", and deleted the record — Ethernet left at
+    the dead proxy with its previous PAC forgotten."""
+    _up_after_a_crash(profile, monkeypatch,
+                      lambda service: netproxy.PacStatus(netproxy.pac_url(), True, True)
+                      if service == "Wi-Fi" else _ETHERNET_PAC,
+                      service="Ethernet")
+    config.write_runtime({**config.read_runtime(), "watchdogPid": 77})
+    terminated = []
+    monkeypatch.setattr(netproxy, "restore_pac", lambda *a: None)
+    monkeypatch.setattr(cli, "_terminate", lambda pid, marker: terminated.append((pid, marker)))
+    monkeypatch.setattr(netproxy, "set_pac", _unreadable_pac)
+
+    result = runner.invoke(cli.cli, ["up"])
+
+    assert result.exit_code == 1 and "could not install" in result.output
+    assert (77, "_watchdog") in terminated, "retired before Ethernet's record existed"
+    ethernet = {"url": _ETHERNET_PAC.url, "enabled": True}
+    assert config.read_runtime()["previousPac"] == ethernet
+
+    # And even a watchdog that somehow survived must not act on another service's record.
+    monkeypatch.setattr(cli, "_health", lambda: None)
+    assert runner.invoke(cli.cli, ["_watchdog", "Wi-Fi"]).exit_code == 0
+    assert config.read_runtime()["previousPac"] == ethernet
 
 
 def test_up_keeps_the_recovery_record_of_a_half_restored_pac(profile, runner, monkeypatch):
