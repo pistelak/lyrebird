@@ -270,6 +270,23 @@ by the tests, because the tests covered the happy path. `engine/tests/test_cli.p
 entirely failure paths — an unreadable runtime file, a foreign PAC, nothing to stop — and that is
 the model to copy.
 
+**A comment names the failure it prevents, and the test that pins it.** The comments in this
+codebase explain *why*, usually by citing the bug a line prevents, and that is worth keeping. What
+is not worth keeping is the bug's whole story told at the line: the same paragraph ends up
+repeated at every site that depends on it, and none of the copies can be checked. So the shape is
+one sentence at the site, naming the failure and the test that would catch its return:
+
+```python
+# Raised, not returned as "no PAC": a read that failed used to parse as "not ours", and `down`
+# then left the PAC pointing at a dead port — see test_pac_status_raises_when_networksetup_fails.
+```
+
+The narrative — what was observed, what it cost, why this fix and not another — lives in that
+test's docstring, where running the test verifies it. Design rationale and invariants that no
+single test captures (why `config` rebinds module globals, the order `up` does things in) stay at
+the site. Apply this as you touch code, not as a sweep: rewriting comments that nobody is reading
+is churn.
+
 **Security-relevant changes need a test.** Host scoping, path containment and the control-API guard
 all have regression tests in `engine/tests/`; extend them rather than working around them. If you
 change host matching, update *all three* mechanisms (`is_intercepted_host`, `allow_hosts_regexes`,
