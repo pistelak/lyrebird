@@ -167,16 +167,12 @@ own timeouts, and `kill -9` is still `kill -9`.
 
 **What a hard kill leaves.** `kill -9` on the pytest process runs nothing, and the proxy is started
 detached, so it and its watchdog survive with the PAC still installed. Nothing can promise
-otherwise. The remedy needs only the control port, and the installed PAC names it:
+otherwise.
 
-```bash
-networksetup -getautoproxyurl Wi-Fi          # → URL: http://127.0.0.1:PORT/proxy.pac
-LYREBIRD_CONTROL_PORT=PORT lyrebird down     # finds the live proxy and restores the network
-```
-
-The temporary profile is gone by then, but `down` does not need it: it discovers the proxy on that
-port. Failing that, `networksetup -setautoproxystate <service> off` switches the routing off and
-leaves the stale URL in the field, which is what an ordinary `down` leaves anyway.
+The remedy needs only the control port, and it is the same one users get, in
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md#the-proxy-is-gone-but-the-network-still-points-at-it):
+read the control port back from the installed PAC and run `down` against it. The temporary profile
+is gone by then, but `down` does not need it — it discovers the proxy on that port.
 
 Two things are deliberately left on disk. **The CA stays trusted in that simulator** — `simctl`
 offers no way to remove one root certificate; `xcrun simctl keychain <udid> reset` clears added
@@ -235,8 +231,21 @@ engine is exercised through `bin/lyrebird` in its installed layout.
    # must equal the `commit:` line in CHECKED-COMMIT.txt
    ```
 
-5. Create the GitHub Release by hand and attach the zip. Nothing in CI has
-   write access to the repository, and publishing stays a human decision.
+5. Create the GitHub Release by hand — source-only, with no zip attached:
+
+   ```bash
+   gh release create vX.Y.Z --verify-tag --notes-file release-notes.md
+   ```
+
+   `--verify-tag` refuses a tag that is not on the remote, but it does not
+   compare commits, so it replaces nothing in step 4 — do both. Nothing in CI
+   has write access to the repository, and publishing stays a human decision.
+
+   The zip is deliberately not published. It is ad-hoc signed, so macOS blocks
+   it on first launch, and that warning would land at the worst possible moment
+   on a tool that installs a CA and rewrites proxy settings. Its job is to prove
+   the checks passed on the tagged commit; anyone who wants the app builds it,
+   and a locally built one raises no such prompt.
 
 What the artifact proves and what it does not: it proves the engine and app
 checks passed on the commit named in `CHECKED-COMMIT.txt`, and that the zip is

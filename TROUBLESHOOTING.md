@@ -26,6 +26,35 @@ these belong to is [AGENTS.md](AGENTS.md).
 | `path escapes …` when changing scenarios or overrides (API: 400 `invalid_name`) | A scenario file resolves outside `scenarios/` or outside the profile — usually a symlink. Symlink the whole profile instead |
 | A scenario file is on disk but the proxy does not have it | Same cause: reads are held to the same rule, so it is skipped at load. `lyrebird validate` names it |
 
+## The proxy is gone but the network still points at it
+
+`down` restores the proxy settings that were there before, and a watchdog process does it on your
+behalf if the proxy dies on its own — so killing the proxy alone is normally recovered from. What
+is not recovered is losing *both*: a power cut, a `kill -9` that takes the watchdog with it, or a
+`networksetup` that failed. Then the Mac is left routing at a port with nothing behind it, and the
+disruption is wider than one scenario misbehaving — anything honouring the system proxy can stall
+or fail, not only the hosts in your profile.
+
+`down` does not need a live proxy; it restores from what the run recorded. Try it first, from the
+checkout if you have no `lyrebird` on `PATH`. If the profile it was using is gone, the installed
+PAC still names the control port, which is enough to find the rest:
+
+```bash
+networksetup -getautoproxyurl "Wi-Fi"        # → URL: http://127.0.0.1:8088/proxy.pac
+LYREBIRD_CONTROL_PORT=8088 lyrebird down     # use the port that URL actually shows
+```
+
+Substitute your own network service for `"Wi-Fi"` — `networksetup -listallnetworkservices` lists
+them. If `down` itself fails, switch the routing off yourself and check that it took:
+
+```bash
+networksetup -setautoproxystate "Wi-Fi" off
+networksetup -getautoproxyurl "Wi-Fi"        # must now say: Enabled: No
+```
+
+That leaves the stale URL sitting in the field, which is what an ordinary `down` leaves too: macOS
+rejects an empty PAC URL, so when you had no PAC to begin with, "restored" means *disabled*.
+
 `lyrebird logs` prints the last 60 lines of the proxy log and writes the path to stderr, so
 `tail -f "$(lyrebird logs 2>&1 >/dev/null)"` follows it. When the proxy itself fails to start, `up` prints the last
 lines for you; later failures (CA, PAC, relaunch) report their own reason instead.
