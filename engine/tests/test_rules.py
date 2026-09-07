@@ -173,11 +173,11 @@ def test_validate_override_reports_the_typo_before_the_error_it_causes():
 
 @pytest.mark.parametrize("notes", ["", "why this rule exists"])
 def test_validate_override_accepts_notes_as_a_string(notes):
-    """JSON has no comments and sessions are written by hand, so `notes` is the one field the engine
-    keeps without reading — and it must survive the round trip a session load makes."""
+    """JSON has no comments and scenarios are written by hand, so `notes` is the one field the engine
+    keeps without reading — and it must survive the round trip a scenario load makes."""
     override = {"mode": "replace", "match": {"path": "/api/items"}, "status": 200, "notes": notes}
     assert rules.validate_override(override)["notes"] == notes
-    loaded = rules.normalise_session({"overrides": [override]}, "s")
+    loaded = rules.normalise_scenario({"overrides": [override]}, "s")
     assert not loaded["_problems"]
     assert loaded["overrides"][0]["notes"] == notes
 
@@ -231,54 +231,56 @@ def test_the_documented_override_fields_are_all_exercised_above():
     assert used == set(rules.OVERRIDE_FIELDS)
 
 
-def test_normalise_session_drops_a_rule_with_an_unknown_field_and_names_it():
-    """A saved session written before this check loads with the rule gone and the field named — the
+def test_normalise_scenario_drops_a_rule_with_an_unknown_field_and_names_it():
+    """A saved scenario written before this check loads with the rule gone and the field named — the
     rule never did what its author meant, and silently keeping it is how that stayed invisible."""
-    session = rules.normalise_session(
+    scenario = rules.normalise_scenario(
         {"overrides": [{"mode": "replace", "match": {"path": "/api/items"}, "statsu": 503}]}, "s"
     )
-    assert session["overrides"] == []
-    assert len(session["_problems"]) == 1
-    assert "override[0]: unknown field 'statsu'" in session["_problems"][0]
+    assert scenario["overrides"] == []
+    assert len(scenario["_problems"]) == 1
+    assert "override[0]: unknown field 'statsu'" in scenario["_problems"][0]
 
 
-def test_normalise_session_drops_invalid_overrides_and_reports_them():
-    session = rules.normalise_session(
+def test_normalise_scenario_drops_invalid_overrides_and_reports_them():
+    scenario = rules.normalise_scenario(
         {"overrides": [{"mode": "replace", "id": "ok"}, {"mode": "bogus", "id": "bad"}]}, "s"
     )
-    assert [o["id"] for o in session["overrides"]] == ["ok"]
-    assert len(session["_problems"]) == 1
+    assert [o["id"] for o in scenario["overrides"]] == ["ok"]
+    assert len(scenario["_problems"]) == 1
 
 
 def test_a_hand_written_override_does_not_need_an_id():
-    """Writing a session by hand is the documented workflow; requiring an invented id meant a
+    """Writing a scenario by hand is the documented workflow; requiring an invented id meant a
     pasted example silently loaded zero rules."""
-    session = rules.normalise_session({"overrides": [{"mode": "replace", "status": 500, "match": {"path": "/a"}}]}, "s")
-    assert len(session["overrides"]) == 1
-    assert session["overrides"][0]["id"].startswith("ovr_")
-    assert not session["_problems"]
+    scenario = rules.normalise_scenario(
+        {"overrides": [{"mode": "replace", "status": 500, "match": {"path": "/a"}}]}, "s"
+    )
+    assert len(scenario["overrides"]) == 1
+    assert scenario["overrides"][0]["id"].startswith("ovr_")
+    assert not scenario["_problems"]
 
 
 def test_a_derived_id_is_stable_across_loads():
     rule = {"mode": "replace", "status": 500, "match": {"path": "/a"}}
-    first = rules.normalise_session({"overrides": [dict(rule)]}, "s")["overrides"][0]["id"]
-    second = rules.normalise_session({"overrides": [dict(rule)]}, "s")["overrides"][0]["id"]
+    first = rules.normalise_scenario({"overrides": [dict(rule)]}, "s")["overrides"][0]["id"]
+    second = rules.normalise_scenario({"overrides": [dict(rule)]}, "s")["overrides"][0]["id"]
     assert first == second
 
 
 def test_different_rules_get_different_derived_ids():
-    a = rules.normalise_session({"overrides": [{"mode": "replace", "match": {"path": "/a"}}]}, "s")
-    b = rules.normalise_session({"overrides": [{"mode": "replace", "match": {"path": "/b"}}]}, "s")
+    a = rules.normalise_scenario({"overrides": [{"mode": "replace", "match": {"path": "/a"}}]}, "s")
+    b = rules.normalise_scenario({"overrides": [{"mode": "replace", "match": {"path": "/b"}}]}, "s")
     assert a["overrides"][0]["id"] != b["overrides"][0]["id"]
 
 
-def test_normalise_session_tolerates_a_missing_overrides_key():
-    assert rules.normalise_session({"name": "s"}, "s")["overrides"] == []
+def test_normalise_scenario_tolerates_a_missing_overrides_key():
+    assert rules.normalise_scenario({"name": "s"}, "s")["overrides"] == []
 
 
-def test_normalise_session_rejects_a_non_object():
+def test_normalise_scenario_rejects_a_non_object():
     with pytest.raises(rules.ValidationError):
-        rules.normalise_session([], "s")
+        rules.normalise_scenario([], "s")
 
 
 def test_deep_merge_replaces_a_non_dict_upstream():
@@ -405,7 +407,7 @@ def test_a_step_inherits_the_parent_response_fields():
 
 def test_step_headers_replace_the_parent_wholesale():
     """Documented as a shallow overlay. A merge would be defensible but this is what is specified,
-    and the difference is invisible until a session relies on one of them."""
+    and the difference is invisible until a scenario relies on one of them."""
     view = rules.step_view(OVERLAY_PARENT, {"headers": {"X-Step": "2"}})
     assert view["headers"] == {"X-Step": "2"}
 
@@ -488,7 +490,7 @@ def test_advance_matcher_is_none_for_the_self_default():
 def test_duplicate_override_ids_are_reported_and_dropped():
     """Ids address a rule: add replaces by id, reset names one by id, and sequence state is keyed
     by it. Two rules sharing an id would share a cursor."""
-    session = rules.normalise_session(
+    scenario = rules.normalise_scenario(
         {
             "overrides": [
                 {"id": "dup", "mode": "replace", "match": {"path": "/a"}},
@@ -497,16 +499,16 @@ def test_duplicate_override_ids_are_reported_and_dropped():
         },
         "s",
     )
-    assert [o["match"]["path"] for o in session["overrides"]] == ["/a"]
-    assert any("duplicate id" in problem for problem in session["_problems"])
+    assert [o["match"]["path"] for o in scenario["overrides"]] == ["/a"]
+    assert any("duplicate id" in problem for problem in scenario["_problems"])
 
 
 def test_identical_rules_collide_on_their_derived_id_and_one_is_dropped():
     """Two byte-identical rules derive the same id, so the same rule applies."""
     rule = {"mode": "replace", "match": {"path": "/a"}}
-    session = rules.normalise_session({"overrides": [dict(rule), dict(rule)]}, "s")
-    assert len(session["overrides"]) == 1
-    assert len(session["_problems"]) == 1
+    scenario = rules.normalise_scenario({"overrides": [dict(rule), dict(rule)]}, "s")
+    assert len(scenario["overrides"]) == 1
+    assert len(scenario["_problems"]) == 1
 
 
 # MARK: - Untrusted input at the boundary
@@ -515,8 +517,8 @@ def test_identical_rules_collide_on_their_derived_id_and_one_is_dropped():
 def test_a_null_id_is_replaced_by_a_derived_one():
     """`setdefault` leaves an explicit null in place, so the rule loaded with no usable id: not
     addressable by the CLI, and recorded as `matched: null`, which reads as "nothing answered"."""
-    session = rules.normalise_session({"overrides": [{"id": None, "mode": "replace", "match": {"path": "/a"}}]}, "s")
-    assert session["overrides"][0]["id"].startswith("ovr_")
+    scenario = rules.normalise_scenario({"overrides": [{"id": None, "mode": "replace", "match": {"path": "/a"}}]}, "s")
+    assert scenario["overrides"][0]["id"].startswith("ovr_")
 
 
 @pytest.mark.parametrize("injected", ["bad", {"seq": {"cursor": 1, "runId": "x"}}])
@@ -524,22 +526,22 @@ def test_internal_runtime_keys_are_stripped_from_input(injected):
     """Underscore keys are ours. `_persistable` strips them on the way out, so nothing we wrote can
     contain one — but a hand-edited or imported file can, and `_ruleRuntime` reaching the store
     means either a crash inside a proxy hook or a scenario that quietly starts on step 2."""
-    session = rules.normalise_session({"_ruleRuntime": injected, "overrides": []}, "s")
-    assert "_ruleRuntime" not in session
+    scenario = rules.normalise_scenario({"_ruleRuntime": injected, "overrides": []}, "s")
+    assert "_ruleRuntime" not in scenario
 
 
 # MARK: - Explaining a matcher
 #
 # `matches_matcher` is now `explain_matcher(...) is None`, so these pin the edges where the two
 # could have parted company. Validation checks these fields' types but not their emptiness, and a
-# saved session may carry `""` or `{}` — which the wire has always treated as "no constraint".
+# saved scenario may carry `""` or `{}` — which the wire has always treated as "no constraint".
 
 
 @pytest.mark.parametrize(
     "matcher,method,path,query,body,expected",
     [
         # Fields validation accepts but does not require to be non-empty. The wire has always read
-        # these as "no constraint", and a saved session may contain them.
+        # these as "no constraint", and a saved scenario may contain them.
         ({}, "GET", "/a", {}, "", True),
         ({"method": ""}, "POST", "/a", {}, "", True),
         ({"path": ""}, "GET", "/a", {}, "", True),
@@ -641,41 +643,41 @@ def test_an_explicit_null_match_is_rejected():
         rules.validate_override({"mode": "replace", "status": 200, "match": None})
 
 
-# MARK: - Session schema version
+# MARK: - Scenario schema version
 
 
-def test_a_session_without_a_schema_version_is_read_as_version_1():
-    """The field has always been optional, and hand-writing a session is the documented workflow."""
-    assert rules.normalise_session({"overrides": []}, "s")["schemaVersion"] == 1
+def test_a_scenario_without_a_schema_version_is_read_as_version_1():
+    """The field has always been optional, and hand-writing a scenario is the documented workflow."""
+    assert rules.normalise_scenario({"overrides": []}, "s")["schemaVersion"] == 1
 
 
-def test_an_unsupported_schema_version_refuses_the_whole_session():
+def test_an_unsupported_schema_version_refuses_the_whole_scenario():
     """A file written for a format this engine does not know would be read with the wrong rules —
-    silently, and only in the ways the format changed. Refusing turns it into a session the loader
+    silently, and only in the ways the format changed. Refusing turns it into a scenario the loader
     names as skipped, which is a different thing to act on from one that loaded and behaves oddly."""
     with pytest.raises(rules.ValidationError, match="schemaVersion"):
-        rules.normalise_session({"schemaVersion": 2, "overrides": []}, "s")
+        rules.normalise_scenario({"schemaVersion": 2, "overrides": []}, "s")
 
 
 def test_a_boolean_schema_version_is_not_read_as_version_1():
     """`isinstance(True, int)` is True, so `"schemaVersion": true` would otherwise load as the
     version it happens to equal rather than being reported as the typo it is."""
     with pytest.raises(rules.ValidationError, match="schemaVersion"):
-        rules.normalise_session({"schemaVersion": True, "overrides": []}, "s")
+        rules.normalise_scenario({"schemaVersion": True, "overrides": []}, "s")
 
 
 @pytest.mark.parametrize("version", ["1", 1.0, None, [1]])
 def test_a_non_integer_schema_version_is_refused(version):
     with pytest.raises(rules.ValidationError, match="schemaVersion"):
-        rules.normalise_session({"schemaVersion": version, "overrides": []}, "s")
+        rules.normalise_scenario({"schemaVersion": version, "overrides": []}, "s")
 
 
 def test_a_valid_rule_survives_a_refused_schema_version_nowhere():
-    """The refusal is whole-session: no part of a file stamped with an unknown version is kept,
+    """The refusal is whole-scenario: no part of a file stamped with an unknown version is kept,
     because nothing in it can be trusted to mean what this engine would read it as."""
     payload = {"schemaVersion": 99, "overrides": [{"mode": "replace", "status": 200, "match": {"path": "/a"}}]}
     with pytest.raises(rules.ValidationError):
-        rules.normalise_session(payload, "s")
+        rules.normalise_scenario(payload, "s")
 
 
 # MARK: - Numbers that are not numbers
@@ -706,4 +708,4 @@ def test_a_status_that_is_not_a_usable_integer_is_refused_the_same_way(status):
 @pytest.mark.parametrize("version", [float("inf"), float("nan"), 10**400])
 def test_a_schema_version_that_is_not_a_usable_integer_is_refused_the_same_way(version):
     with pytest.raises(rules.ValidationError, match="schemaVersion"):
-        rules.normalise_session({"schemaVersion": version, "overrides": []}, "s")
+        rules.normalise_scenario({"schemaVersion": version, "overrides": []}, "s")

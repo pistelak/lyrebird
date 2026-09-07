@@ -1,7 +1,7 @@
 """Which profile a control call means.
 
 One proxy holds the control port. With profile A running, `lyrebird --profile B use X` reached A,
-switched A's session and printed success — so the operator watched an unchanged profile B. Every
+switched A's scenario and printed success — so the operator watched an unchanged profile B. Every
 call now names its profile, and a command that reads or writes for the wrong one fails.
 """
 
@@ -63,7 +63,7 @@ def test_a_mutation_names_the_profile_it_means(profile, runner, monkeypatch):
 
 
 def test_a_read_names_the_profile_it_means_too(profile, monkeypatch):
-    """A read answered by another profile's proxy reports its sessions, counters and traffic as
+    """A read answered by another profile's proxy reports its scenarios, counters and traffic as
     this profile's — a wrong answer, not a missing one."""
     seen = _records_the_request(monkeypatch, [])
 
@@ -71,7 +71,7 @@ def test_a_read_names_the_profile_it_means_too(profile, monkeypatch):
     assert seen["headers"]["x-lyrebird-profile"] == config.PROFILE_FINGERPRINT
 
 
-def test_use_refuses_to_switch_a_session_in_someone_elses_profile(profile, runner, monkeypatch):
+def test_use_refuses_to_switch_a_scenario_in_someone_elses_profile(profile, runner, monkeypatch):
     """The bug in its original form: `--profile B use X` switched profile A and said "active: X"."""
     _answers_with_a_conflict(monkeypatch)
 
@@ -271,7 +271,7 @@ def test_override_add_help_lists_every_matcher_field(profile, runner):
 def test_status_json_says_null_when_the_engine_cannot_report(profile, runner, monkeypatch):
     """A proxy still running from before these fields existed cannot answer the question. Reporting
     `[]` would say "nothing has answered", which is a different claim from "I could not ask"."""
-    monkeypatch.setattr(api, "_health", lambda: {"activeSession": "default", "sessions": []})
+    monkeypatch.setattr(api, "_health", lambda: {"activeScenario": "default", "scenarios": []})
     _status_network(monkeypatch)
     payload = json.loads(runner.invoke(cli.cli, ["status", "--json"]).output)
     assert payload["answers"] is None and payload["sequences"] is None

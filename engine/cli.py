@@ -1,18 +1,18 @@
 """lyrebird — supervisor and macOS integration for the Lyrebird mock proxy.
 
     lyrebird init [PATH]                  create a profile from the bundled examples
-    lyrebird up [--use <session>] [--no-relaunch] [--simulator <udid-or-name>]
+    lyrebird up [--use <scenario>] [--no-relaunch] [--simulator <udid-or-name>]
                                           start proxy, trust CA, install PAC, select, relaunch
     lyrebird down                         stop proxy and restore the previous proxy settings
-    lyrebird use <session>                switch active session (reports what it displaced)
+    lyrebird use <scenario>               switch active scenario (reports what it displaced)
     lyrebird recent [--json] [--matched]  what came through, and which overrides answered
-    lyrebird override add <json>          add a rule to the active session, no restart
-    lyrebird validate [session]           check saved session files offline; non-zero if any is
+    lyrebird override add <json>          add a rule to the active scenario, no restart
+    lyrebird validate [scenario]          check saved scenario files offline; non-zero if any is
                                           not loadable whole
     lyrebird explain-match <method> <path>  which rule would be selected, and why the rest were not
-                                          (--session NAME reads a file instead of the proxy)
+                                          (--scenario NAME reads a file instead of the proxy)
     lyrebird assert-answered <id> [--run R]  exit non-zero unless that rule answered in that run
-    lyrebird session new <name>           create a scratch session (--clone-from X)
+    lyrebird scenario new <name>          create a scratch scenario (--clone-from X)
     lyrebird reset [id] [--json]          start a fresh run: rewind sequences, clear answer counts
     lyrebird sequence wait <id> --step N  block until a sequence serves a given step
     lyrebird status [--json]              show intercept state (honest about PAC on/off)
@@ -61,7 +61,7 @@ cli.add_command(supervisor.status)
 cli.add_command(scenario.use)
 cli.add_command(scenario.recent)
 cli.add_command(scenario.override)
-cli.add_command(scenario.session)
+cli.add_command(scenario.scenario_group)
 cli.add_command(evidence.sequence)
 cli.add_command(evidence.reset)
 cli.add_command(evidence.assert_answered)

@@ -49,7 +49,7 @@ def sequence_wait(override_id: str, step: int, timeout: int) -> None:
     api._require_same_profile(health)
     state = _find_sequence(health, override_id)
     if state is None:
-        click.echo(f"{ui.RED}✗ no sequence '{override_id}' in the active session{ui.R}")
+        click.echo(f"{ui.RED}✗ no sequence '{override_id}' in the active scenario{ui.R}")
         raise SystemExit(1)
     if not 1 <= step <= state["stepCount"]:
         click.echo(f"{ui.RED}✗ '{override_id}' has {state['stepCount']} step(s); --step {step} is out of range{ui.R}")
@@ -146,7 +146,7 @@ def sequence_wait(override_id: str, step: int, timeout: int) -> None:
 def reset(override_id: str | None, as_json: bool) -> None:
     """Start a fresh run: rewind sequences to step 1 and clear answer counts.
 
-    With no ID, resets every rule in the active session. Run this immediately before the action you
+    With no ID, resets every rule in the active scenario. Run this immediately before the action you
     are about to test, not once at start-up — the app's launch fetches land in between, and evidence
     they leave behind would satisfy an `assert-answered` the test itself never earned.
 
@@ -155,17 +155,17 @@ def reset(override_id: str | None, as_json: bool) -> None:
     what binds the assertion to *this* boundary instead of to whichever run is current when it looks.
 
     Run state is in memory, so this is also the only way to replay a scenario without switching
-    sessions.
+    scenarios.
     """
     result = api._control("/__mock__/reset", "POST", {"id": override_id} if override_id else {})
     reset_ids = result.get("reset") or {}
     if as_json:
         # A formatting flag decides how this is printed and nothing else: same call, same exit,
         # same meaning — including the empty case, which is a real answer ("no rules here").
-        click.echo(json.dumps({"session": result.get("session"), "reset": reset_ids}, indent=2))
+        click.echo(json.dumps({"scenario": result.get("scenario"), "reset": reset_ids}, indent=2))
         return
     if not reset_ids:
-        click.echo(f"{ui.DIM}no rules in '{result.get('session')}' — nothing to reset{ui.R}")
+        click.echo(f"{ui.DIM}no rules in '{result.get('scenario')}' — nothing to reset{ui.R}")
         return
     for name, run_id in reset_ids.items():
         click.echo(f"✓ reset {name} {ui.DIM}(run {run_id}){ui.R}")
@@ -190,7 +190,7 @@ def _require_run(override_id: str, state: dict, required: str) -> None:
     Missing identity is neither a mismatch nor a zero count, and gets the same distinct exit as a
     mismatch rather than the one for "it answered nothing": an engine older than the field cannot
     say which run its counts belong to, and a `runId` of `null` says the rule has no run at all —
-    dropped by a session switch or by a replacement under the same id, or never made. Reporting
+    dropped by a scenario switch or by a replacement under the same id, or never made. Reporting
     either as a rule that answered nothing would send someone to debug a matcher that is fine.
     """
     if "runId" not in state:
@@ -206,7 +206,7 @@ def _require_run(override_id: str, state: dict, required: str) -> None:
     reason = (
         f"is in run {current}"
         if current
-        else "has no run at all — a session switch or a rule replaced under the same id dropped its run state"
+        else "has no run at all — a scenario switch or a rule replaced under the same id dropped its run state"
     )
     click.echo(
         f"{ui.RED}✗ '{override_id}' {reason}, not run {required}.{ui.R}\n"
@@ -242,14 +242,14 @@ def assert_answered(override_id: str, required_run: str | None, timeout: int) ->
     Pass `--run` with the id `reset` printed for the rule and the evidence must come from that
     boundary. Without it the assertion is the weaker one it has always been — "has this rule
     answered in whatever run is current right now" — and a second reset, a rule replaced under the
-    same id, or a session switch between the action and the assertion starts a run whose count is
+    same id, or a scenario switch between the action and the assertion starts a run whose count is
     not the one the test earned. Same-id, different run reads identically otherwise.
 
     \b
     Exit codes with --run — 1 means the assertion was made and failed, 3 that it could not be made:
       0  the rule answered, in the run you required
       1  the rule is in that run and has answered nothing (including: it is inactive)
-      3  the run you named is not the rule's current run, the rule is not in the active session at
+      3  the run you named is not the rule's current run, the rule is not in the active scenario at
          all, or nothing could be read about it — an unreachable proxy, one too old to report
          runs, or another profile's proxy holding the port
 
@@ -292,10 +292,10 @@ def assert_answered(override_id: str, required_run: str | None, timeout: int) ->
         state = next((s for s in health["answers"] if s.get("id") == override_id), None)
         if state is None:
             # A typo must not read as "it never fired": different bug, different fix.
-            active = health.get("activeSession")
-            click.echo(f"{ui.RED}✗ no rule '{override_id}' in session '{active}'{ui.R}")
+            active = health.get("activeScenario")
+            click.echo(f"{ui.RED}✗ no rule '{override_id}' in scenario '{active}'{ui.R}")
             if required_run:
-                # The rule can also vanish *during* the wait — a session switched to one that does
+                # The rule can also vanish *during* the wait — a scenario switched to one that does
                 # not carry this id — and that destroys the boundary rather than answering the
                 # question about it. Same code as a run that moved, for the same reason.
                 click.echo(f"   Run {required_run} cannot be checked: the rule is not there to have answered in it.")
@@ -367,7 +367,7 @@ def wait_ready(timeout: int, want_match: bool) -> None:
         return entries[0].get("time", "") if entries else ""
 
     # Only traffic that arrives from now on counts. Without this the retained buffer could
-    # satisfy the wait instantly with a request made before the session was even switched.
+    # satisfy the wait instantly with a request made before the scenario was even switched.
     baseline = newest(api._get_json("/__mock__/recent", timeout=2) or [])
     deadline = time.time() + timeout
     while time.time() < deadline:

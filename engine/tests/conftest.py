@@ -26,7 +26,7 @@ import supervisor
 def profile(tmp_path, monkeypatch):
     """A temporary profile + state directory, with config re-resolved to point at them."""
     profile_dir = tmp_path / "profile"
-    (profile_dir / "sessions").mkdir(parents=True)
+    (profile_dir / "scenarios").mkdir(parents=True)
     monkeypatch.setenv("LYREBIRD_STATE_DIR", str(tmp_path / "state"))
     config.configure(str(profile_dir))
     yield profile_dir

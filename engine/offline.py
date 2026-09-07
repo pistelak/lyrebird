@@ -1,7 +1,7 @@
 """Checking a scenario without changing anything: `validate` and `explain-match`.
 
-`validate` and `explain-match --session` read session files and never touch the proxy;
-`explain-match` without `--session` reads the running proxy's rule list through `api`, and only
+`validate` and `explain-match --scenario` read scenario files and never touch the proxy;
+`explain-match` without `--scenario` reads the running proxy's rule list through `api`, and only
 reads it. Nothing here starts a process, writes a file or changes network settings.
 """
 
@@ -23,61 +23,66 @@ import ui
 # MARK: - Offline inspection
 #
 # The file-reading path. Nothing here starts a process, touches network settings or constructs a
-# `Store` — a store creates directories, synthesises a `default` session and reads the
-# active-session pointer, all of which are changes to a profile somebody else may be using.
-# `store.load_session_file` is the same function startup loads with, so what these commands
+# `Store` — a store creates directories, synthesises a `default` scenario and reads the
+# active-scenario pointer, all of which are changes to a profile somebody else may be using.
+# `store.load_scenario_file` is the same function startup loads with, so what these commands
 # report is what the proxy would do, not a second opinion about it. (`explain_match` without
-# `--session` is the one call to the control API in this module, and it only reads.)
+# `--scenario` is the one call to the control API in this module, and it only reads.)
 
 
-def _resolve_session(name: str) -> tuple[Path | None, list[str]]:
-    """The file holding the saved session called `name`, or why there is not one.
+def _resolve_scenario(name: str) -> tuple[Path | None, list[str]]:
+    """The file holding the saved scenario called `name`, or why there is not one.
 
-    A name that names nothing is an error, never an empty session: a typo and a scenario with no
+    A name that names nothing is an error, never an empty scenario: a typo and a scenario with no
     rules in it need completely different fixes, and only one of them is worth a hint listing the
     names that *do* exist. Shared by both commands so a name is looked up, and refused, one way.
     """
     try:
-        path = store.session_path(name)
+        path = store.scenario_path(name)
+        if not path.is_file():
+            known = ", ".join(file.stem for file in store.scenario_files()) or "none"
+            return None, [f"no scenario {name!r} in {config.SCENARIOS_DIR} (found: {known})"]
     except store.UnsafeName as error:
         return None, [str(error)]
-    if not path.is_file():
-        known = ", ".join(file.stem for file in store.session_files()) or "none"
-        return None, [f"no session {name!r} in {config.SESSIONS_DIR} (found: {known})"]
+    except store.LegacyProfileLayout as error:
+        # A problem, not a bare sentence printed on the way out: both callers report through a
+        # `--json` envelope, and a profile whose scenarios are all under the old name must not read
+        # as one that simply lacks the name asked for — see test_validate_refuses_a_legacy_sessions_layout.
+        return None, [str(error)]
     return path, []
 
 
-def _offline_session(name: str) -> tuple[dict | None, list[str]]:
-    """Load the saved session called `name` from its file: `(session, problems)`."""
-    path, problems = _resolve_session(name)
-    return store.load_session_file(path) if path is not None else (None, problems)
+def _offline_scenario(name: str) -> tuple[dict | None, list[str]]:
+    """Load the saved scenario called `name` from its file: `(scenario, problems)`."""
+    path, problems = _resolve_scenario(name)
+    return store.load_scenario_file(path) if path is not None else (None, problems)
 
 
 def _validation_report(file: Path) -> dict:
-    """One file's verdict. `loaded` and `ok` are separate answers on purpose: a session can load
+    """One file's verdict. `loaded` and `ok` are separate answers on purpose: a scenario can load
     and still be missing the rule you came for, and `problems` says which."""
-    session, problems = store.load_session_file(file)
+    scenario, problems = store.load_scenario_file(file)
     return {
         "name": file.stem,
         "file": str(file),
-        "loaded": session is not None,
-        "ok": session is not None and not problems,
+        "loaded": scenario is not None,
+        "ok": scenario is not None and not problems,
         # None, not 0: a file that was refused whole has no rule count, and reporting zero would
-        # read as a session that loaded and happens to be empty.
-        "overrideCount": len(session.get("overrides", [])) if session else None,
+        # read as a scenario that loaded and happens to be empty.
+        "overrideCount": len(scenario.get("overrides", [])) if scenario else None,
         "problems": problems,
     }
 
 
 @click.command()
-@click.argument("name", metavar="[SESSION]", required=False)
+@click.argument("name", metavar="[SCENARIO]", required=False)
 @click.option("--json", "as_json", is_flag=True, help="Machine-readable output.")
 def validate(name: str | None, as_json: bool) -> None:
-    """Check saved session files the way the proxy reads them — without starting anything.
+    """Check saved scenario files the way the proxy reads them — without starting anything.
 
-    With no SESSION, checks every file in `<profile>/sessions/`.
+    With no SCENARIO, checks every file in `<profile>/scenarios/`.
 
-    Exits non-zero unless every session named can be accepted whole. That is the point: startup
+    Exits non-zero unless every scenario named can be accepted whole. That is the point: startup
     reports a malformed rule and carries on with the rest of the file, so a scenario can be live
     and quietly missing the one rule you are relying on. This is where that shows up, before a
     build and a walk through the app blames the app.
@@ -85,30 +90,34 @@ def validate(name: str | None, as_json: bool) -> None:
     Nothing here starts a proxy, changes network settings, or writes to the profile.
     """
     # `problems` holds what went wrong with the *request* rather than with a file — a name that
-    # names nothing, a name that could not be one, a profile with no sessions in it. Kept separate
+    # names nothing, a name that could not be one, a profile with no scenarios in it. Kept separate
     # from the per-file verdicts, and reported through the same two outputs, so that every way this
     # command can fail is still the shape `--json` promises. Printing a bare sentence on these
     # paths, as this first did, hands a parsing caller something it cannot read on exactly the
     # failures it most needs to act on.
     files: list[Path]
     if name is not None:
-        path, problems = _resolve_session(name)
+        path, problems = _resolve_scenario(name)
         files = [path] if path is not None else []
     else:
-        files, problems = store.session_files(), []
-        if not files:
-            # Not a green "nothing wrong": a command named for checking sessions that checked none
-            # has not validated anything, and the usual cause is the wrong --profile.
-            problems = [
-                f"no session files in {config.SESSIONS_DIR} — check --profile, or create "
-                f"a profile with `lyrebird init {config.PROFILE_DIR}`"
-            ]
+        try:
+            files, problems = store.scenario_files(), []
+        except store.LegacyProfileLayout as error:
+            files, problems = [], [str(error)]
+        else:
+            if not files:
+                # Not a green "nothing wrong": a command named for checking scenarios that checked
+                # none has not validated anything, and the usual cause is the wrong --profile.
+                problems = [
+                    f"no scenario files in {config.SCENARIOS_DIR} — check --profile, or create "
+                    f"a profile with `lyrebird init {config.PROFILE_DIR}`"
+                ]
 
     reports = [_validation_report(file) for file in files]
     ok = not problems and all(report["ok"] for report in reports)
 
     if as_json:
-        click.echo(json.dumps({"ok": ok, "problems": problems, "sessions": reports}, indent=2))
+        click.echo(json.dumps({"ok": ok, "problems": problems, "scenarios": reports}, indent=2))
         raise SystemExit(0 if ok else 1)
 
     for problem in problems:
@@ -116,7 +125,7 @@ def validate(name: str | None, as_json: bool) -> None:
 
     for report in reports:
         count = report["overrideCount"]
-        # A trailing space as well as the padding: a session name may be longer than the column,
+        # A trailing space as well as the padding: a scenario name may be longer than the column,
         # and without it a long name runs straight into its rule count.
         label = f"{report['name']:<24} "
         if report["ok"]:
@@ -133,10 +142,10 @@ def validate(name: str | None, as_json: bool) -> None:
         if reports:
             click.echo(
                 f"{ui.RED}✗ {sum(1 for r in reports if not r['ok'])} of {len(reports)} "
-                f"session(s) cannot be accepted whole{ui.R}"
+                f"scenario(s) cannot be accepted whole{ui.R}"
             )
         raise SystemExit(1)
-    click.echo(f"{ui.GREEN}✓ {len(reports)} session(s) load whole{ui.R}")
+    click.echo(f"{ui.GREEN}✓ {len(reports)} scenario(s) load whole{ui.R}")
 
 
 @click.command(name="explain-match")
@@ -144,14 +153,14 @@ def validate(name: str | None, as_json: bool) -> None:
 @click.argument("path")
 @click.option("--body", default="", help="Request body text, for rules using bodyContains.")
 @click.option(
-    "--session",
-    "session_name",
+    "--scenario",
+    "scenario_name",
     default=None,
     metavar="NAME",
-    help="Explain against this saved session file instead of the running proxy.",
+    help="Explain against this saved scenario file instead of the running proxy.",
 )
 @click.option("--json", "as_json", is_flag=True, help="Machine-readable output.")
-def explain_match(method: str, path: str, body: str, session_name: str | None, as_json: bool) -> None:
+def explain_match(method: str, path: str, body: str, scenario_name: str | None, as_json: bool) -> None:
     """Which rule a request would select, and why each of the others would not.
 
     Answers at the keyboard what otherwise costs a cold launch and a walk through the app. It also
@@ -160,9 +169,9 @@ def explain_match(method: str, path: str, body: str, session_name: str | None, a
 
     PATH may carry a query string: `lyrebird explain-match GET '/api/items?kind=alpha'`.
 
-    With --session it reads a saved session file instead of the running proxy: no proxy, no network
+    With --scenario it reads a saved scenario file instead of the running proxy: no proxy, no network
     change, and nothing written. The verdict comes from the same matching code the engine runs, and
-    the session is read by the same loader startup uses, so a rule the proxy would drop is dropped
+    the scenario is read by the same loader startup uses, so a rule the proxy would drop is dropped
     here too — and reported, with a non-zero exit, rather than silently absent from the ranking.
 
     It reports what would be *selected*, never what would be returned. A `patch` answers only if the
@@ -178,11 +187,11 @@ def explain_match(method: str, path: str, body: str, session_name: str | None, a
         query.setdefault(key, value)
 
     problems: list[str] = []
-    if session_name is not None:
-        session, problems = _offline_session(session_name)
-        if session is None:
+    if scenario_name is not None:
+        scenario, problems = _offline_scenario(scenario_name)
+        if scenario is None:
             # No ranking to show and no honest way to imply one — every rule in the file is absent,
-            # not out-ranked, and "nothing would be selected" is the same sentence an empty session
+            # not out-ranked, and "nothing would be selected" is the same sentence an empty scenario
             # produces. Say which file could not be read instead.
             if as_json:
                 click.echo(json.dumps({"selected": None, "candidates": [], "problems": problems}, indent=2))
@@ -190,7 +199,7 @@ def explain_match(method: str, path: str, body: str, session_name: str | None, a
                 for problem in problems:
                     click.echo(f"{ui.RED}✗ {problem}{ui.R}")
             raise SystemExit(1)
-        overrides = list(session.get("overrides", []))
+        overrides = list(scenario.get("overrides", []))
     else:
         overrides = api._control("/__mock__/overrides") or []
     selected = rules.find_override(overrides, method, split.path, query, body)
@@ -219,9 +228,9 @@ def explain_match(method: str, path: str, body: str, session_name: str | None, a
 
     if as_json:
         payload: dict[str, Any] = {"selected": (selected or {}).get("id"), "candidates": report}
-        if session_name is not None:
-            # Only with --session: there is a file whose problems we actually read. Reporting `[]`
-            # for the live proxy would claim its session loaded whole, which this never checked.
+        if scenario_name is not None:
+            # Only with --scenario: there is a file whose problems we actually read. Reporting `[]`
+            # for the live proxy would claim its scenario loaded whole, which this never checked.
             payload["problems"] = problems
         click.echo(json.dumps(payload, indent=2))
         raise SystemExit(0 if selected and whole else 1)

@@ -20,6 +20,7 @@ import api
 import config
 import netproxy
 import simulator as sim
+import store
 import ui
 
 MITMDUMP = config.ROOT / ".venv" / "bin" / "mitmdump"
@@ -101,7 +102,7 @@ def _require_profile() -> None:
             f"{ui.RED}no profile at {config.PROFILE_DIR}{ui.R}\n"
             f"  create one:   lyrebird init {config.PROFILE_DIR}\n"
             f"  or point at an existing one:  lyrebird --profile /path/to/profile ...\n"
-            f"  (a profile is a directory containing profile.json and sessions/)"
+            f"  (a profile is a directory containing profile.json and scenarios/)"
         )
     # Refused, not warned about: with no hosts there is nothing `up` could achieve, and it
     # used to trust the CA, install a DIRECT-only PAC, relaunch the app, print INTERCEPT ACTIVE
@@ -122,6 +123,13 @@ def init(path: str | None) -> None:
     target = Path(path).expanduser().resolve() if path else config.PROFILE_DIR
     if (target / "profile.json").exists():
         raise SystemExit(f"{ui.RED}{target}/profile.json already exists — refusing to overwrite{ui.R}")
+    # Checked on the target, not on `config.PROFILE_DIR`: `init PATH` writes somewhere else. Copying
+    # the examples into a profile that still has `sessions/` would leave two directories of scenarios
+    # with only one of them read — see test_init_refuses_a_legacy_sessions_layout.
+    try:
+        store.refuse_legacy_layout(target)
+    except store.LegacyProfileLayout as error:
+        raise SystemExit(f"{ui.RED}{error}{ui.R}") from None
     target.mkdir(parents=True, exist_ok=True)
     shutil.copytree(config.EXAMPLES_DIR, target, dirs_exist_ok=True)
     click.echo(f"✓ profile created at {ui.BOLD}{target}{ui.R}")
@@ -147,7 +155,7 @@ def init(path: str | None) -> None:
     help="Launch nothing; the caller starts the app once `up` has exited 0.",
 )
 @click.option(
-    "--use", "use_name", default=None, help="Select this session before the app is relaunched, so the launch meets it."
+    "--use", "use_name", default=None, help="Select this scenario before the app is relaunched, so the launch meets it."
 )
 @click.option(
     "--simulator",
@@ -160,9 +168,9 @@ def init(path: str | None) -> None:
 def up(bundle_id: str | None, no_relaunch: bool, use_name: str | None, simulator_selector: str | None) -> None:
     """Start the proxy, trust the CA in the simulator, and install the host-scoped PAC.
 
-    With `--use NAME` the session is selected — and its sequences rewound — before the app is
+    With `--use NAME` the scenario is selected — and its sequences rewound — before the app is
     relaunched, so the app's launch requests are answered by that scenario rather than by
-    whichever session was last active. That is what a `use` afterwards is too late to fix for an
+    whichever scenario was last active. That is what a `use` afterwards is too late to fix for an
     app that caches its launch response.
 
     With `--no-relaunch` nothing is launched: pass it when a UI runner owns the app, and start it
@@ -178,7 +186,7 @@ def up(bundle_id: str | None, no_relaunch: bool, use_name: str | None, simulator
     if no_relaunch and bundle_id:
         raise click.UsageError("--relaunch and --no-relaunch contradict each other: pass one.")
     if use_name is not None and not use_name.strip():
-        raise click.UsageError("--use needs a session name.")
+        raise click.UsageError("--use needs a scenario name.")
 
     _require_profile()
     config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
@@ -215,15 +223,15 @@ def _acquire_lock(lock: Any, timeout: float = _LOCK_WAIT_SECONDS) -> None:
             time.sleep(0.5)
 
 
-def _activate_session(name: str) -> None:
-    """Make `name` the active session, and report what it displaced.
+def _activate_scenario(name: str) -> None:
+    """Make `name` the active scenario, and report what it displaced.
 
     Shared by `use` and `up --use` so the two cannot drift into describing the same switch
-    differently. Activation is also what rewinds the session's sequences, so the scenario starts
+    differently. Activation is also what rewinds the scenario's sequences, so the scenario starts
     from its first step rather than resuming where the last run left it — which is why `--use` on
-    the session that is already active is not a no-op.
+    the scenario that is already active is not a no-op.
     """
-    result = api._control("/__mock__/sessions/active", "PUT", {"name": name})
+    result = api._control("/__mock__/scenarios/active", "PUT", {"name": name})
     previous = result.get("previous")
     if previous and previous["name"] != result["active"]:
         click.echo(
@@ -235,19 +243,19 @@ def _activate_session(name: str) -> None:
 
 
 def _load_problems_for(health: dict | None, name: str) -> list[str] | None:
-    """What stopped session `name` loading whole, or None if nobody could say.
+    """What stopped scenario `name` loading whole, or None if nobody could say.
 
     None is not an empty list. A proxy older than this CLI does not report the field at all, and
     reading that silence as "there were none" would let `up --use` relaunch the app against a
-    session it never checked, while printing what it prints when the session is whole.
+    scenario it never checked, while printing what it prints when the scenario is whole.
 
-    The answer comes from `sessionsNotWhole`, which the proxy keys by session, rather than from
+    The answer comes from `scenariosNotWhole`, which the proxy keys by scenario, rather than from
     the `loadProblems` strings beside it. Those cannot be matched back: a file named
     `orders-outage.json: backup.json` produces `"skipped orders-outage.json: backup.json: …"`,
     which begins exactly like a problem with `orders-outage` — and refusing to launch a scenario
     because a *differently named file* is broken is the same wrong answer in the other direction.
     """
-    reported = (health or {}).get("sessionsNotWhole")
+    reported = (health or {}).get("scenariosNotWhole")
     if not isinstance(reported, dict):
         return None
     return [str(problem) for problem in reported.get(name) or []]
@@ -261,13 +269,13 @@ def _select_before_relaunch(name: str, health: dict | None) -> str | None:
 
     * the running proxy cannot report what loaded — it predates the field. Unchecked is not the
       same as whole, and this is the one refusal a restart fixes outright.
-    * the session is there but did not load whole — overrides dropped for failing validation, or a
+    * the scenario is there but did not load whole — overrides dropped for failing validation, or a
       malformed `default.json` replaced by an empty in-memory `default`. Neither is visible in the
-      session list and both activate happily, so the PUT is not what can tell you.
-    * the PUT was refused — no such session, or the proxy stopped answering. `_control` has
+      scenario list and both activate happily, so the PUT is not what can tell you.
+    * the PUT was refused — no such scenario, or the proxy stopped answering. `_control` has
       already printed the API's own sentence and turned it into a `SystemExit`.
 
-    Health is the reading `up` already has rather than a fresh one: what a session failed to load
+    Health is the reading `up` already has rather than a fresh one: what a scenario failed to load
     is settled while the store is built and nothing afterwards adds to it, so asking again would
     only widen the window in which the rest of the reading moves under us.
     """
@@ -275,7 +283,7 @@ def _select_before_relaunch(name: str, health: dict | None) -> str | None:
     if problems is None:
         click.echo(
             f"{ui.RED}✗ the running proxy is older than this CLI and cannot say whether "
-            f"'{name}' loaded whole — the app was NOT relaunched against a session "
+            f"'{name}' loaded whole — the app was NOT relaunched against a scenario "
             f"nothing could check.{ui.R}\n"
             f"   restart the proxy: `lyrebird down && lyrebird up --use {name}`.\n"
             f"   the proxy is running — stop it with `lyrebird down`."
@@ -284,26 +292,26 @@ def _select_before_relaunch(name: str, health: dict | None) -> str | None:
     if problems:
         detail = "; ".join(problems)
         click.echo(
-            f"{ui.RED}✗ session '{name}' did not load whole: {detail}{ui.R}\n"
+            f"{ui.RED}✗ scenario '{name}' did not load whole: {detail}{ui.R}\n"
             f"   the app was NOT relaunched — fix the file, then "
             f"`lyrebird down && lyrebird up --use {name}`.\n"
             f"   the proxy is running — stop it with `lyrebird down`."
         )
-        return f"session '{name}' did not load whole: {detail}"
+        return f"scenario '{name}' did not load whole: {detail}"
 
     try:
-        _activate_session(name)
+        _activate_scenario(name)
     except SystemExit:
         # `_control` has already printed why on its way out. What it could not know is what the
         # failure costs here: the relaunch is off, because launching now would put the app in
-        # front of some session other than the one the caller named.
-        known = [str(session) for session in (health or {}).get("sessions") or []]
-        listing = f"\n   sessions in this profile: {', '.join(known)}" if known else ""
+        # front of some scenario other than the one the caller named.
+        known = [str(scenario) for scenario in (health or {}).get("scenarios") or []]
+        listing = f"\n   scenarios in this profile: {', '.join(known)}" if known else ""
         click.echo(
             f"{ui.RED}   could not select '{name}' — the app was NOT relaunched.{ui.R}{listing}\n"
             f"   the proxy is running — stop it with `lyrebird down`."
         )
-        return f"could not select session '{name}'"
+        return f"could not select scenario '{name}'"
     return None
 
 
@@ -312,12 +320,12 @@ def _up_locked(
 ) -> None:
     runtime = config.read_runtime()
     existing = api._health()
-    # Kept rather than fetched again later: this is the reading `--use` checks its session against.
+    # Kept rather than fetched again later: this is the reading `--use` checks its scenario against.
     health = existing
 
     if existing:
         api._require_same_profile(existing)
-        click.echo(f"{ui.YELLOW}proxy already running{ui.R} (session '{existing['activeSession']}')")
+        click.echo(f"{ui.YELLOW}proxy already running{ui.R} (scenario '{existing['activeScenario']}')")
         proxy_pid = existing.get("pid", 0)
     else:
         _start_fresh_log()
@@ -474,14 +482,14 @@ def _up_locked(
     config.write_runtime(state)
 
     # Before the relaunch, and that ordering is the whole point of `--use`: an app makes its first
-    # requests *while it launches*, so a session selected afterwards is one the launch never saw —
+    # requests *while it launches*, so a scenario selected afterwards is one the launch never saw —
     # and an app that caches its launch response goes on showing the old scenario however green a
     # later `use` looks. It runs whether or not there is a device to launch on: a caller who
-    # starts the app themselves still asked for that session.
+    # starts the app themselves still asked for that scenario.
     refused = _select_before_relaunch(use_name, health) if use_name else None
     if refused:
         # No relaunch, and no banner asking for one by hand either: both would put the app in front
-        # of the session the caller was trying to replace. The final look below still runs — the
+        # of the scenario the caller was trying to replace. The final look below still runs — the
         # proxy is up and the PAC is installed, and an operator not told that walks away believing
         # the network was left alone.
         failures.append(refused)
@@ -688,7 +696,7 @@ def status(as_json: bool) -> None:
     if not service:
         service, pac_error = _discover_service()
     # What the last `up` acted on, not a fresh lookup: the question `status` answers is which
-    # device this session trusted and relaunched, and re-resolving would report whatever is booted
+    # device this run trusted and relaunched, and re-resolving would report whatever is booted
     # now — a different device, with the old one's CA, reading as if it were the one in use.
     recorded_simulator = runtime.get("simulator")
     simulator = recorded_simulator if isinstance(recorded_simulator, dict) else None
@@ -721,9 +729,9 @@ def status(as_json: bool) -> None:
                     "profileFingerprint": config.PROFILE_FINGERPRINT,
                     "runningProfileFingerprint": running,
                     "pacError": pac_error,
-                    "activeSession": mine.get("activeSession"),
+                    "activeScenario": mine.get("activeScenario"),
                     "overrideCount": mine.get("overrideCount"),
-                    "sessions": None if foreign else (health or {}).get("sessions", []),
+                    "scenarios": None if foreign else (health or {}).get("scenarios", []),
                     # `null` when the running engine did not supply the field, never `[]`. A current
                     # engine always sends both, with one entry per rule — so `[]` is a real state ("no
                     # rules here") and a missing key is a capability signal ("this proxy cannot tell
@@ -764,7 +772,7 @@ def status(as_json: bool) -> None:
         else:
             ui._banner(health, service, intercepting)
         if health and not foreign:
-            click.echo(f"  sessions: {', '.join(health['sessions'])}")
+            click.echo(f"  scenarios: {', '.join(health['scenarios'])}")
             for state in health.get("sequences", []):
                 position = (
                     f"next step {state['nextStep']}/{state['stepCount']}"

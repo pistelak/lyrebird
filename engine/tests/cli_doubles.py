@@ -1,5 +1,5 @@
 """Doubles more than one CLI test module leans on: a fake `simctl` and the devices it reports,
-a fake proxy the CLI can select sessions on, the health payloads the commands read, and the `up`
+a fake proxy the CLI can select scenarios on, the health payloads the commands read, and the `up`
 that everything shelling out is stubbed under.
 
 Not named `test_*`, so pytest does not collect it. A double only one module uses lives in that
@@ -74,7 +74,7 @@ def fake_simctl(monkeypatch, devices, *, list_status=0, keychain_status=0, launc
     return calls
 
 
-_LIVE = {"pid": 4321, "activeSession": "default", "sessions": ["default"], "overrideCount": 0, "proxyPort": 8080}
+_LIVE = {"pid": 4321, "activeScenario": "default", "scenarios": ["default"], "overrideCount": 0, "proxyPort": 8080}
 
 
 def _up_after_a_crash(profile, monkeypatch, pac_status, *, service="Wi-Fi", health=None, stub_trust=True):
@@ -137,8 +137,8 @@ def _health_payload(**extra):
     against a payload that omitted it."""
     return {
         "pid": 1,
-        "sessions": ["default"],
-        "activeSession": "default",
+        "scenarios": ["default"],
+        "activeScenario": "default",
         "overrideCount": 1,
         "simBundleId": None,
         "proxyPort": 8080,
@@ -162,7 +162,7 @@ def _polling(states, build):
 def _answers_over(*states):
     """Answer counts under the poll, sharing the envelope with `_health_over`.
 
-    Each state overlays the defaults below; `None` means the rule is gone from the session. The
+    Each state overlays the defaults below; `None` means the rule is gone from the scenario. The
     default `runId` is the one a caller would be holding from `reset`, so a state that means to
     change runs has to say so, and a command that stops reading the field fails here."""
     return _polling(
@@ -224,25 +224,25 @@ def _fake_proxy(
     monkeypatch,
     *,
     active="default",
-    sessions=("default", "orders-outage"),
+    scenarios=("default", "orders-outage"),
     load_problems=(),
     not_whole=(),
     unreachable=False,
     steps=None,
 ):
-    """A live proxy the CLI can select sessions on, and an app whose launch makes one request.
+    """A live proxy the CLI can select scenarios on, and an app whose launch makes one request.
 
-    `launched` holds what that request was answered with — the session that served it, that
+    `launched` holds what that request was answered with — the scenario that served it, that
     scenario's status, and the sequence step it got. `events` holds what happened in what order,
     for the cases where nothing is launched at all.
 
     `load_problems` (the flat strings a person reads) and `not_whole` (the same problems keyed by
-    session) are set independently, because the reason the second field exists is that the first
+    scenario) are set independently, because the reason the second field exists is that the first
     cannot be turned into it. `not_whole=None` is a proxy too old to have either.
     """
     state = {
         "active": active,
-        "sessions": list(sessions),
+        "scenarios": list(scenarios),
         "loadProblems": list(load_problems),
         "notWhole": None if not_whole is None else dict(not_whole),
         "steps": dict(steps or {}),
@@ -252,17 +252,17 @@ def _fake_proxy(
     }
 
     def control(path, method="GET", payload=None, timeout=3.0):
-        assert (path, method) == ("/__mock__/sessions/active", "PUT"), (path, method)
+        assert (path, method) == ("/__mock__/scenarios/active", "PUT"), (path, method)
         state["events"].append(("activate", payload["name"]))
         if unreachable:  # what `_control` prints when the proxy stops answering mid-`up`
             click.echo("✗ proxy not reachable — is it running? (`lyrebird up`)")
             raise SystemExit(1)
-        if payload["name"] not in state["sessions"]:  # the API's 404, with the detail it sends
-            click.echo(f"✗ no session named '{payload['name']}' in this profile")
+        if payload["name"] not in state["scenarios"]:  # the API's 404, with the detail it sends
+            click.echo(f"✗ no scenario named '{payload['name']}' in this profile")
             raise SystemExit(1)
         previous = state["active"]
         state["active"] = payload["name"]
-        state["steps"][payload["name"]] = 1  # activating a session rewinds its sequences
+        state["steps"][payload["name"]] = 1  # activating a scenario rewinds its sequences
         return {"active": state["active"], "previous": {"name": previous, "overrideCount": 0}}
 
     def relaunch(bundle_id, simulator):
@@ -270,7 +270,7 @@ def _fake_proxy(
         state["devices"].append(simulator.udid)
         state["launched"].append(
             {
-                "session": state["active"],
+                "scenario": state["active"],
                 "status": _SCENARIOS[state["active"]],
                 "step": state["steps"].get(state["active"], 1),
             }
@@ -285,14 +285,14 @@ def _fake_proxy(
 def _live(state):
     reading = {
         **_LIVE,
-        "activeSession": state["active"],
-        "sessions": state["sessions"],
+        "activeScenario": state["active"],
+        "scenarios": state["scenarios"],
         "loadProblems": state["loadProblems"],
-        "sessionsNotWhole": state["notWhole"],
+        "scenariosNotWhole": state["notWhole"],
     }
     if state["notWhole"] is None:  # an engine older than the fields, which cannot say
         del reading["loadProblems"]
-        del reading["sessionsNotWhole"]
+        del reading["scenariosNotWhole"]
     return reading
 
 
@@ -301,6 +301,6 @@ def _up_with_a_proxy(profile, monkeypatch, state, *, adopt=False, bundle_id="com
     _up_after_a_crash(profile, monkeypatch, lambda service: netproxy.PacStatus(netproxy.pac_url(), True, True))
     sim = f', "simBundleId": "{bundle_id}"' if bundle_id else ""
     (profile / "profile.json").write_text(f'{{"hosts": ["api.example.com"]{sim}}}', encoding="utf-8")
-    # Health tracks the fake proxy, so the last look reports the session that was actually selected.
+    # Health tracks the fake proxy, so the last look reports the scenario that was actually selected.
     first = iter([] if adopt else [None])  # dead at the first look unless we are adopting one
     monkeypatch.setattr(api, "_health", lambda: next(first, _live(state)))

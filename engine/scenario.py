@@ -1,4 +1,4 @@
-"""Choosing what the proxy answers with: the active session, its rules, and the traffic it saw.
+"""Choosing what the proxy answers with: the active scenario, its rules, and the traffic it saw.
 
 Every command here changes or reads the running proxy. `offline.py` is the half that inspects
 files instead, and never changes anything.
@@ -20,12 +20,12 @@ import ui
 @click.command()
 @click.argument("name")
 def use(name: str) -> None:
-    """Switch the active session, for the requests that come after it.
+    """Switch the active scenario, for the requests that come after it.
 
     It does not relaunch anything, so an app that cached its launch response goes on showing the
     old scenario: relaunch it yourself, or start the run with `lyrebird up --use NAME`.
     """
-    supervisor._activate_session(name)
+    supervisor._activate_scenario(name)
 
 
 @click.command()
@@ -61,16 +61,16 @@ def recent(as_json: bool, only_matched: bool, limit: int) -> None:
 
 @click.group()
 def override() -> None:
-    """Add or clear rules in the active session."""
+    """Add or clear rules in the active scenario."""
 
 
 # Built from the vocabulary itself, so the help cannot claim a different set of fields from the one
 # validation accepts. A matcher field nobody can discover is reported as a missing feature — and the
 # rule people write instead is a broader one that quietly answers for its neighbours.
 _ADD_HELP = (
-    """Add a rule to the active session. RULE is JSON, or - to read stdin.
+    """Add a rule to the active scenario. RULE is JSON, or - to read stdin.
 
-Takes effect immediately — no restart, and the session file is updated.
+Takes effect immediately — no restart, and the scenario file is updated.
 
 \b
     lyrebird override add '{"match":{"path":"/api/v1/orders/*"},"mode":"replace","status":500}'
@@ -118,38 +118,38 @@ def override_add(rule: str) -> None:
 @override.command(name="clear")
 @click.option("--force", is_flag=True, help="Required: this deletes rules and rewrites the file.")
 def override_clear(force: bool) -> None:
-    """Delete EVERY rule in the active session and rewrite its file. There is no undo."""
+    """Delete EVERY rule in the active scenario and rewrite its file. There is no undo."""
     if not force:
         click.echo(
             f"{ui.RED}✗ refusing without --force{ui.R} — this deletes every override in the "
-            f"active session and rewrites the file on disk."
+            f"active scenario and rewrites the file on disk."
         )
         raise SystemExit(1)
     result = api._control("/__mock__/overrides", "DELETE")
-    click.echo(f"✓ cleared {result['cleared']} override(s) from {result['session']}")
+    click.echo(f"✓ cleared {result['cleared']} override(s) from {result['scenario']}")
 
 
-@click.group()
-def session() -> None:
-    """Create and remove sessions."""
+@click.group(name="scenario")
+def scenario_group() -> None:
+    """Create and remove scenarios."""
 
 
-@session.command(name="new")
+@scenario_group.command(name="new")
 @click.argument("name")
-@click.option("--clone-from", default=None, help="Start from a copy of this session.")
+@click.option("--clone-from", default=None, help="Start from a copy of this scenario.")
 @click.option("--activate/--no-activate", default=True, help="Switch to it once created.")
-def session_new(name: str, clone_from: str | None, activate: bool) -> None:
-    """Create a session — use this for scratch work instead of editing a shared one."""
-    api._control("/__mock__/sessions", "POST", {"name": name, "cloneFrom": clone_from})
+def scenario_new(name: str, clone_from: str | None, activate: bool) -> None:
+    """Create a scenario — use this for scratch work instead of editing a shared one."""
+    api._control("/__mock__/scenarios", "POST", {"name": name, "cloneFrom": clone_from})
     click.echo(f"✓ created {name}" + (f" from {clone_from}" if clone_from else ""))
     if activate:
-        api._control("/__mock__/sessions/active", "PUT", {"name": name})
+        api._control("/__mock__/scenarios/active", "PUT", {"name": name})
         click.echo(f"✓ active: {name}")
 
 
-@session.command(name="rm")
+@scenario_group.command(name="rm")
 @click.argument("name")
-def session_rm(name: str) -> None:
-    """Delete a session and its file."""
-    api._control(f"/__mock__/sessions/{name}", "DELETE")
+def scenario_rm(name: str) -> None:
+    """Delete a scenario and its file."""
+    api._control(f"/__mock__/scenarios/{name}", "DELETE")
     click.echo(f"✓ deleted {name}")

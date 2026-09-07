@@ -59,13 +59,13 @@ def call(profile, method, path, *, headers=None, json_body=None, raw_body=None, 
 def test_cross_origin_text_plain_post_is_refused(profile):
     """aiohttp's request.json() ignores Content-Type, so without this check a plain form post —
     which needs no CORS preflight — would reach the API."""
-    status, _, _ = call(profile, "POST", "/__mock__/sessions", json_body={"name": "evil"}, content_type="text/plain")
+    status, _, _ = call(profile, "POST", "/__mock__/scenarios", json_body={"name": "evil"}, content_type="text/plain")
     assert status == 415
 
 
 def test_cross_origin_json_post_is_refused(profile):
     status, _, _ = call(
-        profile, "POST", "/__mock__/sessions", json_body={"name": "evil"}, headers={"Origin": "https://attacker.test"}
+        profile, "POST", "/__mock__/scenarios", json_body={"name": "evil"}, headers={"Origin": "https://attacker.test"}
     )
     assert status == 403
 
@@ -80,7 +80,7 @@ def test_same_origin_json_post_is_allowed(profile):
     status, _, _ = call(
         profile,
         "POST",
-        "/__mock__/sessions",
+        "/__mock__/scenarios",
         json_body={"name": "scratch"},
         headers={"Origin": f"http://{config.CONTROL_HOST_HEADER}"},
     )
@@ -151,7 +151,7 @@ def test_a_call_naming_another_profile_is_refused_and_leaves_no_rule_behind(prof
 
 
 def test_a_read_naming_another_profile_is_refused_too(profile):
-    """A read answered from the wrong profile is not harmless: it reports a stranger's sessions and
+    """A read answered from the wrong profile is not harmless: it reports a stranger's scenarios and
     counters as yours, which is how you conclude a rule is missing that was never installed here."""
     status, _, body = call(profile, "GET", "/__mock__/overrides", headers=_FOREIGN)
     assert status == 409 and body["error"] == "profile_mismatch"
@@ -207,31 +207,31 @@ def test_a_call_that_names_no_profile_is_served(profile):
 # MARK: - Names that become paths
 
 
-def test_traversal_in_a_session_name_is_rejected(profile):
-    status, _, body = call(profile, "POST", "/__mock__/sessions", json_body={"name": "../../ESCAPED"})
+def test_traversal_in_a_scenario_name_is_rejected(profile):
+    status, _, body = call(profile, "POST", "/__mock__/scenarios", json_body={"name": "../../ESCAPED"})
     assert status == 400
     assert body["error"] == "invalid_name"
     assert not (profile.parent / "ESCAPED.json").exists()
 
 
-def test_missing_session_name_is_a_bad_request(profile):
-    status, _, body = call(profile, "PUT", "/__mock__/sessions/active", json_body={})
+def test_missing_scenario_name_is_a_bad_request(profile):
+    status, _, body = call(profile, "PUT", "/__mock__/scenarios/active", json_body={})
     assert status == 400 and body["error"] == "name_required"
 
 
-def test_unknown_session_is_not_found(profile):
-    status, _, body = call(profile, "PUT", "/__mock__/sessions/active", json_body={"name": "nope"})
-    assert status == 404 and body["error"] == "unknown_session"
+def test_unknown_scenario_is_not_found(profile):
+    status, _, body = call(profile, "PUT", "/__mock__/scenarios/active", json_body={"name": "nope"})
+    assert status == 404 and body["error"] == "unknown_scenario"
     # The CLI prints `detail` when there is one and the slug otherwise, so without this the
-    # operator is told "unknown_session" — the category, not the mistake.
-    assert body["detail"] == "no session named 'nope' in this profile"
+    # operator is told "unknown_scenario" — the category, not the mistake.
+    assert body["detail"] == "no scenario named 'nope' in this profile"
 
 
-def test_health_reports_a_session_that_did_not_load_whole(profile):
-    """`sessions` cannot carry this: a session whose invalid overrides were dropped is listed
+def test_health_reports_a_scenario_that_did_not_load_whole(profile):
+    """`scenarios` cannot carry this: a scenario whose invalid overrides were dropped is listed
     there exactly like one that loaded whole. `up --use NAME` refuses to relaunch the app on the
-    strength of this, so it has to reach the CLI — keyed by session, and once per problem."""
-    (profile / "sessions" / "orders-outage.json").write_text(
+    strength of this, so it has to reach the CLI — keyed by scenario, and once per problem."""
+    (profile / "scenarios" / "orders-outage.json").write_text(
         json.dumps(
             {
                 "name": "orders-outage",
@@ -248,21 +248,21 @@ def test_health_reports_a_session_that_did_not_load_whole(profile):
     status, _, body = call(profile, "GET", "/__mock__/health")
 
     assert status == 200
-    assert "orders-outage" in body["sessions"], "it loaded, which is exactly the trap"
+    assert "orders-outage" in body["scenarios"], "it loaded, which is exactly the trap"
     assert len(body["loadProblems"]) == 2, "one entry per problem, not per file"
-    assert body["sessionsNotWhole"] == {"orders-outage": body["loadProblems"]}
+    assert body["scenariosNotWhole"] == {"orders-outage": body["loadProblems"]}
 
 
-def test_health_does_not_blame_a_session_for_a_file_merely_named_after_it(profile):
-    """The reason the answer is keyed by session rather than read out of the strings. This file's
-    name is rejected, so no session is reported against it — but the diagnostic it leaves behind
+def test_health_does_not_blame_a_scenario_for_a_file_merely_named_after_it(profile):
+    """The reason the answer is keyed by scenario rather than read out of the strings. This file's
+    name is rejected, so no scenario is reported against it — but the diagnostic it leaves behind
     begins exactly like one about `orders-outage`, whose own file is perfectly good."""
     good = {
         "name": "orders-outage",
         "overrides": [{"match": {"method": "GET", "path": "/api/v1/orders/*"}, "mode": "replace", "status": 500}],
     }
-    (profile / "sessions" / "orders-outage.json").write_text(json.dumps(good), encoding="utf-8")
-    (profile / "sessions" / "orders-outage.json: backup.json").write_text("{", encoding="utf-8")
+    (profile / "scenarios" / "orders-outage.json").write_text(json.dumps(good), encoding="utf-8")
+    (profile / "scenarios" / "orders-outage.json: backup.json").write_text("{", encoding="utf-8")
 
     status, _, body = call(profile, "GET", "/__mock__/health")
 
@@ -270,34 +270,34 @@ def test_health_does_not_blame_a_session_for_a_file_merely_named_after_it(profil
     assert body["loadProblems"] and body["loadProblems"][0].startswith("skipped orders-outage.json: backup.json:"), (
         "the trap, verbatim"
     )
-    assert body["sessionsNotWhole"] == {}, "orders-outage loaded whole and must not be blamed"
+    assert body["scenariosNotWhole"] == {}, "orders-outage loaded whole and must not be blamed"
 
 
-def test_health_forgets_a_session_once_a_good_one_is_created_over_it(profile):
+def test_health_forgets_a_scenario_once_a_good_one_is_created_over_it(profile):
     """The recovery path. A malformed `orders-outage.json` is how the entry gets there; creating
-    a session under that name is what an operator does about it, and the point of doing it is
+    a scenario under that name is what an operator does about it, and the point of doing it is
     that `up --use orders-outage` stops refusing. An entry left behind would go on refusing to
     launch the app over a file that no longer decides anything."""
-    (profile / "sessions" / "orders-outage.json").write_text("{ not json", encoding="utf-8")
+    (profile / "scenarios" / "orders-outage.json").write_text("{ not json", encoding="utf-8")
 
     def create_a_good_one(subject):
-        assert subject.sessions_not_whole["orders-outage"], "the malformed file was recorded"
-        subject.create_session("orders-outage")
+        assert subject.scenarios_not_whole["orders-outage"], "the malformed file was recorded"
+        subject.create_scenario("orders-outage")
 
     status, _, body = call(profile, "GET", "/__mock__/health", prepare=create_a_good_one)
 
     assert status == 200
     # Empty is what the CLI reads: `up --use orders-outage` finds no problems and goes on to relaunch.
-    assert body["sessionsNotWhole"] == {}
-    assert "orders-outage" in body["sessions"]
+    assert body["scenariosNotWhole"] == {}
+    assert "orders-outage" in body["scenarios"]
     assert body["loadProblems"], "what startup found stays on the record; it just no longer decides"
 
 
-def test_health_reports_no_load_problems_when_every_session_loaded(profile):
+def test_health_reports_no_load_problems_when_every_scenario_loaded(profile):
     """The other half: empty is a real answer, and the CLI treats it as one."""
     status, _, body = call(profile, "GET", "/__mock__/health")
     assert status == 200
-    assert body["loadProblems"] == [] and body["sessionsNotWhole"] == {}
+    assert body["loadProblems"] == [] and body["scenariosNotWhole"] == {}
 
 
 # MARK: - What /health may disclose
@@ -328,26 +328,26 @@ def test_clearing_overrides_reports_what_it_deleted(profile):
             response = await client.delete("/__mock__/overrides", headers=headers)
             return await response.json()
 
-    assert asyncio.run(main()) == {"cleared": 1, "session": "default"}
+    assert asyncio.run(main()) == {"cleared": 1, "scenario": "default"}
 
 
 def test_malformed_json_says_so(profile):
     """Returning {} instead reported the next problem it caused ("name_required") rather than the
     real one, sending the caller to look in the wrong place."""
-    status, _, body = call(profile, "POST", "/__mock__/sessions", raw_body="{not json")
+    status, _, body = call(profile, "POST", "/__mock__/scenarios", raw_body="{not json")
     assert status == 400
     assert "malformed" in body["detail"].lower()
 
 
 def test_a_non_object_body_says_so(profile):
-    status, _, body = call(profile, "POST", "/__mock__/sessions", raw_body="[1,2,3]")
+    status, _, body = call(profile, "POST", "/__mock__/scenarios", raw_body="[1,2,3]")
     assert status == 400
     assert "object" in body["detail"].lower()
 
 
 # MARK: - Sequences
 
-SEQ_SESSION = {
+SEQ_SCENARIO = {
     "name": "default",
     "overrides": [
         {
@@ -361,9 +361,9 @@ SEQ_SESSION = {
 
 
 def seed(profile):
-    """A session on disk, because `call` builds a fresh Store that loads from the profile."""
-    (profile / "sessions").mkdir(parents=True, exist_ok=True)
-    (profile / "sessions" / "default.json").write_text(json.dumps(SEQ_SESSION), encoding="utf-8")
+    """A scenario on disk, because `call` builds a fresh Store that loads from the profile."""
+    (profile / "scenarios").mkdir(parents=True, exist_ok=True)
+    (profile / "scenarios" / "default.json").write_text(json.dumps(SEQ_SCENARIO), encoding="utf-8")
 
 
 def test_health_reports_live_sequence_state(profile):
@@ -379,7 +379,7 @@ def test_health_reports_an_empty_list_when_nothing_is_sequenced(profile):
     assert body["sequences"] == []
 
 
-OTHER_SESSION = {
+OTHER_SCENARIO = {
     "name": "other",
     "overrides": [
         {
@@ -393,13 +393,13 @@ OTHER_SESSION = {
 
 
 def test_health_reads_the_store_after_the_meta_await_and_not_across_it(profile):
-    """`meta_provider` suspends — it observes the network off this loop — so a session switch can
-    land inside that await. Reading the store first paired the outgoing session's counters with
-    the incoming session's meta: a snapshot describing no moment that ever existed."""
+    """`meta_provider` suspends — it observes the network off this loop — so a scenario switch can
+    land inside that await. Reading the store first paired the outgoing scenario's counters with
+    the incoming scenario's meta: a snapshot describing no moment that ever existed."""
     (profile / "profile.json").write_text('{"hosts": []}', encoding="utf-8")
-    (profile / "sessions").mkdir(parents=True, exist_ok=True)
-    (profile / "sessions" / "default.json").write_text(json.dumps(SEQ_SESSION), encoding="utf-8")
-    (profile / "sessions" / "other.json").write_text(json.dumps(OTHER_SESSION), encoding="utf-8")
+    (profile / "scenarios").mkdir(parents=True, exist_ok=True)
+    (profile / "scenarios" / "default.json").write_text(json.dumps(SEQ_SCENARIO), encoding="utf-8")
+    (profile / "scenarios" / "other.json").write_text(json.dumps(OTHER_SCENARIO), encoding="utf-8")
     config.reload_profile()
     subject = store.Store()
 
@@ -416,7 +416,7 @@ def test_health_reads_the_store_after_the_meta_await_and_not_across_it(profile):
             return await response.json()
 
     body = asyncio.run(main())
-    assert body["activeSession"] == "other"
+    assert body["activeScenario"] == "other"
     assert [state["id"] for state in body["sequences"]] == ["ovr_other"]
     assert [state["id"] for state in body["answers"]] == ["ovr_other"]
 
@@ -451,16 +451,16 @@ def test_reset_is_still_behind_the_content_type_guard(profile):
     assert status == 415
 
 
-def test_creating_a_session_that_already_exists_is_a_conflict(profile):
-    """AGENTS.md promises the refusal: creating a session that already exists must not silently
+def test_creating_a_scenario_that_already_exists_is_a_conflict(profile):
+    """AGENTS.md promises the refusal: creating a scenario that already exists must not silently
     replace it."""
     seed(profile)
     payload = {"name": "scratch"}
-    status, _, _ = call(profile, "POST", "/__mock__/sessions", json_body=payload)
+    status, _, _ = call(profile, "POST", "/__mock__/scenarios", json_body=payload)
     assert status == 200
-    status, _, body = call(profile, "POST", "/__mock__/sessions", json_body=payload)
+    status, _, body = call(profile, "POST", "/__mock__/scenarios", json_body=payload)
     assert status == 409
-    assert body["error"] == "session_exists"
+    assert body["error"] == "scenario_exists"
 
 
 def test_a_rule_with_an_unknown_field_is_refused_and_not_installed(profile):
@@ -494,7 +494,7 @@ def test_a_rule_with_an_unknown_field_is_refused_and_not_installed(profile):
 def test_health_reports_answer_counts_per_rule(profile):
     status, _, body = call(profile, "GET", "/__mock__/health")
     assert status == 200
-    assert body["answers"] == [], "an empty session has no rules to report on"
+    assert body["answers"] == [], "an empty scenario has no rules to report on"
 
 
 def test_health_carries_a_rules_answer_count_over_the_wire(profile):

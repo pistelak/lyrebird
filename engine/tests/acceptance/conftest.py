@@ -57,7 +57,7 @@ import pytest
 REPO = Path(__file__).resolve().parents[3]
 LYREBIRD = REPO / "bin" / "lyrebird"
 FIXTURE_APP_DIR = REPO / "acceptance" / "FixtureApp"
-FIXTURE_SESSIONS = REPO / "acceptance" / "fixture-sessions"
+FIXTURE_SCENARIOS = REPO / "acceptance" / "fixture-scenarios"
 BUNDLE_ID = "com.example.lyrebird-fixture"
 # What the fixture app calls, and what `lyrebird init`'s profile must already intercept.
 FIXTURE_HOST = "api.example.com"
@@ -942,8 +942,8 @@ def harness(tmp_path_factory: pytest.TempPathFactory, simulator: str, fixture_ap
     document["simBundleId"] = BUNDLE_ID
     profile_file.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
 
-    for session in sorted(FIXTURE_SESSIONS.glob("*.json")):
-        shutil.copy(session, profile / "sessions" / session.name)
+    for scenario in sorted(FIXTURE_SCENARIOS.glob("*.json")):
+        shutil.copy(scenario, profile / "scenarios" / scenario.name)
 
     world.service = _active_service()
     if not world.service:
@@ -952,9 +952,9 @@ def harness(tmp_path_factory: pytest.TempPathFactory, simulator: str, fixture_ap
         )
     world.baseline = world.pac()
     if world.baseline.enabled and LYREBIRD_PAC.match(world.baseline.url):
-        # An *enabled* Lyrebird PAC means another session is live on this machine. Starting now
+        # An *enabled* Lyrebird PAC means another run is live on this machine. Starting now
         # would record its PAC as the thing to restore, hand it back at the end with this run's
-        # idea of whose it was, and leave that session pointing at a proxy this run stopped. A
+        # idea of whose it was, and leave that run pointing at a proxy this run stopped. A
         # disabled one is only the URL a previous `down` left behind, and is restored verbatim.
         pytest.fail(
             f"a Lyrebird PAC is already enabled on '{world.service}': "

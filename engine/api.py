@@ -72,7 +72,7 @@ def _require_same_profile(health: dict, *, unproven_exit: int = 1) -> None:
 
     `/health` is deliberately unscoped at the API — that is how `down` recovers across profiles —
     so a command that goes on to *interpret* a health reading has to make the comparison itself,
-    or it reports another profile's sessions, counters and traffic as this profile's. A reading
+    or it reports another profile's scenarios, counters and traffic as this profile's. A reading
     with no fingerprint is accepted, as `up` accepts one: an older engine cannot say.
 
     A command that polls makes the comparison on every reading, not only the first: the proxy that

@@ -223,7 +223,13 @@ def test_up_says_when_it_cannot_read_the_pac_it_just_installed(profile, runner, 
     monkeypatch.setattr(
         api,
         "_health",
-        lambda: {"pid": 1, "activeSession": "default", "sessions": ["default"], "overrideCount": 0, "proxyPort": 8080},
+        lambda: {
+            "pid": 1,
+            "activeScenario": "default",
+            "scenarios": ["default"],
+            "overrideCount": 0,
+            "proxyPort": 8080,
+        },
     )
     monkeypatch.setattr(sim, "trust_ca_in_sim", lambda simulator: (True, "trusted"))
     fake_simctl(monkeypatch, [_PHONE])
@@ -251,8 +257,8 @@ def test_up_records_the_proxy_pid_when_service_discovery_times_out(profile, runn
         "_health",
         lambda: {
             "pid": 4321,
-            "activeSession": "default",
-            "sessions": ["default"],
+            "activeScenario": "default",
+            "scenarios": ["default"],
             "overrideCount": 0,
             "proxyPort": 8080,
         },
@@ -775,8 +781,8 @@ def test_status_succeeds_only_when_up_and_intercepting(profile, runner, monkeypa
         "_health",
         lambda: {
             "pid": 1,
-            "sessions": ["default"],
-            "activeSession": "default",
+            "scenarios": ["default"],
+            "activeScenario": "default",
             "overrideCount": 0,
             "simBundleId": None,
             "proxyPort": 8080,
@@ -797,8 +803,8 @@ def test_status_reports_an_unreadable_pac_as_unproven_not_off(profile, runner, m
         "_health",
         lambda: {
             "pid": 1,
-            "sessions": ["default"],
-            "activeSession": "default",
+            "scenarios": ["default"],
+            "activeScenario": "default",
             "overrideCount": 0,
             "simBundleId": None,
             "proxyPort": 8080,
@@ -824,7 +830,7 @@ def test_status_fails_when_the_proxy_is_up_but_the_pac_is_off(profile, runner, m
     monkeypatch.setattr(
         api,
         "_health",
-        lambda: {"pid": 1, "sessions": [], "activeSession": None, "overrideCount": 0, "simBundleId": None},
+        lambda: {"pid": 1, "scenarios": [], "activeScenario": None, "overrideCount": 0, "simBundleId": None},
     )
     monkeypatch.setattr(netproxy, "active_service", lambda: "Wi-Fi")
     monkeypatch.setattr(netproxy, "pac_status", lambda service: netproxy.PacStatus(netproxy.pac_url(), False, True))
@@ -835,8 +841,8 @@ def test_status_fails_when_the_proxy_is_up_but_the_pac_is_off(profile, runner, m
 def _status_health(fingerprint=None):
     payload = {
         "pid": 1,
-        "sessions": ["default", "orders-outage"],
-        "activeSession": "orders-outage",
+        "scenarios": ["default", "orders-outage"],
+        "activeScenario": "orders-outage",
         "overrideCount": 3,
         "simBundleId": "com.example.Store",
         "proxyPort": 8080,
@@ -850,7 +856,7 @@ def _status_health(fingerprint=None):
 def test_status_refuses_a_foreign_profiles_interception_in_either_format(profile, runner, monkeypatch, args):
     """Regression: the PAC on this port is "ours" whoever started the proxy behind it, so a proxy
     running profile A made `lyrebird --profile B status` print INTERCEPT ACTIVE and exit 0 — and
-    `lyrebird status && …` went on to drive a proxy mocking someone else's hosts and sessions."""
+    `lyrebird status && …` went on to drive a proxy mocking someone else's hosts and scenarios."""
     monkeypatch.setattr(api, "_health", _status_health("feedfacef00d"))
     _status_network(monkeypatch)
 
@@ -864,8 +870,8 @@ def test_status_refuses_a_foreign_profiles_interception_in_either_format(profile
         assert payload["runningProfileFingerprint"] == "feedfacef00d"
         assert payload["profileFingerprint"] == config.PROFILE_FINGERPRINT
         # The other proxy's state is not this profile's, and null says so where `[]` would claim
-        # this profile has no sessions.
-        assert payload["sessions"] is None and payload["activeSession"] is None
+        # this profile has no scenarios.
+        assert payload["scenarios"] is None and payload["activeScenario"] is None
         assert payload["overrideCount"] is None and payload["simBundleId"] is None
     else:
         assert "INTERCEPT ACTIVE" not in result.output
@@ -874,7 +880,7 @@ def test_status_refuses_a_foreign_profiles_interception_in_either_format(profile
         assert "lyrebird down" in result.output, "the remedy, and it is not `up` — `up` refuses"
         assert "LYREBIRD_CONTROL_PORT" in result.output, "the other way out: aim at another port"
         assert "lyrebird up" not in result.output
-        assert "orders-outage" not in result.output, "another profile's session, reported as ours"
+        assert "orders-outage" not in result.output, "another profile's scenario, reported as ours"
 
 
 def test_status_reports_interception_when_the_fingerprints_agree(profile, runner, monkeypatch):
@@ -887,7 +893,7 @@ def test_status_reports_interception_when_the_fingerprints_agree(profile, runner
     assert result.exit_code == 0
     payload = json.loads(result.output)
     assert payload["profileMismatch"] is False and payload["intercepting"] is True
-    assert payload["activeSession"] == "orders-outage"
+    assert payload["activeScenario"] == "orders-outage"
 
 
 def test_status_trusts_an_engine_too_old_to_send_a_fingerprint(profile, runner, monkeypatch):
@@ -1041,3 +1047,29 @@ def test_up_starts_the_log_on_a_new_inode(profile, tmp_path):
     assert config.LOG_FILE.stat().st_ino != stale_inode, "the lax inode was truncated, not replaced"
     assert config.LOG_FILE.stat().st_mode & 0o777 == 0o600
     assert overheard == "", f"a reader of the old log still saw traffic: {overheard!r}"
+
+
+# MARK: - init
+
+
+def test_init_writes_the_scenarios_directory(profile, runner, tmp_path):
+    target = tmp_path / "fresh"
+    result = runner.invoke(cli.cli, ["init", str(target)])
+    assert result.exit_code == 0, result.output
+    assert (target / "scenarios").is_dir()
+    assert not (target / "sessions").exists()
+
+
+def test_init_refuses_a_legacy_sessions_layout(profile, runner, tmp_path):
+    """`sessions/` was renamed to `scenarios/`. Copying the examples in beside an unrenamed
+    directory would leave two directories of scenarios in one profile with only one of them ever
+    read, so `init` refuses and writes nothing — the same `mv` fixes it."""
+    target = tmp_path / "legacy"
+    (target / "sessions").mkdir(parents=True)
+    (target / "sessions" / "orders-outage.json").write_text("{}", encoding="utf-8")
+
+    result = runner.invoke(cli.cli, ["init", str(target)])
+
+    assert result.exit_code != 0
+    assert f"mv {target / 'sessions'} {target / 'scenarios'}" in result.output
+    assert sorted(path.name for path in target.iterdir()) == ["sessions"], "init must have copied nothing"

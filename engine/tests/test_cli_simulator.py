@@ -225,7 +225,7 @@ def test_up_fails_when_the_app_cannot_be_launched_on_the_chosen_device(profile, 
 
 def test_status_reports_the_simulator_the_last_up_used(profile, runner, monkeypatch):
     """Reported from the runtime file rather than by looking again: the question is which device
-    this session trusted, and a fresh lookup would name whatever is booted now."""
+    this run trusted, and a fresh lookup would name whatever is booted now."""
     config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
     config.write_runtime({"proxyPid": 1, "service": "Wi-Fi", "simulator": {"udid": _PAD["udid"], "name": _PAD["name"]}})
     monkeypatch.setattr(
@@ -233,8 +233,8 @@ def test_status_reports_the_simulator_the_last_up_used(profile, runner, monkeypa
         "_health",
         lambda: {
             "pid": 1,
-            "sessions": ["default"],
-            "activeSession": "default",
+            "scenarios": ["default"],
+            "activeScenario": "default",
             "overrideCount": 0,
             "simBundleId": None,
             "proxyPort": 8080,
@@ -251,7 +251,7 @@ def test_status_reports_the_simulator_the_last_up_used(profile, runner, monkeypa
     assert "not scoped to it" in plain.output, "device selection must not read as traffic isolation"
 
 
-def test_up_still_selects_the_session_when_there_is_no_simulator_to_relaunch_on(profile, runner, monkeypatch):
+def test_up_still_selects_the_scenario_when_there_is_no_simulator_to_relaunch_on(profile, runner, monkeypatch):
     """`--use` and `--simulator` fail independently.
 
     A caller left to launch the app by hand still asked for that scenario, so the selection
