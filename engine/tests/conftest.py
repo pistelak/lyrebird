@@ -56,6 +56,21 @@ def _restore_resolved_paths():
     config.configure()
 
 
+@pytest.fixture(autouse=True)
+def _no_real_watchdog(monkeypatch):
+    """`up` starts the watchdog with `subprocess.Popen`, and a subprocess inherits no monkeypatch:
+    it is a fresh interpreter running the real `netproxy` against the real `networksetup`. The
+    environment above gives it a temporary profile and state directory but sets no control port,
+    so it resolves the default 8088 — and for as long as a real proxy answers health there, the
+    loop never reaches its only `return` and outlives pytest, repairing the PAC on the
+    contributor's own Wi-Fi.
+
+    Doubled here rather than in each test that calls `up`: a test that forgets leaves a process
+    behind and passes anyway, which is not a failure anything would report. Pinned by
+    `test_up_spawns_no_real_watchdog_subprocess`."""
+    monkeypatch.setattr(supervisor, "_spawn_watchdog", lambda service: 4242)
+
+
 @pytest.fixture
 def runner():
     return CliRunner()

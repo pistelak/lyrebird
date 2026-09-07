@@ -23,7 +23,16 @@ import config
 import netproxy
 import simulator as sim
 import supervisor
-from cli_doubles import _CORPORATE, _LIVE, _PHONE, _discovery_times_out, _status_network, _up_after_a_crash, fake_simctl
+from cli_doubles import (
+    _CORPORATE,
+    _LIVE,
+    _PHONE,
+    _discovery_times_out,
+    _health_payload,
+    _status_network,
+    _up_after_a_crash,
+    fake_simctl,
+)
 
 
 def health_until_terminated(monkeypatch, state, pid=4242):
@@ -244,6 +253,46 @@ def test_up_says_when_it_cannot_read_the_pac_it_just_installed(profile, runner, 
     assert result.exit_code == 1
     assert "could not read the PAC" in result.output
     assert "not ours" not in result.output
+
+
+def test_up_spawns_no_real_watchdog_subprocess(profile, runner, monkeypatch):
+    """The watchdog the tests want is a recorded pid, never a process.
+
+    A real one is a fresh interpreter: it runs the true `netproxy` against this machine's
+    `networksetup`, and because it inherits a temporary state directory but the default control
+    port, it keeps answering to whatever real proxy holds 8088 and never exits. This asserts on
+    the spawn itself rather than on a later `ps`, because by the time a leaked watchdog is
+    visible the run that made it has finished and nothing connects the two."""
+    (profile / "profile.json").write_text('{"hosts": ["api.example.com"]}', encoding="utf-8")
+    config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(api, "_health", lambda: _health_payload())
+    monkeypatch.setattr(sim, "trust_ca_in_sim", lambda simulator: (True, "trusted"))
+    fake_simctl(monkeypatch, [_PHONE])
+    monkeypatch.setattr(netproxy, "active_service", lambda: "Wi-Fi")
+    monkeypatch.setattr(netproxy, "pac_status", lambda service: netproxy.PacStatus(netproxy.pac_url(), True, True))
+    monkeypatch.setattr(netproxy, "set_pac", lambda service: None)
+    # What sends `up` down the spawning branch: with no watchdog recorded, a pid it believes is
+    # ours is the difference between reusing one and starting one. Deliberately NOT using the
+    # shared `up` doubles here — they stub the spawn themselves, which is the thing under test.
+    monkeypatch.setattr(supervisor, "_pid_is_ours", lambda pid, marker: True)
+
+    # This `up` adopts a proxy that health already reports, so it has no reason to start any
+    # process at all. Recording every attempt rather than filtering for `_watchdog` in argv keeps
+    # the assertion true if the spawn moves or is renamed — and keeps it from passing if some
+    # future caller catches the error and carries on.
+    attempted: list[list[str]] = []
+
+    def refuse(args, *rest, **kwargs):
+        attempted.append(list(args))
+        raise AssertionError(f"a test started a subprocess: {list(args)}")
+
+    monkeypatch.setattr(subprocess, "Popen", refuse)
+
+    result = runner.invoke(cli.cli, ["up"])
+
+    assert attempted == [], f"`up` started a subprocess: {attempted}"
+    assert result.exit_code == 0, result.output
+    assert config.read_runtime()["watchdogPid"] == 4242
 
 
 def test_up_records_the_proxy_pid_when_service_discovery_times_out(profile, runner, monkeypatch):
