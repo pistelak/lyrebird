@@ -72,8 +72,7 @@ MATCHER_FIELDS = tuple(MATCHER_FIELD_HELP)
 # `nots` — and a typo'd field is not a harmless extra: `statsu` leaves the rule answering with a
 # default status, which is a different response from the one its author wrote.
 OVERRIDE_FIELD_HELP = {
-    "id": "Stable name for the rule. Generated when omitted; derived from the rule's "
-          "content for session files.",
+    "id": "Stable name for the rule. Generated when omitted; derived from the rule's content for session files.",
     "active": "false switches the rule off without deleting it. Default true.",
     "match": "Which requests this rule answers (see the matcher fields).",
     "mode": "'replace' answers locally; 'patch' merges into the real response.",
@@ -131,11 +130,7 @@ def specificity(match: Mapping[str, Any]) -> tuple[int, int, int]:
     """
     path = match.get("path") or "*"
     wildcards = path.count("*")
-    constraints = (
-        int(bool(match.get("method")))
-        + len(match.get("query") or {})
-        + int(bool(match.get("bodyContains")))
-    )
+    constraints = int(bool(match.get("method"))) + len(match.get("query") or {}) + int(bool(match.get("bodyContains")))
     return (wildcards, len(path), constraints)
 
 
@@ -254,6 +249,7 @@ def is_plain_object(value: Any) -> TypeGuard[Mapping[str, Any]]:
 # Pure: the cursor is supplied by the caller. The store owns it, because it is runtime state that
 # must never reach a profile kept in git.
 
+
 def sequence_steps(override: Mapping[str, Any]) -> list[dict] | None:
     """The rule's steps, or None if it is an ordinary single-response override."""
     sequence = override.get("sequence")
@@ -354,6 +350,7 @@ def deep_merge(target: Any, patch: Any, strategy: str | None = None) -> Any:
 # Overrides are validated before they are persisted, so a malformed rule fails at the API call
 # that created it rather than raising inside the proxy hook on every matching request.
 
+
 class ValidationError(ValueError):
     pass
 
@@ -368,8 +365,7 @@ def _validate_matcher(matcher: Any, where: str, *, require_constraint: bool = Fa
     for key in matcher:
         if key not in MATCHER_FIELDS:
             raise ValidationError(
-                f"{where}: unknown field {key!r} — a matcher may only carry "
-                f"{', '.join(MATCHER_FIELDS)}"
+                f"{where}: unknown field {key!r} — a matcher may only carry {', '.join(MATCHER_FIELDS)}"
             )
 
     path = matcher.get("path")
@@ -429,8 +425,7 @@ def _validate_sequence(sequence: Any, mode: str) -> None:
     for key in sequence:
         if key not in SEQUENCE_FIELDS:
             raise ValidationError(
-                f"sequence: unknown field {key!r} — a sequence may only carry "
-                f"{', '.join(SEQUENCE_FIELDS)}"
+                f"sequence: unknown field {key!r} — a sequence may only carry {', '.join(SEQUENCE_FIELDS)}"
             )
 
     # `patch` defers to the response hook, so an exhausted patch under the `error` policy has no way
@@ -459,13 +454,11 @@ def _validate_sequence(sequence: Any, mode: str) -> None:
         for key in step:
             if key == "delayMs":
                 raise ValidationError(
-                    f"{where}: delayMs is not supported on a sequence step; set it on the override "
-                    f"for a uniform delay"
+                    f"{where}: delayMs is not supported on a sequence step; set it on the override for a uniform delay"
                 )
             if key not in STEP_FIELDS:
                 raise ValidationError(
-                    f"{where}: unknown field {key!r} — a step may only carry "
-                    f"{', '.join(STEP_FIELDS)}"
+                    f"{where}: unknown field {key!r} — a step may only carry {', '.join(STEP_FIELDS)}"
                 )
         _validate_response_fields(step, f"{where}: ")
 
@@ -475,9 +468,7 @@ def _validate_sequence(sequence: Any, mode: str) -> None:
 
     policy = sequence.get("onExhausted")
     if policy is not None and policy not in VALID_EXHAUSTION_POLICIES:
-        raise ValidationError(
-            f"sequence.onExhausted must be one of {VALID_EXHAUSTION_POLICIES} if present"
-        )
+        raise ValidationError(f"sequence.onExhausted must be one of {VALID_EXHAUSTION_POLICIES} if present")
 
 
 def validate_override(override: Any) -> dict:
@@ -490,10 +481,7 @@ def validate_override(override: Any) -> dict:
     # a field the author never wrote.
     for key in result:
         if key not in OVERRIDE_FIELDS:
-            raise ValidationError(
-                f"unknown field {key!r} — an override may only carry "
-                f"{', '.join(OVERRIDE_FIELDS)}"
-            )
+            raise ValidationError(f"unknown field {key!r} — an override may only carry {', '.join(OVERRIDE_FIELDS)}")
 
     # `notes` is text or nothing. Other optional fields read `None` as absence; here an explicit
     # `null` is a mistake worth naming, since the only reason to write the key is to put words in it.
@@ -580,8 +568,7 @@ def normalise_session(session: Any, name: str) -> dict:
     version = result["schemaVersion"]
     if isinstance(version, bool) or not isinstance(version, int) or version != SCHEMA_VERSION:
         raise ValidationError(
-            f"schemaVersion: unsupported version {version!r} — this engine reads version "
-            f"{SCHEMA_VERSION}"
+            f"schemaVersion: unsupported version {version!r} — this engine reads version {SCHEMA_VERSION}"
         )
     result.setdefault("notes", "")
     result.setdefault("verified", False)

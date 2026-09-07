@@ -67,11 +67,10 @@ async def _guard(request: web.Request, handler: Handler) -> web.StreamResponse:
     # `is not None`, not truthiness: an empty header is a caller that said *something* and named
     # nobody, and reading it as absent let `X-Lyrebird-Profile:` sail past the check.
     requested = request.headers.get(_PROFILE_HEADER)
-    if (requested is not None and request.path not in _UNSCOPED_PATHS
-            and requested != config.PROFILE_FINGERPRINT):
-        return web.json_response({"error": "profile_mismatch",
-                                  "running": config.PROFILE_FINGERPRINT,
-                                  "requested": requested}, status=409)
+    if requested is not None and request.path not in _UNSCOPED_PATHS and requested != config.PROFILE_FINGERPRINT:
+        return web.json_response(
+            {"error": "profile_mismatch", "running": config.PROFILE_FINGERPRINT, "requested": requested}, status=409
+        )
 
     if request.method in _BODY_METHODS and request.can_read_body:
         content_type = (request.headers.get("Content-Type") or "").split(";")[0].strip().lower()
@@ -136,31 +135,33 @@ def make_app(store: Store, meta_provider: MetaProvider) -> web.Application:
         # counters from the session before it with meta from after, a snapshot describing no
         # moment that ever existed. Everything after this line is synchronous.
         meta = await meta_provider()
-        return web.json_response({
-            "ok": True,
-            "activeSession": store.active_name,
-            "overrideCount": len(store.active_overrides()),
-            "sessions": list(store.sessions.keys()),
-            # What did *not* load, so a caller can tell "this session is here" from "this session
-            # is here whole". A session whose invalid overrides were dropped, and a malformed
-            # default.json replaced by an empty in-memory default, both appear in `sessions`
-            # looking exactly like a session that loaded — which is how `up --use NAME` would
-            # relaunch the app against a scenario that had quietly lost half its rules.
-            #
-            # Two fields for one set of facts, because they answer different questions.
-            # `loadProblems` is the flat list a person reads, one entry per problem. `up --use`
-            # asks a narrower one — did *this* session load whole — and cannot answer it from
-            # those strings: a file named `orders-outage.json: backup.json` produces a line that
-            # reads exactly like a problem with `orders-outage`. So the same problems are also
-            # sent keyed by the session they belong to.
-            "loadProblems": store.load_problems,
-            "sessionsNotWhole": store.sessions_not_whole,
-            "sequences": store.sequence_states(),
-            # Named for what it holds, not for the objects it describes: `overrides` would read as
-            # the rules themselves, which is what GET /overrides returns.
-            "answers": store.answer_states(),
-            **meta,
-        })
+        return web.json_response(
+            {
+                "ok": True,
+                "activeSession": store.active_name,
+                "overrideCount": len(store.active_overrides()),
+                "sessions": list(store.sessions.keys()),
+                # What did *not* load, so a caller can tell "this session is here" from "this session
+                # is here whole". A session whose invalid overrides were dropped, and a malformed
+                # default.json replaced by an empty in-memory default, both appear in `sessions`
+                # looking exactly like a session that loaded — which is how `up --use NAME` would
+                # relaunch the app against a scenario that had quietly lost half its rules.
+                #
+                # Two fields for one set of facts, because they answer different questions.
+                # `loadProblems` is the flat list a person reads, one entry per problem. `up --use`
+                # asks a narrower one — did *this* session load whole — and cannot answer it from
+                # those strings: a file named `orders-outage.json: backup.json` produces a line that
+                # reads exactly like a problem with `orders-outage`. So the same problems are also
+                # sent keyed by the session they belong to.
+                "loadProblems": store.load_problems,
+                "sessionsNotWhole": store.sessions_not_whole,
+                "sequences": store.sequence_states(),
+                # Named for what it holds, not for the objects it describes: `overrides` would read as
+                # the rules themselves, which is what GET /overrides returns.
+                "answers": store.answer_states(),
+                **meta,
+            }
+        )
 
     @routes.get("/__mock__/recent")
     async def recent(_request: web.Request) -> web.StreamResponse:
@@ -233,9 +234,10 @@ def make_app(store: Store, meta_provider: MetaProvider) -> web.Application:
         if previous is None:
             # `detail` as well as the slug: the CLI prints `detail` when there is one, and
             # "unknown_session" on its own names the category without naming the mistake.
-            return web.json_response({"error": "unknown_session", "name": name,
-                                      "detail": f"no session named '{name}' in this profile"},
-                                     status=404)
+            return web.json_response(
+                {"error": "unknown_session", "name": name, "detail": f"no session named '{name}' in this profile"},
+                status=404,
+            )
         return web.json_response({"active": store.active_name, "previous": previous})
 
     @routes.delete("/__mock__/sessions/{name}")

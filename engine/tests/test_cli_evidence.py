@@ -16,8 +16,7 @@ from cli_doubles import _BASE_SEQ, _answers_over, _health_payload, _polling
 
 def _health_over(*states):
     """Sequence state under the poll. `None` for a state means the rule is gone from the session."""
-    return _polling(states, lambda state: _health_payload(
-        sequences=[] if state is None else [{**_BASE_SEQ, **state}]))
+    return _polling(states, lambda state: _health_payload(sequences=[] if state is None else [{**_BASE_SEQ, **state}]))
 
 
 def _health_with(**state):
@@ -25,8 +24,7 @@ def _health_with(**state):
 
 
 def test_reset_names_what_it_rewound(profile, runner, monkeypatch):
-    monkeypatch.setattr(api, "_control",
-                        lambda *a, **k: {"session": "default", "reset": {"ovr_a": "abc123"}})
+    monkeypatch.setattr(api, "_control", lambda *a, **k: {"session": "default", "reset": {"ovr_a": "abc123"}})
     result = runner.invoke(cli.cli, ["reset"])
     assert result.exit_code == 0
     assert "ovr_a" in result.output
@@ -36,8 +34,7 @@ def test_reset_names_what_it_rewound(profile, runner, monkeypatch):
 def test_reset_json_hands_back_the_run_id_to_assert_with(profile, runner, monkeypatch):
     """The boundary has to be retainable by a script, not just readable by a person: an id that
     only exists inside a coloured line is an id no test harness can pass to the assertion."""
-    monkeypatch.setattr(api, "_control",
-                        lambda *a, **k: {"session": "default", "reset": {"ovr_a": "abc123"}})
+    monkeypatch.setattr(api, "_control", lambda *a, **k: {"session": "default", "reset": {"ovr_a": "abc123"}})
     result = runner.invoke(cli.cli, ["reset", "ovr_a", "--json"])
     assert result.exit_code == 0
     assert json.loads(result.output) == {"session": "default", "reset": {"ovr_a": "abc123"}}
@@ -83,9 +80,16 @@ def test_sequence_wait_fails_at_once_when_the_step_already_passed(profile, runne
     assert "reset ovr_a" in result.output, "say how to fix it"
 
 
-SERVED = {"sequenceId": "ovr_a", "runId": "r1", "selectedStep": 1, "stepCount": 2,
-          "method": "GET", "path": "/api/items", "status": 200,
-          "time": "2026-08-16T10:00:00+00:00"}
+SERVED = {
+    "sequenceId": "ovr_a",
+    "runId": "r1",
+    "selectedStep": 1,
+    "stepCount": 2,
+    "method": "GET",
+    "path": "/api/items",
+    "status": 200,
+    "time": "2026-08-16T10:00:00+00:00",
+}
 
 
 def test_sequence_wait_succeeds_when_the_step_is_served(profile, runner, monkeypatch):
@@ -162,9 +166,21 @@ def test_sequence_wait_ignores_an_event_from_an_earlier_run(profile, runner, mon
     """A reset clears the serve counter with the runtime entry, so a leftover /recent event from
     the previous run must not satisfy the wait on its own."""
     monkeypatch.setattr(api, "_health", _health_with(runId="r2"))
-    monkeypatch.setattr(api, "_get_json", lambda path, timeout=2: [
-        {"sequenceId": "ovr_a", "runId": "r1", "selectedStep": 1, "stepCount": 2,
-         "method": "GET", "path": "/api/items", "status": 200}])
+    monkeypatch.setattr(
+        api,
+        "_get_json",
+        lambda path, timeout=2: [
+            {
+                "sequenceId": "ovr_a",
+                "runId": "r1",
+                "selectedStep": 1,
+                "stepCount": 2,
+                "method": "GET",
+                "path": "/api/items",
+                "status": 200,
+            }
+        ],
+    )
     result = runner.invoke(cli.cli, ["sequence", "wait", "ovr_a", "--step", "1", "--timeout", "0"])
     assert result.exit_code == 1
 
@@ -189,21 +205,17 @@ def test_sequence_wait_fails_fast_when_the_rule_vanishes_mid_wait(profile, runne
 
 def test_status_json_carries_answer_counts(profile, runner, monkeypatch):
     """AGENTS.md documents `answers` in `status --json`; it was in /health and never forwarded."""
-    monkeypatch.setattr(api, "_health",
-                        _answers_over({"count": 2}))
+    monkeypatch.setattr(api, "_health", _answers_over({"count": 2}))
     monkeypatch.setattr(netproxy, "active_service", lambda: "Wi-Fi")
-    monkeypatch.setattr(netproxy, "pac_status",
-                        lambda service: netproxy.PacStatus(netproxy.pac_url(), True, True))
+    monkeypatch.setattr(netproxy, "pac_status", lambda service: netproxy.PacStatus(netproxy.pac_url(), True, True))
     result = runner.invoke(cli.cli, ["status", "--json"])
-    assert json.loads(result.output)["answers"] == [
-        {"id": "ovr_a", "active": True, "count": 2, "runId": "run1"}]
+    assert json.loads(result.output)["answers"] == [{"id": "ovr_a", "active": True, "count": 2, "runId": "run1"}]
 
 
 def test_status_json_carries_sequences(profile, runner, monkeypatch):
     monkeypatch.setattr(api, "_health", _health_with())
     monkeypatch.setattr(netproxy, "active_service", lambda: "Wi-Fi")
-    monkeypatch.setattr(netproxy, "pac_status",
-                        lambda service: netproxy.PacStatus(netproxy.pac_url(), True, True))
+    monkeypatch.setattr(netproxy, "pac_status", lambda service: netproxy.PacStatus(netproxy.pac_url(), True, True))
     result = runner.invoke(cli.cli, ["status", "--json"])
     assert result.exit_code == 0
     assert '"sequences"' in result.output and "ovr_a" in result.output
@@ -233,7 +245,7 @@ def test_assert_answered_rejects_an_unknown_id_rather_than_reporting_zero(profil
 
 
 def test_assert_answered_says_so_when_the_control_api_is_unreachable(profile, runner, monkeypatch):
-    """"I could not ask" is not "it answered nothing"."""
+    """ "I could not ask" is not "it answered nothing"."""
     monkeypatch.setattr(api, "_health", lambda: None)
     result = runner.invoke(cli.cli, ["assert-answered", "ovr_a"])
     assert result.exit_code == 1
@@ -261,10 +273,14 @@ def test_assert_answered_lists_the_paths_that_did_arrive(profile, runner, monkey
     """A count cannot tell "the app went somewhere else" from "the path pattern is wrong"; the
     paths can."""
     monkeypatch.setattr(api, "_health", _answers_over({"count": 0}))
-    monkeypatch.setattr(api, "_get_json", lambda *a, **k: [
-        {"method": "GET", "path": "/api/v2/items"},
-        {"method": "GET", "path": "/api/v2/items"},
-    ])
+    monkeypatch.setattr(
+        api,
+        "_get_json",
+        lambda *a, **k: [
+            {"method": "GET", "path": "/api/v2/items"},
+            {"method": "GET", "path": "/api/v2/items"},
+        ],
+    )
     result = runner.invoke(cli.cli, ["assert-answered", "ovr_a"])
     assert result.exit_code == 1
     assert "/api/v2/items" in result.output
@@ -280,8 +296,7 @@ def test_assert_answered_names_an_empty_proxy_as_a_routing_problem(profile, runn
 
 
 def test_assert_answered_succeeds_on_an_answer_that_lands_mid_wait(profile, runner, monkeypatch):
-    monkeypatch.setattr(api, "_health",
-                        _answers_over({"count": 0}, {"count": 0}, {"count": 2}))
+    monkeypatch.setattr(api, "_health", _answers_over({"count": 0}, {"count": 0}, {"count": 2}))
     monkeypatch.setattr(time, "sleep", lambda _seconds: None)
     result = runner.invoke(cli.cli, ["assert-answered", "ovr_a", "--timeout", "30"])
     assert result.exit_code == 0
@@ -324,8 +339,11 @@ def test_assert_answered_accepts_a_count_from_the_run_it_was_given(profile, runn
 def test_assert_answered_refuses_a_run_that_ended_while_it_waited(profile, runner, monkeypatch):
     """The same substitution, arriving mid-poll. Continuing to watch would eventually see the new
     run answer and return success on evidence produced after the boundary was destroyed."""
-    monkeypatch.setattr(api, "_health", _answers_over(
-        {"count": 0, "runId": "run1"}, {"count": 0, "runId": "run2"}, {"count": 5, "runId": "run2"}))
+    monkeypatch.setattr(
+        api,
+        "_health",
+        _answers_over({"count": 0, "runId": "run1"}, {"count": 0, "runId": "run2"}, {"count": 5, "runId": "run2"}),
+    )
     monkeypatch.setattr(time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(api, "_get_json", lambda *a, **k: [])
     result = runner.invoke(cli.cli, ["assert-answered", "ovr_a", "--run", "run1", "--timeout", "30"])
@@ -353,8 +371,7 @@ def test_assert_answered_tells_a_missing_run_from_a_run_with_no_answers(profile,
 def test_assert_answered_refuses_a_proxy_that_cannot_report_run_identity(profile, runner, monkeypatch):
     """An engine old enough to count answers but not to say which run they belong to. Ignoring
     --run there would silently downgrade the assertion to the one it was called to avoid."""
-    monkeypatch.setattr(api, "_health", lambda: _health_payload(
-        answers=[{"id": "ovr_a", "active": True, "count": 4}]))
+    monkeypatch.setattr(api, "_health", lambda: _health_payload(answers=[{"id": "ovr_a", "active": True, "count": 4}]))
     result = runner.invoke(cli.cli, ["assert-answered", "ovr_a", "--run", "run1"])
     assert result.exit_code == 3
     assert "does not report which run" in result.output
@@ -399,7 +416,8 @@ def test_assert_answered_without_a_run_still_reports_a_missing_rule_as_one(profi
 
 
 def test_assert_answered_cannot_prove_a_run_against_a_proxy_that_counts_but_cannot_name_runs(
-        profile, runner, monkeypatch):
+    profile, runner, monkeypatch
+):
     """Version skew in the other field. An engine that cannot count at all certainly cannot say
     which run its counts are in, so under --run both refusals have to arrive as the same code — a
     harness branching on 3 must not have to learn which flavour of skew it hit."""
@@ -410,7 +428,7 @@ def test_assert_answered_cannot_prove_a_run_against_a_proxy_that_counts_but_cann
 
 
 def test_assert_answered_with_a_run_reports_an_unreachable_proxy_as_unproven(profile, runner, monkeypatch):
-    """"I could not ask" is not "the rule answered nothing in your run" — and under --run there is
+    """ "I could not ask" is not "the rule answered nothing in your run" — and under --run there is
     a code that says so, so the one meaning left for 1 is a real, made assertion that failed."""
     monkeypatch.setattr(api, "_health", lambda: None)
     result = runner.invoke(cli.cli, ["assert-answered", "ovr_a", "--run", "run1"])

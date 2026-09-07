@@ -50,12 +50,13 @@ def recent(as_json: bool, only_matched: bool, limit: int) -> None:
         skipped = f"  {ui.YELLOW}patch skipped: {entry['patchSkipped']}{ui.R}" if entry.get("patchSkipped") else ""
         step = ""
         if entry.get("sequenceId"):
-            step = (f"  {ui.DIM}[{entry['sequenceId']} step {entry['selectedStep']}/"
-                    f"{entry['stepCount']}]{ui.R}" if entry.get("selectedStep")
-                    else f"  {ui.YELLOW}[{entry['sequenceId']} overrun]{ui.R}")
+            step = (
+                f"  {ui.DIM}[{entry['sequenceId']} step {entry['selectedStep']}/{entry['stepCount']}]{ui.R}"
+                if entry.get("selectedStep")
+                else f"  {ui.YELLOW}[{entry['sequenceId']} overrun]{ui.R}"
+            )
         advanced = f"  {ui.DIM}advanced {', '.join(entry['advanced'])}{ui.R}" if entry.get("advanced") else ""
-        click.echo(f"  {entry['method']:6} {entry['status']}  {entry['path']}"
-                   f"{mark}{step}{advanced}{skipped}")
+        click.echo(f"  {entry['method']:6} {entry['status']}  {entry['path']}{mark}{step}{advanced}{skipped}")
 
 
 @click.group()
@@ -66,7 +67,8 @@ def override() -> None:
 # Built from the vocabulary itself, so the help cannot claim a different set of fields from the one
 # validation accepts. A matcher field nobody can discover is reported as a missing feature — and the
 # rule people write instead is a broader one that quietly answers for its neighbours.
-_ADD_HELP = """Add a rule to the active session. RULE is JSON, or - to read stdin.
+_ADD_HELP = (
+    """Add a rule to the active session. RULE is JSON, or - to read stdin.
 
 Takes effect immediately — no restart, and the session file is updated.
 
@@ -76,16 +78,16 @@ Takes effect immediately — no restart, and the session file is updated.
 An override accepts these fields, and only these:
 
 \b
-""" + "\n".join(
-    f"    {field:<13} {description}" for field, description in rules.OVERRIDE_FIELD_HELP.items()
-) + """
+"""
+    + "\n".join(f"    {field:<13} {description}" for field, description in rules.OVERRIDE_FIELD_HELP.items())
+    + """
 
 `match` accepts these fields, and only these:
 
 \b
-""" + "\n".join(
-    f"    {field:<13} {description}" for field, description in rules.MATCHER_FIELD_HELP.items()
-) + """
+"""
+    + "\n".join(f"    {field:<13} {description}" for field, description in rules.MATCHER_FIELD_HELP.items())
+    + """
 
 Constrain a rule as tightly as the thing you are testing. Sibling screens served from one path are
 told apart by `query`, and a rule that leaves it out answers for all of them:
@@ -97,6 +99,7 @@ told apart by `query`, and a rule that leaves it out answers for all of them:
 `lyrebird explain-match GET '/api/items?kind=alpha'` shows which rule a request would select, and
 which others it would also have matched.
 """
+)
 
 
 @override.command(name="add", help=_ADD_HELP)
@@ -117,8 +120,10 @@ def override_add(rule: str) -> None:
 def override_clear(force: bool) -> None:
     """Delete EVERY rule in the active session and rewrite its file. There is no undo."""
     if not force:
-        click.echo(f"{ui.RED}✗ refusing without --force{ui.R} — this deletes every override in the "
-                   f"active session and rewrites the file on disk.")
+        click.echo(
+            f"{ui.RED}✗ refusing without --force{ui.R} — this deletes every override in the "
+            f"active session and rewrites the file on disk."
+        )
         raise SystemExit(1)
     result = api._control("/__mock__/overrides", "DELETE")
     click.echo(f"✓ cleared {result['cleared']} override(s) from {result['session']}")

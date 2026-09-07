@@ -99,7 +99,7 @@ while one endpoint misbehaves.
 You need macOS, a booted iOS Simulator, and **Python 3.12 or newer** (mitmproxy 12 requires it).
 
 ```bash
-cd engine && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt && cd ..
+cd engine && python3 -m venv .venv && .venv/bin/pip install --require-hashes -r requirements.txt && cd ..
 
 bin/lyrebird init          # creates ~/.config/lyrebird
 ```

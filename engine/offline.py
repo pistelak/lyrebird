@@ -29,6 +29,7 @@ import ui
 # report is what the proxy would do, not a second opinion about it. (`explain_match` without
 # `--session` is the one call to the control API in this module, and it only reads.)
 
+
 def _resolve_session(name: str) -> tuple[Path | None, list[str]]:
     """The file holding the saved session called `name`, or why there is not one.
 
@@ -98,8 +99,10 @@ def validate(name: str | None, as_json: bool) -> None:
         if not files:
             # Not a green "nothing wrong": a command named for checking sessions that checked none
             # has not validated anything, and the usual cause is the wrong --profile.
-            problems = [f"no session files in {config.SESSIONS_DIR} — check --profile, or create "
-                        f"a profile with `lyrebird init {config.PROFILE_DIR}`"]
+            problems = [
+                f"no session files in {config.SESSIONS_DIR} — check --profile, or create "
+                f"a profile with `lyrebird init {config.PROFILE_DIR}`"
+            ]
 
     reports = [_validation_report(file) for file in files]
     ok = not problems and all(report["ok"] for report in reports)
@@ -119,8 +122,7 @@ def validate(name: str | None, as_json: bool) -> None:
         if report["ok"]:
             summary = f"{ui.GREEN}✓{ui.R} {label}{ui.DIM}{count} rule(s){ui.R}"
         elif report["loaded"]:
-            summary = (f"{ui.RED}✗{ui.R} {label}{ui.DIM}{count} rule(s) kept, "
-                       f"{len(report['problems'])} dropped{ui.R}")
+            summary = f"{ui.RED}✗{ui.R} {label}{ui.DIM}{count} rule(s) kept, {len(report['problems'])} dropped{ui.R}"
         else:
             summary = f"{ui.RED}✗{ui.R} {label}{ui.DIM}not loaded at all{ui.R}"
         click.echo(summary)
@@ -129,8 +131,10 @@ def validate(name: str | None, as_json: bool) -> None:
 
     if not ok:
         if reports:
-            click.echo(f"{ui.RED}✗ {sum(1 for r in reports if not r['ok'])} of {len(reports)} "
-                       f"session(s) cannot be accepted whole{ui.R}")
+            click.echo(
+                f"{ui.RED}✗ {sum(1 for r in reports if not r['ok'])} of {len(reports)} "
+                f"session(s) cannot be accepted whole{ui.R}"
+            )
         raise SystemExit(1)
     click.echo(f"{ui.GREEN}✓ {len(reports)} session(s) load whole{ui.R}")
 
@@ -139,8 +143,13 @@ def validate(name: str | None, as_json: bool) -> None:
 @click.argument("method")
 @click.argument("path")
 @click.option("--body", default="", help="Request body text, for rules using bodyContains.")
-@click.option("--session", "session_name", default=None, metavar="NAME",
-              help="Explain against this saved session file instead of the running proxy.")
+@click.option(
+    "--session",
+    "session_name",
+    default=None,
+    metavar="NAME",
+    help="Explain against this saved session file instead of the running proxy.",
+)
 @click.option("--json", "as_json", is_flag=True, help="Machine-readable output.")
 def explain_match(method: str, path: str, body: str, session_name: str | None, as_json: bool) -> None:
     """Which rule a request would select, and why each of the others would not.
@@ -176,8 +185,7 @@ def explain_match(method: str, path: str, body: str, session_name: str | None, a
             # not out-ranked, and "nothing would be selected" is the same sentence an empty session
             # produces. Say which file could not be read instead.
             if as_json:
-                click.echo(json.dumps(
-                    {"selected": None, "candidates": [], "problems": problems}, indent=2))
+                click.echo(json.dumps({"selected": None, "candidates": [], "problems": problems}, indent=2))
             else:
                 for problem in problems:
                     click.echo(f"{ui.RED}✗ {problem}{ui.R}")
@@ -190,15 +198,17 @@ def explain_match(method: str, path: str, body: str, session_name: str | None, a
     report = []
     for override in overrides:
         reason = rules.explain_matcher(override.get("match") or {}, method, split.path, query, body)
-        report.append({
-            "id": override.get("id"),
-            "active": rules.is_active(override),
-            "matched": reason is None,
-            "reason": reason,
-            "selected": override is selected,
-            "match": override.get("match") or {},
-            "sequenced": rules.sequence_steps(override) is not None,
-        })
+        report.append(
+            {
+                "id": override.get("id"),
+                "active": rules.is_active(override),
+                "matched": reason is None,
+                "reason": reason,
+                "selected": override is selected,
+                "match": override.get("match") or {},
+                "sequenced": rules.sequence_steps(override) is not None,
+            }
+        )
 
     # A rule the loader dropped is not in the ranking, so a ranking presented without saying so
     # answers "which rule wins" while hiding that the rule you asked about was never a candidate.
@@ -220,22 +230,25 @@ def explain_match(method: str, path: str, body: str, session_name: str | None, a
         click.echo(f"{ui.RED}✗ no active rule would be selected for {method.upper()} {path}{ui.R}")
     else:
         sequenced = next(c["sequenced"] for c in report if c["selected"])
-        click.echo(f"→ {ui.BOLD}{selected['id']}{ui.R} is selected  "
-                   f"{ui.DIM}({'sequence' if sequenced else selected.get('mode')}){ui.R}")
+        click.echo(
+            f"→ {ui.BOLD}{selected['id']}{ui.R} is selected  "
+            f"{ui.DIM}({'sequence' if sequenced else selected.get('mode')}){ui.R}"
+        )
         if selected.get("mode") == "patch":
             click.echo(f"  {ui.DIM}a patch answers only if the upstream response is JSON{ui.R}")
         elif sequenced:
             click.echo(f"  {ui.DIM}which step it serves depends on run state, not read here{ui.R}")
 
     # The over-match, made visible before it silently answers for a screen nobody is testing.
-    ui._section("also matched, ranked lower",
-           [(c["id"], json.dumps(c["match"]))
-            for c in report if c["matched"] and c["active"] and not c["selected"]])
-    ui._section("did not match",
-           [(c["id"], c["reason"]) for c in report if not c["matched"] and c["active"]])
-    ui._section("inactive",
-           [(c["id"], "would have matched" if c["matched"] else c["reason"])
-            for c in report if not c["active"]])
+    ui._section(
+        "also matched, ranked lower",
+        [(c["id"], json.dumps(c["match"])) for c in report if c["matched"] and c["active"] and not c["selected"]],
+    )
+    ui._section("did not match", [(c["id"], c["reason"]) for c in report if not c["matched"] and c["active"]])
+    ui._section(
+        "inactive",
+        [(c["id"], "would have matched" if c["matched"] else c["reason"]) for c in report if not c["active"]],
+    )
     if problems:
         # Last, and not one of the `_section` blocks above: these rules are not ranked lower or
         # inactive, they are absent — the ranking above was computed without them.

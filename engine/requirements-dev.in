@@ -1,0 +1,6 @@
+# Direct development dependencies. Regenerate requirements-dev.txt with `make lock`.
+-r requirements.in
+pytest==8.4.2
+mypy==1.18.2
+ruff==0.14.4
+uv==0.8.22

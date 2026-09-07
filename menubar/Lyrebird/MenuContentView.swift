@@ -49,8 +49,9 @@ struct MenuContentView: View {
             Button {
                 Task { await model.toggle() }
             } label: {
-                Label(model.stopsRatherThanStarts ? "Stop" : "Start",
-                      systemImage: model.stopsRatherThanStarts ? "stop.fill" : "play.fill")
+                Label(
+                    model.stopsRatherThanStarts ? "Stop" : "Start",
+                    systemImage: model.stopsRatherThanStarts ? "stop.fill" : "play.fill")
             }
             .disabled(model.busy)
 
@@ -75,8 +76,9 @@ struct MenuContentView: View {
                         Task { await model.activate(session.name) }
                     } label: {
                         HStack(spacing: 6) {
-                            Image(systemName: session.name == list.active
-                                  ? "largecircle.fill.circle" : "circle")
+                            Image(
+                                systemName: session.name == list.active
+                                    ? "largecircle.fill.circle" : "circle")
                             Text(session.name)
                             if session.verified {
                                 Image(systemName: "checkmark.seal.fill").foregroundStyle(.green)

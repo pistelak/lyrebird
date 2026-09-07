@@ -58,11 +58,9 @@ length is the number of launches, which is what the "nothing was launched" check
 ## Building it by hand
 
 ```bash
-cd acceptance/FixtureApp
-xcodegen generate
-xcodebuild -project FixtureApp.xcodeproj -scheme FixtureApp \
-  -destination 'generic/platform=iOS Simulator' -derivedDataPath .build build
-xcrun simctl install booted .build/Build/Products/Debug-iphonesimulator/FixtureApp.app
+# From the repository root:
+make setup-app build-fixture
+xcrun simctl install booted acceptance/FixtureApp/.build/Build/Products/Debug-iphonesimulator/FixtureApp.app
 ```
 
 `FixtureApp.xcodeproj` and the generated `Info.plist` are ignored by git, exactly as `menubar/`'s
@@ -74,9 +72,8 @@ The harness does all of the above for you, into a freshly reinstalled container.
 ## The profile
 
 There isn't one here, deliberately. Nothing profile-shaped — a `profile.json`, or a `sessions/`
-directory — lives in this repository outside `engine/examples`, and the privacy scanner that gates
-a push enforces that: a committed profile is how the hosts you intercept and the payloads you saved
-leave the machine.
+directory — lives in this repository outside `engine/examples`, because committed profiles can disclose the hosts you intercept and the payloads you saved.
+Use generic names and synthetic data throughout the fixture.
 
 So the harness makes its own. `lyrebird init` writes the bundled example profile into a temporary
 directory, the harness asserts that it intercepts `api.example.com` — the fixture app's URL is

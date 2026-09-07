@@ -13,7 +13,7 @@ import config
 import ui
 
 CONTROL = config.CONTROL_ORIGIN
-_PROFILE_HEADER = "X-Lyrebird-Profile"   # says which profile this call means; see `_profile_mismatch`
+_PROFILE_HEADER = "X-Lyrebird-Profile"  # says which profile this call means; see `_profile_mismatch`
 
 
 def _profile_mismatch(running: str) -> str:
@@ -22,10 +22,12 @@ def _profile_mismatch(running: str) -> str:
     It names both fingerprints and both remedies: "a different profile" without them leaves the
     operator no way to tell which one they are looking at.
     """
-    return (f"{ui.RED}a different profile is already running on port {config.CONTROL_PORT}{ui.R}\n"
-            f"  running: {running}   requested: {config.PROFILE_FINGERPRINT}\n"
-            f"  stop it first (`lyrebird down`) or use a different --profile, or another port via\n"
-            f"  LYREBIRD_CONTROL_PORT.")
+    return (
+        f"{ui.RED}a different profile is already running on port {config.CONTROL_PORT}{ui.R}\n"
+        f"  running: {running}   requested: {config.PROFILE_FINGERPRINT}\n"
+        f"  stop it first (`lyrebird down`) or use a different --profile, or another port via\n"
+        f"  LYREBIRD_CONTROL_PORT."
+    )
 
 
 def _error_body(error: urllib.error.HTTPError) -> dict:
@@ -37,8 +39,7 @@ def _error_body(error: urllib.error.HTTPError) -> dict:
     return body if isinstance(body, dict) else {}
 
 
-def _refuse_a_foreign_profile(error: urllib.error.HTTPError, body: dict,
-                              unproven_exit: int = 1) -> None:
+def _refuse_a_foreign_profile(error: urllib.error.HTTPError, body: dict, unproven_exit: int = 1) -> None:
     """Exits when the API says the request named a profile it is not running.
 
     The 409 counterpart of `_require_same_profile`, which explains the scoping; shared by both
@@ -53,8 +54,8 @@ def _refuse_a_foreign_profile(error: urllib.error.HTTPError, body: dict,
 
 def _get_json(path: str, timeout: float = 1.5, *, unproven_exit: int = 1) -> Any:
     request = urllib.request.Request(
-        f"{CONTROL}{path}",
-        headers={"Host": config.CONTROL_HOST_HEADER, _PROFILE_HEADER: config.PROFILE_FINGERPRINT})
+        f"{CONTROL}{path}", headers={"Host": config.CONTROL_HOST_HEADER, _PROFILE_HEADER: config.PROFILE_FINGERPRINT}
+    )
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.loads(response.read().decode())

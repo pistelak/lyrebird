@@ -3,6 +3,8 @@ engine/.venv/
 __pycache__/
 *.pyc
 .pytest_cache/
+.ruff_cache/
+.mypy_cache/
 .coverage
 
 # local environment — may contain credentials; do NOT rely on a global gitignore
@@ -31,4 +33,3 @@ acceptance/FixtureApp/FixtureApp/Info.plist
 
 # macOS
 .DS_Store
-

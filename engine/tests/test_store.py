@@ -18,6 +18,7 @@ def make_store(profile):
 
 # MARK: - Name validation (these names become path components)
 
+
 @pytest.mark.parametrize("name", ["../escape", "a/b", "..", ".", "", ".hidden", "a" * 65, "sess ion"])
 def test_unsafe_names_are_rejected(name):
     with pytest.raises(store.UnsafeName):
@@ -30,6 +31,7 @@ def test_reasonable_names_are_accepted(name):
 
 
 # MARK: - Sessions
+
 
 def test_deleting_the_active_session_switches_to_default(profile):
     subject = make_store(profile)
@@ -81,17 +83,18 @@ def test_binary_junk_in_the_sessions_directory_does_not_block_startup(profile):
 
 def test_an_unsupported_schema_version_is_skipped_and_named(profile):
     (profile / "sessions" / "future.json").write_text(
-        json.dumps({"schemaVersion": 2, "name": "future", "overrides": []}))
+        json.dumps({"schemaVersion": 2, "name": "future", "overrides": []})
+    )
     subject = make_store(profile)
     assert "future" not in subject.sessions, "a session this engine cannot read must not load"
-    assert any("future.json" in problem and "schemaVersion" in problem
-               for problem in subject.load_problems)
+    assert any("future.json" in problem and "schemaVersion" in problem for problem in subject.load_problems)
 
 
 # MARK: - The shared session loader
 #
 # `load_session_file` is what startup loads with, so an offline inspection command reports what the
 # proxy would do rather than a second opinion about it. These tests pin that it is the same answer.
+
 
 def _write(profile, name, payload):
     path = profile / "sessions" / f"{name}.json"
@@ -100,14 +103,18 @@ def _write(profile, name, payload):
 
 
 def test_load_session_file_keeps_the_good_rules_and_names_the_dropped_ones(profile):
-    path = _write(profile, "partial", {
-        "name": "partial",
-        "overrides": [
-            {"id": "keep", "mode": "replace", "status": 200, "match": {"path": "/a"}},
-            {"id": "typo", "mode": "replace", "status": 200, "match": {"paths": "/b"}},
-            {"id": "keep", "mode": "replace", "status": 204, "match": {"path": "/c"}},
-        ],
-    })
+    path = _write(
+        profile,
+        "partial",
+        {
+            "name": "partial",
+            "overrides": [
+                {"id": "keep", "mode": "replace", "status": 200, "match": {"path": "/a"}},
+                {"id": "typo", "mode": "replace", "status": 200, "match": {"paths": "/b"}},
+                {"id": "keep", "mode": "replace", "status": 204, "match": {"path": "/c"}},
+            ],
+        },
+    )
     session, problems = store.load_session_file(path)
     assert [o["id"] for o in session["overrides"]] == ["keep"]
     assert any("override[1]" in p and "paths" in p for p in problems), "name the rule and the field"
@@ -213,10 +220,17 @@ def test_a_rule_whose_delay_is_not_a_finite_number_is_a_reported_problem(profile
     """`json.loads` turns `1e309` into `inf`, and `int(inf)` raises OverflowError — not a
     ValidationError, and not even a ValueError — from inside validation. The loader's `except
     ValidationError` never saw it, so one such rule took the whole file's diagnostics with it."""
-    path = _write(profile, "wild", {"name": "wild", "overrides": [
-        {"id": "ovr_slow", "mode": "replace", "status": 200, "delayMs": 1e309},
-        {"id": "ovr_ok", "mode": "replace", "status": 200, "match": {"path": "/a"}},
-    ]})
+    path = _write(
+        profile,
+        "wild",
+        {
+            "name": "wild",
+            "overrides": [
+                {"id": "ovr_slow", "mode": "replace", "status": 200, "delayMs": 1e309},
+                {"id": "ovr_ok", "mode": "replace", "status": 200, "match": {"path": "/a"}},
+            ],
+        },
+    )
     session, problems = store.load_session_file(path)
     assert [o["id"] for o in session["overrides"]] == ["ovr_ok"], "the good rule still loads"
     assert any("override[0]" in p and "finite" in p for p in problems)
@@ -224,9 +238,11 @@ def test_a_rule_whose_delay_is_not_a_finite_number_is_a_reported_problem(profile
 
 # MARK: - Overrides
 
+
 def test_add_override_tolerates_a_session_whose_overrides_lack_ids(profile):
     (profile / "sessions" / "hand.json").write_text(
-        json.dumps({"name": "hand", "overrides": [{"match": {"path": "/a"}, "mode": "replace"}]}))
+        json.dumps({"name": "hand", "overrides": [{"match": {"path": "/a"}, "mode": "replace"}]})
+    )
     subject = make_store(profile)
     subject.set_active("hand")
     added = subject.add_override({"match": {"path": "/b"}, "mode": "replace"})
@@ -294,20 +310,25 @@ def test_create_refuses_a_name_that_is_already_taken(profile):
     kept = subject.add_override({"id": "keep", "mode": "replace", "match": {"path": "/a"}})
     with pytest.raises(FileExistsError):
         subject.create_session("taken")
-    assert [o["id"] for o in subject.sessions["taken"]["overrides"]] == [kept["id"]], \
+    assert [o["id"] for o in subject.sessions["taken"]["overrides"]] == [kept["id"]], (
         "the refused create must not have touched the existing session"
+    )
 
 
-@pytest.mark.parametrize("overrides", [
-    pytest.param({"keep": {"mode": "replace"}}, id="object"),
-    pytest.param(None, id="null"),
-    pytest.param("[]", id="string"),
-])
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        pytest.param({"keep": {"mode": "replace"}}, id="object"),
+        pytest.param(None, id="null"),
+        pytest.param("[]", id="string"),
+    ],
+)
 def test_a_session_whose_overrides_are_not_a_list_is_reported_not_emptied(profile, overrides):
     """`normalise_session` substitutes [] for a malformed `overrides`, so the file loads — and the
     problem has to be on the record, or a scenario with every rule lost reads as one with none."""
-    (profile / "sessions" / "broken.json").write_text(json.dumps(
-        {"name": "broken", "overrides": overrides}), encoding="utf-8")
+    (profile / "sessions" / "broken.json").write_text(
+        json.dumps({"name": "broken", "overrides": overrides}), encoding="utf-8"
+    )
     session, problems = store.load_session_file(profile / "sessions" / "broken.json")
     assert session is not None and session["overrides"] == []
     assert problems == ["broken.json: overrides must be a list"]
@@ -330,11 +351,18 @@ def test_a_created_session_does_not_inherit_the_problems_of_the_file_it_replaces
 def test_a_recreated_session_does_not_inherit_the_problems_of_the_one_deleted(profile):
     """The other order: delete the half-loaded session, then make a new one under its name. The
     entry has to go with the session, not linger for whatever takes the name next."""
-    (profile / "sessions" / "orders-outage.json").write_text(json.dumps({
-        "name": "orders-outage",
-        "overrides": [{"match": {"path": "/a"}, "mode": "replace", "status": 200},
-                      {"match": {"path": "/b"}, "mode": "replace", "statsu": 200}],
-    }), encoding="utf-8")
+    (profile / "sessions" / "orders-outage.json").write_text(
+        json.dumps(
+            {
+                "name": "orders-outage",
+                "overrides": [
+                    {"match": {"path": "/a"}, "mode": "replace", "status": 200},
+                    {"match": {"path": "/b"}, "mode": "replace", "statsu": 200},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
     subject = make_store(profile)
     assert "orders-outage" in subject.sessions, "it loaded, without one of its rules"
     assert "orders-outage" in subject.sessions_not_whole
@@ -380,8 +408,12 @@ def test_starting_does_not_write_into_the_profile(profile):
 # worth pinning are: it moves when it should, it does NOT move when it should not, and it never
 # escapes into a profile someone keeps in git.
 
-SEQ = {"id": "seq", "mode": "replace", "match": {"method": "GET", "path": "/api/items"},
-       "sequence": {"steps": [{"status": 201}, {"status": 202}]}}
+SEQ = {
+    "id": "seq",
+    "mode": "replace",
+    "match": {"method": "GET", "path": "/api/items"},
+    "sequence": {"steps": [{"status": 201}, {"status": 202}]},
+}
 
 
 def _advanced_once(subject):
@@ -410,10 +442,15 @@ def test_a_shadowed_sequenced_rule_does_not_advance(profile):
     next request it *does* answer would serve the wrong one, leaving the scenario off by one for the
     rest of its run. This is why `self` means 'answered' and not 'matched'."""
     subject = store.Store()
-    subject.add_override({"id": "seq", "mode": "replace", "match": {"path": "/api/orders/*"},
-                          "sequence": {"steps": [{"status": 201}, {"status": 202}]}})
-    subject.add_override({"id": "specific", "mode": "replace", "status": 404,
-                          "match": {"path": "/api/orders/42"}})
+    subject.add_override(
+        {
+            "id": "seq",
+            "mode": "replace",
+            "match": {"path": "/api/orders/*"},
+            "sequence": {"steps": [{"status": 201}, {"status": 202}]},
+        }
+    )
+    subject.add_override({"id": "specific", "mode": "replace", "status": 404, "match": {"path": "/api/orders/42"}})
 
     picked = subject.find_override("GET", "/api/orders/42", {}, "")
     assert picked["id"] == "specific", "the rule with fewer wildcards answers"
@@ -429,8 +466,9 @@ def test_an_advance_on_sequence_ignores_its_own_calls(profile):
     """The property the delete-then-refresh scenario depends on: a screen may fetch the list any
     number of times without consuming a step."""
     subject = store.Store()
-    subject.add_override({**SEQ, "sequence": {**SEQ["sequence"],
-                                              "advanceOn": {"method": "DELETE", "path": "/api/items/*"}}})
+    subject.add_override(
+        {**SEQ, "sequence": {**SEQ["sequence"], "advanceOn": {"method": "DELETE", "path": "/api/items/*"}}}
+    )
     for _ in range(3):
         _advanced_once(subject)
     assert subject.sequence_states()[0]["nextStep"] == 1
@@ -441,17 +479,22 @@ def test_an_advance_on_sequence_ignores_its_own_calls(profile):
 
 def test_advance_matching_ignores_a_rule_whose_matcher_does_not_fit(profile):
     subject = store.Store()
-    subject.add_override({**SEQ, "sequence": {**SEQ["sequence"],
-                                              "advanceOn": {"method": "DELETE", "path": "/api/items/*"}}})
+    subject.add_override(
+        {**SEQ, "sequence": {**SEQ["sequence"], "advanceOn": {"method": "DELETE", "path": "/api/items/*"}}}
+    )
     assert subject.advance_matching("DELETE", "/api/other/b", {}, "") == []
 
 
 def test_an_inactive_sequenced_rule_is_never_advanced(profile):
     """A disabled rule that still moved on the wire would be a rule doing something while off."""
     subject = store.Store()
-    subject.add_override({**SEQ, "active": False,
-                          "sequence": {**SEQ["sequence"],
-                                       "advanceOn": {"method": "DELETE", "path": "/api/items/*"}}})
+    subject.add_override(
+        {
+            **SEQ,
+            "active": False,
+            "sequence": {**SEQ["sequence"], "advanceOn": {"method": "DELETE", "path": "/api/items/*"}},
+        }
+    )
     assert subject.sequenced_overrides() == []
     assert subject.advance_matching("DELETE", "/api/items/b", {}, "") == []
 
@@ -484,6 +527,7 @@ def test_resolve_override_does_not_move_the_cursor(profile):
 
 
 # MARK: - Runtime never escapes
+
 
 def test_sequence_cursors_never_reach_the_session_file(profile):
     subject = store.Store()
@@ -540,6 +584,7 @@ def test_replacing_a_rule_by_id_drops_its_cursor(profile):
 
 # MARK: - Reset
 
+
 def test_reset_rewinds_and_issues_a_new_run_id(profile):
     subject = store.Store()
     subject.add_override(dict(SEQ))
@@ -581,8 +626,9 @@ def test_a_served_overrun_is_reported_even_when_the_cursor_cannot_move(profile):
     cursor alone therefore reported false while /recent recorded the overrun — two answers to the
     same question."""
     subject = store.Store()
-    subject.add_override({**SEQ, "sequence": {**SEQ["sequence"],
-                                              "advanceOn": {"method": "DELETE", "path": "/api/items/*"}}})
+    subject.add_override(
+        {**SEQ, "sequence": {**SEQ["sequence"], "advanceOn": {"method": "DELETE", "path": "/api/items/*"}}}
+    )
     for suffix in ("a", "b"):
         subject.advance_matching("DELETE", f"/api/items/{suffix}", {}, "")
     assert subject.sequence_states()[0]["hasOverrun"] is False, "exhausted, but nothing served past it"
@@ -597,8 +643,9 @@ def test_serves_count_each_step_even_when_the_cursor_cannot_move(profile):
     window — so the counter in live state is the only durable evidence a step was served.
     `sequence wait` reads it for exactly that reason."""
     subject = store.Store()
-    subject.add_override({**SEQ, "sequence": {**SEQ["sequence"],
-                                              "advanceOn": {"method": "DELETE", "path": "/api/items/*"}}})
+    subject.add_override(
+        {**SEQ, "sequence": {**SEQ["sequence"], "advanceOn": {"method": "DELETE", "path": "/api/items/*"}}}
+    )
     for _ in range(2):
         subject.resolve_override(subject.find_override("GET", "/api/items", {}, ""))
     state = subject.sequence_states()[0]
@@ -661,6 +708,7 @@ def test_reset_always_issues_a_different_run_id(profile, monkeypatch):
 # The evidence a test asserts on. Every failure below is one where the count would have said a mock
 # was in play when it was not — the exact defect the assertion exists to catch.
 
+
 def test_a_captured_slot_credits_nobody_after_the_session_is_switched(profile):
     """A patch is selected in the request hook and only answers a round trip later, in the response
     hook. Looking the rule up by id at that point would credit whatever rule the *now* active
@@ -673,9 +721,8 @@ def test_a_captured_slot_credits_nobody_after_the_session_is_switched(profile):
     subject.set_active("other")
     subject.add_override({"id": "shared", "mode": "patch", "patch": {}})
 
-    store.credit(slot)   # the in-flight patch from the previous session lands now
-    assert subject.answer_states() == [
-        {"id": "shared", "active": True, "count": 0, "runId": None}]
+    store.credit(slot)  # the in-flight patch from the previous session lands now
+    assert subject.answer_states() == [{"id": "shared", "active": True, "count": 0, "runId": None}]
 
 
 def test_a_captured_slot_credits_nobody_after_the_rule_is_replaced(profile):
@@ -699,7 +746,7 @@ def test_a_captured_slot_credits_nobody_after_a_reset(profile):
     slot = subject.answer_slot("r")
     issued = subject.reset_runtime("r")["reset"]["r"]
 
-    store.credit(slot)   # the in-flight patch from the run that just ended lands now
+    store.credit(slot)  # the in-flight patch from the run that just ended lands now
     assert subject.answer_states() == [{"id": "r", "active": True, "count": 0, "runId": issued}]
 
 
@@ -737,8 +784,7 @@ def test_answer_states_report_an_inactive_rule_as_inactive(profile):
     than burn its timeout."""
     subject = store.Store()
     subject.add_override({"id": "off", "active": False, "mode": "replace", "status": 200})
-    assert subject.answer_states() == [
-        {"id": "off", "active": False, "count": 0, "runId": None}]
+    assert subject.answer_states() == [{"id": "off", "active": False, "count": 0, "runId": None}]
 
 
 # MARK: - Which run the answers belong to
@@ -746,6 +792,7 @@ def test_answer_states_report_an_inactive_rule_as_inactive(profile):
 # A count on its own says "some run's". Every test here is a way another run's evidence could be
 # handed to a caller asking about the boundary it drew — the same shape as a stale sequence event
 # satisfying a wait, one step further out: the rule id survives everything that ends a run.
+
 
 def test_reset_issues_the_run_id_the_following_answers_are_counted_under(profile):
     """The whole flow in one place: reset hands back a token, and what the rule answers afterwards
@@ -803,8 +850,7 @@ def test_a_rule_that_has_no_run_reports_none_rather_than_a_run_with_no_answers(p
     drew — the reading-does-not-mint rule is what makes the distinction possible."""
     subject = store.Store()
     subject.add_override({"id": "untouched", "mode": "replace", "status": 200})
-    assert subject.answer_states() == [
-        {"id": "untouched", "active": True, "count": 0, "runId": None}]
+    assert subject.answer_states() == [{"id": "untouched", "active": True, "count": 0, "runId": None}]
 
 
 def test_answer_and_sequence_states_report_one_run_not_two(profile):
@@ -824,12 +870,14 @@ def test_answer_and_sequence_states_report_one_run_not_two(profile):
 # the exception reaches the caller, live state is untouched, and the file is untouched. Before the
 # fix each one left the proxy answering with a rule no profile contained.
 
+
 def _refuse_writes(monkeypatch):
     """Make every profile write fail the way a full disk does.
 
     Monkeypatched rather than chmodded: a read-only directory does not stop root, which is how CI
     containers run, and chmod on a tmp_path is flaky on macOS.
     """
+
     def refuse(path, text):
         raise OSError(errno.ENOSPC, "No space left on device")
 
@@ -884,8 +932,9 @@ def test_a_replacement_whose_write_fails_leaves_a_captured_slot_crediting_the_li
     assert subject.answer_slot("r") is slot, "the live rule kept its runtime entry"
     assert slot["answers"] == 1 and slot["runId"] == run_id, "and the entry itself is untouched"
     store.credit(slot)
-    assert subject.answer_states() == [{"id": "r", "active": True, "count": 2, "runId": run_id}],\
+    assert subject.answer_states() == [{"id": "r", "active": True, "count": 2, "runId": run_id}], (
         "and the run the caller was told about is still the one being counted"
+    )
 
 
 def test_overrides_stay_live_when_the_clear_cannot_be_written(profile, monkeypatch):
@@ -931,8 +980,9 @@ def test_a_switch_whose_pointer_write_fails_does_not_happen(profile, monkeypatch
         subject.set_active("other")
 
     assert subject.active_name == "default"
-    assert store._runtime(subject.sessions["other"])["seq"]["cursor"] == 1, \
+    assert store._runtime(subject.sessions["other"])["seq"]["cursor"] == 1, (
         "the destination's cursors were rewound for a switch that did not happen"
+    )
     assert config.STATE_FILE.read_bytes() == before
 
 

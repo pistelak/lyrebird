@@ -6,6 +6,7 @@ import rules
 
 # MARK: - Glob matching
 
+
 def test_glob_matches_exact_path():
     assert rules.glob_to_regex("/a/b").match("/a/b")
 
@@ -23,6 +24,7 @@ def test_glob_treats_dot_as_literal():
 
 
 # MARK: - Specificity ordering
+
 
 def test_most_specific_path_wins():
     overrides = [
@@ -81,6 +83,7 @@ def test_inactive_override_is_skipped():
 
 # MARK: - deep_merge
 
+
 def test_append_to_array_keeps_upstream_items():
     upstream = {"features": [{"id": "STANDARD_EXPORT"}], "accountId": "acct_123", "name": "keep me"}
     patch = {"features": [{"id": "BETA_EXPORT"}]}
@@ -104,12 +107,14 @@ def test_new_keys_are_added():
 
 
 def test_nested_object_merge_without_arrays():
-    merged = rules.deep_merge({"preferences": {"theme": "light", "notifications": True}},
-                              {"preferences": {"theme": "dark"}})
+    merged = rules.deep_merge(
+        {"preferences": {"theme": "light", "notifications": True}}, {"preferences": {"theme": "dark"}}
+    )
     assert merged["preferences"] == {"theme": "dark", "notifications": True}
 
 
 # MARK: - Validation
+
 
 def test_rejects_unknown_mode():
     with pytest.raises(rules.ValidationError):
@@ -182,20 +187,32 @@ def test_validate_override_rejects_non_string_notes(notes):
     """Text or nothing. An explicit `null` is a mistake worth naming here, unlike the other optional
     fields, because the only reason to write the key at all is to put words in it."""
     with pytest.raises(rules.ValidationError, match="notes must be a string"):
-        rules.validate_override({"mode": "replace", "match": {"path": "/api/items"},
-                                 "status": 200, "notes": notes})
+        rules.validate_override({"mode": "replace", "match": {"path": "/api/items"}, "status": 200, "notes": notes})
 
 
 EVERY_FIELD_RULES = {
-    "replace": {"id": "ovr_items", "active": True, "match": {"path": "/api/items"},
-                "mode": "replace", "delayMs": 250, "status": 201,
-                "headers": {"Content-Type": "application/json"}, "body": {"items": []},
-                "notes": "the empty-state screen"},
-    "patch": {"match": {"path": "/api/features"}, "mode": "patch",
-              "patch": {"features": [{"id": "BETA", "enabled": True}]},
-              "patchStrategy": "appendToArray"},
-    "sequenced": {"match": {"path": "/api/orders"}, "mode": "replace",
-                  "sequence": {"steps": [{"status": 202}, {"status": 200}]}},
+    "replace": {
+        "id": "ovr_items",
+        "active": True,
+        "match": {"path": "/api/items"},
+        "mode": "replace",
+        "delayMs": 250,
+        "status": 201,
+        "headers": {"Content-Type": "application/json"},
+        "body": {"items": []},
+        "notes": "the empty-state screen",
+    },
+    "patch": {
+        "match": {"path": "/api/features"},
+        "mode": "patch",
+        "patch": {"features": [{"id": "BETA", "enabled": True}]},
+        "patchStrategy": "appendToArray",
+    },
+    "sequenced": {
+        "match": {"path": "/api/orders"},
+        "mode": "replace",
+        "sequence": {"steps": [{"status": 202}, {"status": 200}]},
+    },
 }
 
 
@@ -218,7 +235,8 @@ def test_normalise_session_drops_a_rule_with_an_unknown_field_and_names_it():
     """A saved session written before this check loads with the rule gone and the field named — the
     rule never did what its author meant, and silently keeping it is how that stayed invisible."""
     session = rules.normalise_session(
-        {"overrides": [{"mode": "replace", "match": {"path": "/api/items"}, "statsu": 503}]}, "s")
+        {"overrides": [{"mode": "replace", "match": {"path": "/api/items"}, "statsu": 503}]}, "s"
+    )
     assert session["overrides"] == []
     assert len(session["_problems"]) == 1
     assert "override[0]: unknown field 'statsu'" in session["_problems"][0]
@@ -226,7 +244,8 @@ def test_normalise_session_drops_a_rule_with_an_unknown_field_and_names_it():
 
 def test_normalise_session_drops_invalid_overrides_and_reports_them():
     session = rules.normalise_session(
-        {"overrides": [{"mode": "replace", "id": "ok"}, {"mode": "bogus", "id": "bad"}]}, "s")
+        {"overrides": [{"mode": "replace", "id": "ok"}, {"mode": "bogus", "id": "bad"}]}, "s"
+    )
     assert [o["id"] for o in session["overrides"]] == ["ok"]
     assert len(session["_problems"]) == 1
 
@@ -234,8 +253,7 @@ def test_normalise_session_drops_invalid_overrides_and_reports_them():
 def test_a_hand_written_override_does_not_need_an_id():
     """Writing a session by hand is the documented workflow; requiring an invented id meant a
     pasted example silently loaded zero rules."""
-    session = rules.normalise_session(
-        {"overrides": [{"mode": "replace", "status": 500, "match": {"path": "/a"}}]}, "s")
+    session = rules.normalise_session({"overrides": [{"mode": "replace", "status": 500, "match": {"path": "/a"}}]}, "s")
     assert len(session["overrides"]) == 1
     assert session["overrides"][0]["id"].startswith("ovr_")
     assert not session["_problems"]
@@ -284,45 +302,64 @@ def test_validate_override_rejects_an_unknown_patch_strategy():
 # A sequence answers differently as a scenario progresses. Everything here is pure: the cursor is
 # an argument, because the store owns it.
 
+
 def _sequenced(**sequence):
     """A minimal valid sequenced rule, with the sequence body overridden per test."""
-    return {"mode": "replace", "match": {"path": "/a"},
-            "sequence": {"steps": [{"status": 200}], **sequence}}
+    return {"mode": "replace", "match": {"path": "/a"}, "sequence": {"steps": [{"status": 200}], **sequence}}
 
 
-@pytest.mark.parametrize("override", [
-    pytest.param({"mode": "replace", "sequence": "nope"}, id="sequence-not-an-object"),
-    pytest.param({"mode": "replace", "sequence": {"steps": "nope"}}, id="steps-not-a-list"),
-    pytest.param({"mode": "replace", "sequence": {"steps": []}}, id="empty-steps"),
-    pytest.param({"mode": "replace", "sequence": {"steps": [[]]}}, id="step-not-an-object"),
-    pytest.param({"mode": "replace", "sequence": {"steps": [{"delayMs": 10}]}}, id="step-delayMs"),
-    pytest.param({"mode": "replace", "sequence": {"steps": [{"active": False}]}}, id="step-active"),
-    pytest.param({"mode": "replace", "sequence": {"steps": [{"match": {}}]}}, id="step-match"),
-    pytest.param({"mode": "replace", "sequence": {"steps": [{"mode": "patch"}]}}, id="step-mode"),
-    pytest.param({"mode": "replace", "sequence": {"steps": [{"id": "x"}]}}, id="step-id"),
-    pytest.param({"mode": "replace", "sequence": {"steps": [{"sequence": {}}]}}, id="step-nested"),
-    pytest.param({"mode": "replace", "sequence": {"steps": [{"patch": {}}]}}, id="step-patch"),
-    pytest.param({"mode": "replace", "sequence": {"steps": [{"status": 9999}]}}, id="step-bad-status"),
-    pytest.param({"mode": "replace", "sequence": {"steps": [{"headers": {"a": 1}}]}}, id="step-bad-headers"),
-    pytest.param({"mode": "patch", "sequence": {"steps": [{"status": 200}]}}, id="sequence-on-patch"),
-    pytest.param({"mode": "replace", "sequence": {"steps": [{"status": 200}],
-                                                  "onExhausted": "nonsense"}}, id="unknown-policy"),
-    pytest.param({"mode": "replace", "sequence": {"steps": [{"status": 200}],
-                                                  "advanceOn": {}}}, id="advanceOn-unconstrained"),
-    pytest.param({"mode": "replace", "sequence": {"steps": [{"status": 200}],
-                                                  "advanceOn": {"query": {"a": "b"}}}},
-                 id="advanceOn-neither-method-nor-path"),
-    pytest.param({"mode": "replace", "sequence": {"steps": [{"status": 200}],
-                                                  "advanceOn": {"path": 42}}}, id="advanceOn-bad-path"),
-    pytest.param({"mode": "replace", "sequence": {"steps": [{"status": 200}],
-                                                  "advance_on": {"method": "DELETE", "path": "/x"}}},
-                 id="sequence-unknown-field"),
-    pytest.param({"mode": "replace", "sequence": {"steps": [{"status": 200}],
-                                                  "advanceOn": {"method": "DELETE", "paths": "/x/*"}}},
-                 id="advanceOn-unknown-field"),
-    pytest.param({"mode": "replace", "match": {"path": "/a", "methods": "GET"},
-                  "sequence": {"steps": [{"status": 200}]}}, id="match-unknown-field"),
-])
+@pytest.mark.parametrize(
+    "override",
+    [
+        pytest.param({"mode": "replace", "sequence": "nope"}, id="sequence-not-an-object"),
+        pytest.param({"mode": "replace", "sequence": {"steps": "nope"}}, id="steps-not-a-list"),
+        pytest.param({"mode": "replace", "sequence": {"steps": []}}, id="empty-steps"),
+        pytest.param({"mode": "replace", "sequence": {"steps": [[]]}}, id="step-not-an-object"),
+        pytest.param({"mode": "replace", "sequence": {"steps": [{"delayMs": 10}]}}, id="step-delayMs"),
+        pytest.param({"mode": "replace", "sequence": {"steps": [{"active": False}]}}, id="step-active"),
+        pytest.param({"mode": "replace", "sequence": {"steps": [{"match": {}}]}}, id="step-match"),
+        pytest.param({"mode": "replace", "sequence": {"steps": [{"mode": "patch"}]}}, id="step-mode"),
+        pytest.param({"mode": "replace", "sequence": {"steps": [{"id": "x"}]}}, id="step-id"),
+        pytest.param({"mode": "replace", "sequence": {"steps": [{"sequence": {}}]}}, id="step-nested"),
+        pytest.param({"mode": "replace", "sequence": {"steps": [{"patch": {}}]}}, id="step-patch"),
+        pytest.param({"mode": "replace", "sequence": {"steps": [{"status": 9999}]}}, id="step-bad-status"),
+        pytest.param({"mode": "replace", "sequence": {"steps": [{"headers": {"a": 1}}]}}, id="step-bad-headers"),
+        pytest.param({"mode": "patch", "sequence": {"steps": [{"status": 200}]}}, id="sequence-on-patch"),
+        pytest.param(
+            {"mode": "replace", "sequence": {"steps": [{"status": 200}], "onExhausted": "nonsense"}},
+            id="unknown-policy",
+        ),
+        pytest.param(
+            {"mode": "replace", "sequence": {"steps": [{"status": 200}], "advanceOn": {}}}, id="advanceOn-unconstrained"
+        ),
+        pytest.param(
+            {"mode": "replace", "sequence": {"steps": [{"status": 200}], "advanceOn": {"query": {"a": "b"}}}},
+            id="advanceOn-neither-method-nor-path",
+        ),
+        pytest.param(
+            {"mode": "replace", "sequence": {"steps": [{"status": 200}], "advanceOn": {"path": 42}}},
+            id="advanceOn-bad-path",
+        ),
+        pytest.param(
+            {
+                "mode": "replace",
+                "sequence": {"steps": [{"status": 200}], "advance_on": {"method": "DELETE", "path": "/x"}},
+            },
+            id="sequence-unknown-field",
+        ),
+        pytest.param(
+            {
+                "mode": "replace",
+                "sequence": {"steps": [{"status": 200}], "advanceOn": {"method": "DELETE", "paths": "/x/*"}},
+            },
+            id="advanceOn-unknown-field",
+        ),
+        pytest.param(
+            {"mode": "replace", "match": {"path": "/a", "methods": "GET"}, "sequence": {"steps": [{"status": 200}]}},
+            id="match-unknown-field",
+        ),
+    ],
+)
 def test_sequence_validation_rejects(override):
     """Each of these would otherwise be a rule that loads cleanly and quietly does the wrong thing:
     a step that can never answer, a field that cannot take effect, or an advance matcher that fires
@@ -337,8 +374,7 @@ def test_too_many_steps_is_rejected():
 
 
 def test_a_valid_sequence_is_accepted():
-    assert rules.validate_override(_sequenced(advanceOn={"method": "DELETE", "path": "/x/*"},
-                                              onExhausted="repeatLast"))
+    assert rules.validate_override(_sequenced(advanceOn={"method": "DELETE", "path": "/x/*"}, onExhausted="repeatLast"))
 
 
 def test_the_step_delay_rejection_says_where_to_put_it():
@@ -350,8 +386,12 @@ def test_the_step_delay_rejection_says_where_to_put_it():
 # MARK: - Step overlay
 
 OVERLAY_PARENT = {
-    "id": "o", "mode": "replace", "status": 500, "delayMs": 250,
-    "headers": {"X-Parent": "1"}, "body": {"from": "parent"},
+    "id": "o",
+    "mode": "replace",
+    "status": 500,
+    "delayMs": 250,
+    "headers": {"X-Parent": "1"},
+    "body": {"from": "parent"},
     "sequence": {"steps": [{}]},
 }
 
@@ -386,6 +426,7 @@ def test_step_view_drops_the_sequence_key():
 
 # MARK: - Cursor arithmetic
 
+
 def test_bumped_clamps_one_past_the_last_step():
     """Clamping at n rather than n+1 would make a second and a third advance event land on the same
     value, collapsing 'used up' into 'overrun' — the two states health reports separately."""
@@ -400,12 +441,15 @@ def test_resolve_step_selects_by_cursor(cursor, expected):
     assert view["status"] == expected
 
 
-@pytest.mark.parametrize("policy,cursor,expected_action", [
-    ("error", 2, rules.EXHAUSTED_ERROR),
-    ("error", 3, rules.EXHAUSTED_ERROR),
-    ("passThrough", 2, rules.PASS_THROUGH),
-    ("repeatLast", 2, rules.APPLY),
-])
+@pytest.mark.parametrize(
+    "policy,cursor,expected_action",
+    [
+        ("error", 2, rules.EXHAUSTED_ERROR),
+        ("error", 3, rules.EXHAUSTED_ERROR),
+        ("passThrough", 2, rules.PASS_THROUGH),
+        ("repeatLast", 2, rules.APPLY),
+    ],
+)
 def test_resolve_step_past_the_end_follows_the_policy(policy, cursor, expected_action):
     rule = _sequenced(steps=[{"status": 201}, {"status": 202}], onExhausted=policy)
     action, _ = rules.resolve_step(rule, cursor)
@@ -440,13 +484,19 @@ def test_advance_matcher_is_none_for_the_self_default():
 
 # MARK: - Unique ids
 
+
 def test_duplicate_override_ids_are_reported_and_dropped():
     """Ids address a rule: add replaces by id, reset names one by id, and sequence state is keyed
     by it. Two rules sharing an id would share a cursor."""
-    session = rules.normalise_session({"overrides": [
-        {"id": "dup", "mode": "replace", "match": {"path": "/a"}},
-        {"id": "dup", "mode": "replace", "match": {"path": "/b"}},
-    ]}, "s")
+    session = rules.normalise_session(
+        {
+            "overrides": [
+                {"id": "dup", "mode": "replace", "match": {"path": "/a"}},
+                {"id": "dup", "mode": "replace", "match": {"path": "/b"}},
+            ]
+        },
+        "s",
+    )
     assert [o["match"]["path"] for o in session["overrides"]] == ["/a"]
     assert any("duplicate id" in problem for problem in session["_problems"])
 
@@ -461,11 +511,11 @@ def test_identical_rules_collide_on_their_derived_id_and_one_is_dropped():
 
 # MARK: - Untrusted input at the boundary
 
+
 def test_a_null_id_is_replaced_by_a_derived_one():
     """`setdefault` leaves an explicit null in place, so the rule loaded with no usable id: not
     addressable by the CLI, and recorded as `matched: null`, which reads as "nothing answered"."""
-    session = rules.normalise_session(
-        {"overrides": [{"id": None, "mode": "replace", "match": {"path": "/a"}}]}, "s")
+    session = rules.normalise_session({"overrides": [{"id": None, "mode": "replace", "match": {"path": "/a"}}]}, "s")
     assert session["overrides"][0]["id"].startswith("ovr_")
 
 
@@ -484,30 +534,34 @@ def test_internal_runtime_keys_are_stripped_from_input(injected):
 # could have parted company. Validation checks these fields' types but not their emptiness, and a
 # saved session may carry `""` or `{}` — which the wire has always treated as "no constraint".
 
-@pytest.mark.parametrize("matcher,method,path,query,body,expected", [
-    # Fields validation accepts but does not require to be non-empty. The wire has always read
-    # these as "no constraint", and a saved session may contain them.
-    ({}, "GET", "/a", {}, "", True),
-    ({"method": ""}, "POST", "/a", {}, "", True),
-    ({"path": ""}, "GET", "/a", {}, "", True),
-    ({"query": {}}, "GET", "/a", {}, "", True),
-    ({"bodyContains": ""}, "GET", "/a", {}, "", True),
-    # Method comparison is case-insensitive in both directions.
-    ({"method": "get"}, "GET", "/a", {}, "", True),
-    ({"method": "GET"}, "get", "/a", {}, "", True),
-    # `*` is the only wildcard; a rule may carry a non-string query value; extra parameters on the
-    # request are ignored.
-    ({"path": "/api/*/x"}, "GET", "/api/v1/x", {}, "", True),
-    ({"path": "/api/*/x"}, "GET", "/api/v1/y", {}, "", False),
-    ({"query": {"page": 2}}, "GET", "/a", {"page": "2"}, "", True),
-    ({"query": {"k": "v"}}, "GET", "/a", {"k": "v", "other": "z"}, "", True),
-    ({"bodyContains": "id"}, "GET", "/a", {}, "the id here", True),
-    ({"method": "POST"}, "GET", "/a", {}, "", False),
-    ({"path": "/b"}, "GET", "/a", {}, "", False),
-    ({"query": {"k": "v"}}, "GET", "/a", {}, "", False),
-    ({"query": {"k": "v"}}, "GET", "/a", {"k": "w"}, "", False),
-    ({"bodyContains": "id"}, "GET", "/a", {}, "nothing", False),
-])
+
+@pytest.mark.parametrize(
+    "matcher,method,path,query,body,expected",
+    [
+        # Fields validation accepts but does not require to be non-empty. The wire has always read
+        # these as "no constraint", and a saved session may contain them.
+        ({}, "GET", "/a", {}, "", True),
+        ({"method": ""}, "POST", "/a", {}, "", True),
+        ({"path": ""}, "GET", "/a", {}, "", True),
+        ({"query": {}}, "GET", "/a", {}, "", True),
+        ({"bodyContains": ""}, "GET", "/a", {}, "", True),
+        # Method comparison is case-insensitive in both directions.
+        ({"method": "get"}, "GET", "/a", {}, "", True),
+        ({"method": "GET"}, "get", "/a", {}, "", True),
+        # `*` is the only wildcard; a rule may carry a non-string query value; extra parameters on the
+        # request are ignored.
+        ({"path": "/api/*/x"}, "GET", "/api/v1/x", {}, "", True),
+        ({"path": "/api/*/x"}, "GET", "/api/v1/y", {}, "", False),
+        ({"query": {"page": 2}}, "GET", "/a", {"page": "2"}, "", True),
+        ({"query": {"k": "v"}}, "GET", "/a", {"k": "v", "other": "z"}, "", True),
+        ({"bodyContains": "id"}, "GET", "/a", {}, "the id here", True),
+        ({"method": "POST"}, "GET", "/a", {}, "", False),
+        ({"path": "/b"}, "GET", "/a", {}, "", False),
+        ({"query": {"k": "v"}}, "GET", "/a", {}, "", False),
+        ({"query": {"k": "v"}}, "GET", "/a", {"k": "w"}, "", False),
+        ({"bodyContains": "id"}, "GET", "/a", {}, "nothing", False),
+    ],
+)
 def test_matching_semantics_are_pinned_field_by_field(matcher, method, path, query, body, expected):
     """`matches_matcher` is `explain_matcher(...) is None`, so asserting only that the two agree
     would be a tautology. These pin the *outcome* — which is what must not change now that every
@@ -516,12 +570,15 @@ def test_matching_semantics_are_pinned_field_by_field(matcher, method, path, que
     assert (rules.explain_matcher(matcher, method, path, query, body) is None) is expected
 
 
-@pytest.mark.parametrize("matcher,query,expected_field", [
-    ({"method": "POST", "path": "/b"}, {}, "method"),
-    ({"path": "/b", "query": {"k": "v"}}, {}, "path"),
-    ({"query": {"k": "v"}}, {"k": "w"}, "query.k"),
-    ({"bodyContains": "zzz"}, {}, "bodyContains"),
-])
+@pytest.mark.parametrize(
+    "matcher,query,expected_field",
+    [
+        ({"method": "POST", "path": "/b"}, {}, "method"),
+        ({"path": "/b", "query": {"k": "v"}}, {}, "path"),
+        ({"query": {"k": "v"}}, {"k": "w"}, "query.k"),
+        ({"bodyContains": "zzz"}, {}, "bodyContains"),
+    ],
+)
 def test_the_reason_names_the_first_field_that_failed(matcher, query, expected_field):
     """One reason, not a list: the later checks are only meaningful once the earlier ones pass, and
     a list of every mismatch buries the one that matters."""
@@ -530,7 +587,7 @@ def test_the_reason_names_the_first_field_that_failed(matcher, query, expected_f
 
 
 def test_a_missing_query_parameter_reads_differently_from_a_wrong_one():
-    """"has no 'kind'" and "has 'beta'" send you to different places — the app is not sending the
+    """ "has no 'kind'" and "has 'beta'" send you to different places — the app is not sending the
     parameter at all, versus it is sending a different value."""
     absent = rules.explain_matcher({"query": {"kind": "alpha"}}, "GET", "/a", {}, "")
     wrong = rules.explain_matcher({"query": {"kind": "alpha"}}, "GET", "/a", {"kind": "beta"}, "")
@@ -563,8 +620,7 @@ def test_an_empty_body_constraint_does_not_win_on_specificity():
     an otherwise identical rule and answer in its place — "more specific" claiming a smaller set of
     requests than it actually matches."""
     generic = {"id": "generic", "mode": "replace", "match": {"path": "/api/items"}}
-    empty = {"id": "empty", "mode": "replace",
-             "match": {"path": "/api/items", "bodyContains": ""}}
+    empty = {"id": "empty", "mode": "replace", "match": {"path": "/api/items", "bodyContains": ""}}
     assert rules.matches(generic, "GET", "/api/items", {}, "body")
     assert rules.matches(empty, "GET", "/api/items", {}, "body")
     winner = rules.find_override([generic, empty], "GET", "/api/items", {}, "body")
@@ -573,8 +629,7 @@ def test_an_empty_body_constraint_does_not_win_on_specificity():
 
 def test_a_real_body_constraint_still_wins_on_specificity():
     generic = {"id": "generic", "mode": "replace", "match": {"path": "/api/items"}}
-    pinned = {"id": "pinned", "mode": "replace",
-              "match": {"path": "/api/items", "bodyContains": "kind"}}
+    pinned = {"id": "pinned", "mode": "replace", "match": {"path": "/api/items", "bodyContains": "kind"}}
     winner = rules.find_override([generic, pinned], "GET", "/api/items", {}, "kind=alpha")
     assert winner["id"] == "pinned"
 
@@ -587,6 +642,7 @@ def test_an_explicit_null_match_is_rejected():
 
 
 # MARK: - Session schema version
+
 
 def test_a_session_without_a_schema_version_is_read_as_version_1():
     """The field has always been optional, and hand-writing a session is the documented workflow."""
@@ -617,8 +673,7 @@ def test_a_non_integer_schema_version_is_refused(version):
 def test_a_valid_rule_survives_a_refused_schema_version_nowhere():
     """The refusal is whole-session: no part of a file stamped with an unknown version is kept,
     because nothing in it can be trusted to mean what this engine would read it as."""
-    payload = {"schemaVersion": 99,
-               "overrides": [{"mode": "replace", "status": 200, "match": {"path": "/a"}}]}
+    payload = {"schemaVersion": 99, "overrides": [{"mode": "replace", "status": 200, "match": {"path": "/a"}}]}
     with pytest.raises(rules.ValidationError):
         rules.normalise_session(payload, "s")
 
@@ -629,6 +684,7 @@ def test_a_valid_rule_survives_a_refused_schema_version_nowhere():
 # them as rules, not fall over on them: an exception that is not a ValidationError escapes every
 # `except ValidationError` between here and the caller, so one such rule costs a whole file its
 # diagnostics — and the operator gets a traceback where the field name belongs.
+
 
 @pytest.mark.parametrize("delay", [float("inf"), -float("inf"), float("nan"), 1e309])
 def test_a_non_finite_delay_is_refused_as_a_rule_not_as_a_crash(delay):
@@ -644,8 +700,7 @@ def test_a_status_that_is_not_a_usable_integer_is_refused_the_same_way(status):
     with pytest.raises(rules.ValidationError):
         rules.validate_override({"mode": "replace", "status": status})
     with pytest.raises(rules.ValidationError):
-        rules.validate_override({"mode": "replace", "status": 200,
-                                 "sequence": {"steps": [{"status": status}]}})
+        rules.validate_override({"mode": "replace", "status": 200, "sequence": {"steps": [{"status": status}]}})
 
 
 @pytest.mark.parametrize("version", [float("inf"), float("nan"), 10**400])

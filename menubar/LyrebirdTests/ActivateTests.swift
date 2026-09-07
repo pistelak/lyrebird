@@ -26,11 +26,13 @@ final class ActivateTests: XCTestCase {
     }
 
     /// Fails the test unless `activate` threw an HTTP error, and hands back its message.
-    private func messageFromFailedActivate(_ client: MockClient,
-                                           _ name: String = "orders-outage",
-                                           expecting status: Int,
-                                           file: StaticString = #filePath,
-                                           line: UInt = #line) async -> String? {
+    private func messageFromFailedActivate(
+        _ client: MockClient,
+        _ name: String = "orders-outage",
+        expecting status: Int,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async -> String? {
         do {
             try await client.activate(name)
             XCTFail("activate returned normally on HTTP \(status)", file: file, line: line)
@@ -52,8 +54,10 @@ final class ActivateTests: XCTestCase {
 
     func testAnAcceptedActivateSendsThePutTheControlApiExpectsAndDoesNotThrow() async throws {
         StubURLProtocol.install { request in
-            (Stub.response(request, 200),
-             Data(#"{"active":"orders-outage","previous":{"name":"baseline"}}"#.utf8))
+            (
+                Stub.response(request, 200),
+                Data(#"{"active":"orders-outage","previous":{"name":"baseline"}}"#.utf8)
+            )
         }
 
         try await makeClient().activate("orders-outage")
@@ -78,8 +82,10 @@ final class ActivateTests: XCTestCase {
 
     func testADetailBeatsTheErrorSlugSoTheMessageSaysWhatToDoAboutIt() async {
         StubURLProtocol.install { request in
-            (Stub.response(request, 400),
-             Data(#"{"error":"invalid_payload","detail":"body must be a JSON object"}"#.utf8))
+            (
+                Stub.response(request, 400),
+                Data(#"{"error":"invalid_payload","detail":"body must be a JSON object"}"#.utf8)
+            )
         }
 
         let message = await messageFromFailedActivate(makeClient(), expecting: 400)
@@ -142,16 +148,19 @@ final class ActivateTests: XCTestCase {
     func testAFailedActivateNamesTheSessionAndTheServersExplanationInLastError() async {
         StubURLProtocol.install { request in
             guard request.httpMethod == "PUT" else { return Stub.read(request) }
-            return (Stub.response(request, 404),
-                    Data(#"{"error":"unknown_session","detail":"no session named 'orders-outage' — it was deleted"}"#.utf8))
+            return (
+                Stub.response(request, 404),
+                Data(#"{"error":"unknown_session","detail":"no session named 'orders-outage' — it was deleted"}"#.utf8)
+            )
         }
         let model = AppModel(client: makeClient(), autoStart: false, expectedFingerprint: "a1b2c3")
 
         await model.activate("orders-outage")
 
         let lastError = model.lastError ?? ""
-        XCTAssertTrue(lastError.contains("orders-outage"),
-                      "the menu lists several sessions; the message must say which one: \(lastError)")
+        XCTAssertTrue(
+            lastError.contains("orders-outage"),
+            "the menu lists several sessions; the message must say which one: \(lastError)")
         // The detail, not the slug: the slug says what kind of thing went wrong, the detail says
         // what to do about it, and the model must pass the more useful half through.
         XCTAssertTrue(lastError.contains("it was deleted"), lastError)

@@ -23,8 +23,7 @@ async def _meta():
     return {"proxyUp": True}
 
 
-def call(profile, method, path, *, headers=None, json_body=None, raw_body=None, content_type=None,
-         prepare=None):
+def call(profile, method, path, *, headers=None, json_body=None, raw_body=None, content_type=None, prepare=None):
     """One request against a fresh control app on a throwaway profile.
 
     TestClient is already an async context manager, so there is no start/close bookkeeping to
@@ -34,7 +33,7 @@ def call(profile, method, path, *, headers=None, json_body=None, raw_body=None, 
     config.reload_profile()
     subject = store.Store()
     if prepare is not None:
-        prepare(subject)   # the store is built in here, so a test that needs live state seeds it here
+        prepare(subject)  # the store is built in here, so a test that needs live state seeds it here
     app = control.make_app(subject, _meta)
 
     sent = {"Host": config.CONTROL_HOST_HEADER, **(headers or {})}
@@ -56,17 +55,18 @@ def call(profile, method, path, *, headers=None, json_body=None, raw_body=None, 
 
 # MARK: - The browser-facing guard
 
+
 def test_cross_origin_text_plain_post_is_refused(profile):
     """aiohttp's request.json() ignores Content-Type, so without this check a plain form post —
     which needs no CORS preflight — would reach the API."""
-    status, _, _ = call(profile, "POST", "/__mock__/sessions",
-                        json_body={"name": "evil"}, content_type="text/plain")
+    status, _, _ = call(profile, "POST", "/__mock__/sessions", json_body={"name": "evil"}, content_type="text/plain")
     assert status == 415
 
 
 def test_cross_origin_json_post_is_refused(profile):
-    status, _, _ = call(profile, "POST", "/__mock__/sessions", json_body={"name": "evil"},
-                        headers={"Origin": "https://attacker.test"})
+    status, _, _ = call(
+        profile, "POST", "/__mock__/sessions", json_body={"name": "evil"}, headers={"Origin": "https://attacker.test"}
+    )
     assert status == 403
 
 
@@ -77,8 +77,13 @@ def test_unknown_host_header_is_refused(profile):
 
 
 def test_same_origin_json_post_is_allowed(profile):
-    status, _, _ = call(profile, "POST", "/__mock__/sessions", json_body={"name": "scratch"},
-                        headers={"Origin": f"http://{config.CONTROL_HOST_HEADER}"})
+    status, _, _ = call(
+        profile,
+        "POST",
+        "/__mock__/sessions",
+        json_body={"name": "scratch"},
+        headers={"Origin": f"http://{config.CONTROL_HOST_HEADER}"},
+    )
     assert status == 200
 
 
@@ -114,8 +119,9 @@ _FOREIGN = {"X-Lyrebird-Profile": "deadbeefcafe"}
 
 
 def test_a_call_naming_the_running_profile_is_served(profile):
-    status, _, _ = call(profile, "GET", "/__mock__/overrides",
-                        headers={"X-Lyrebird-Profile": config.PROFILE_FINGERPRINT})
+    status, _, _ = call(
+        profile, "GET", "/__mock__/overrides", headers={"X-Lyrebird-Profile": config.PROFILE_FINGERPRINT}
+    )
     assert status == 200
 
 
@@ -131,10 +137,9 @@ def test_a_call_naming_another_profile_is_refused_and_leaves_no_rule_behind(prof
             added = await client.post(
                 "/__mock__/overrides",
                 data=json.dumps({"mode": "replace", "match": {"path": "/api/items"}, "status": 503}),
-                headers={"Host": config.CONTROL_HOST_HEADER, "Content-Type": "application/json",
-                         **_FOREIGN})
-            listed = await client.get("/__mock__/overrides",
-                                      headers={"Host": config.CONTROL_HOST_HEADER})
+                headers={"Host": config.CONTROL_HOST_HEADER, "Content-Type": "application/json", **_FOREIGN},
+            )
+            listed = await client.get("/__mock__/overrides", headers={"Host": config.CONTROL_HOST_HEADER})
             return added.status, await added.json(), await listed.json()
 
     status, body, listed = asyncio.run(main())
@@ -184,8 +189,9 @@ def test_an_empty_profile_header_is_a_mismatch_not_an_absence(profile):
 def test_the_profile_header_name_is_matched_case_insensitively(profile):
     """HTTP header names are case-insensitive; a client that lower-cases them must still be scoped,
     and one that names the running profile that way must still be served."""
-    status, _, _ = call(profile, "GET", "/__mock__/overrides",
-                        headers={"x-lyrebird-profile": config.PROFILE_FINGERPRINT})
+    status, _, _ = call(
+        profile, "GET", "/__mock__/overrides", headers={"x-lyrebird-profile": config.PROFILE_FINGERPRINT}
+    )
     assert status == 200
     status, _, body = call(profile, "GET", "/__mock__/overrides", headers={"x-lyrebird-profile": "deadbeefcafe"})
     assert status == 409 and body["error"] == "profile_mismatch"
@@ -199,6 +205,7 @@ def test_a_call_that_names_no_profile_is_served(profile):
 
 
 # MARK: - Names that become paths
+
 
 def test_traversal_in_a_session_name_is_rejected(profile):
     status, _, body = call(profile, "POST", "/__mock__/sessions", json_body={"name": "../../ESCAPED"})
@@ -224,14 +231,19 @@ def test_health_reports_a_session_that_did_not_load_whole(profile):
     """`sessions` cannot carry this: a session whose invalid overrides were dropped is listed
     there exactly like one that loaded whole. `up --use NAME` refuses to relaunch the app on the
     strength of this, so it has to reach the CLI — keyed by session, and once per problem."""
-    (profile / "sessions" / "orders-outage.json").write_text(json.dumps({
-        "name": "orders-outage",
-        "overrides": [
-            {"match": {"method": "GET", "path": "/api/v1/orders/*"}, "mode": "replace", "status": 500},
-            {"match": {"method": "GET", "path": "/api/v1/x"}, "mode": "replace", "statsu": 500},
-            {"match": {"method": "GET", "path": "/api/v1/y"}, "mode": "replace", "sttaus": 500},
-        ],
-    }), encoding="utf-8")
+    (profile / "sessions" / "orders-outage.json").write_text(
+        json.dumps(
+            {
+                "name": "orders-outage",
+                "overrides": [
+                    {"match": {"method": "GET", "path": "/api/v1/orders/*"}, "mode": "replace", "status": 500},
+                    {"match": {"method": "GET", "path": "/api/v1/x"}, "mode": "replace", "statsu": 500},
+                    {"match": {"method": "GET", "path": "/api/v1/y"}, "mode": "replace", "sttaus": 500},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
 
     status, _, body = call(profile, "GET", "/__mock__/health")
 
@@ -245,16 +257,19 @@ def test_health_does_not_blame_a_session_for_a_file_merely_named_after_it(profil
     """The reason the answer is keyed by session rather than read out of the strings. This file's
     name is rejected, so no session is reported against it — but the diagnostic it leaves behind
     begins exactly like one about `orders-outage`, whose own file is perfectly good."""
-    good = {"name": "orders-outage", "overrides": [
-        {"match": {"method": "GET", "path": "/api/v1/orders/*"}, "mode": "replace", "status": 500}]}
+    good = {
+        "name": "orders-outage",
+        "overrides": [{"match": {"method": "GET", "path": "/api/v1/orders/*"}, "mode": "replace", "status": 500}],
+    }
     (profile / "sessions" / "orders-outage.json").write_text(json.dumps(good), encoding="utf-8")
     (profile / "sessions" / "orders-outage.json: backup.json").write_text("{", encoding="utf-8")
 
     status, _, body = call(profile, "GET", "/__mock__/health")
 
     assert status == 200
-    assert body["loadProblems"] and body["loadProblems"][0].startswith(
-        "skipped orders-outage.json: backup.json:"), "the trap, verbatim"
+    assert body["loadProblems"] and body["loadProblems"][0].startswith("skipped orders-outage.json: backup.json:"), (
+        "the trap, verbatim"
+    )
     assert body["sessionsNotWhole"] == {}, "orders-outage loaded whole and must not be blamed"
 
 
@@ -287,6 +302,7 @@ def test_health_reports_no_load_problems_when_every_session_loaded(profile):
 
 # MARK: - What /health may disclose
 
+
 def test_health_does_not_leak_the_configured_host_list(profile):
     """The host list is private data belonging to whoever wrote the profile, and no client needs
     it — so no health field may carry it."""
@@ -295,6 +311,7 @@ def test_health_does_not_leak_the_configured_host_list(profile):
 
 
 # MARK: - Clearing overrides
+
 
 def test_clearing_overrides_reports_what_it_deleted(profile):
     """So a client that calls it by mistake at least says so out loud."""
@@ -305,9 +322,9 @@ def test_clearing_overrides_reports_what_it_deleted(profile):
     async def main():
         async with TestClient(TestServer(app)) as client:
             headers = {"Host": config.CONTROL_HOST_HEADER, "Content-Type": "application/json"}
-            await client.post("/__mock__/overrides",
-                              data=json.dumps({"mode": "replace", "match": {"path": "/a"}}),
-                              headers=headers)
+            await client.post(
+                "/__mock__/overrides", data=json.dumps({"mode": "replace", "match": {"path": "/a"}}), headers=headers
+            )
             response = await client.delete("/__mock__/overrides", headers=headers)
             return await response.json()
 
@@ -332,8 +349,14 @@ def test_a_non_object_body_says_so(profile):
 
 SEQ_SESSION = {
     "name": "default",
-    "overrides": [{"id": "ovr_seq", "mode": "replace", "match": {"path": "/api/items"},
-                   "sequence": {"steps": [{"status": 201}, {"status": 202}]}}],
+    "overrides": [
+        {
+            "id": "ovr_seq",
+            "mode": "replace",
+            "match": {"path": "/api/items"},
+            "sequence": {"steps": [{"status": 201}, {"status": 202}]},
+        }
+    ],
 }
 
 
@@ -358,8 +381,14 @@ def test_health_reports_an_empty_list_when_nothing_is_sequenced(profile):
 
 OTHER_SESSION = {
     "name": "other",
-    "overrides": [{"id": "ovr_other", "mode": "replace", "match": {"path": "/api/other"},
-                   "sequence": {"steps": [{"status": 204}]}}],
+    "overrides": [
+        {
+            "id": "ovr_other",
+            "mode": "replace",
+            "match": {"path": "/api/other"},
+            "sequence": {"steps": [{"status": 204}]},
+        }
+    ],
 }
 
 
@@ -375,7 +404,7 @@ def test_health_reads_the_store_after_the_meta_await_and_not_across_it(profile):
     subject = store.Store()
 
     async def switch_while_awaited():
-        await asyncio.sleep(0)          # the suspension the real provider has
+        await asyncio.sleep(0)  # the suspension the real provider has
         subject.set_active("other")
         return {"proxyUp": True}
 
@@ -383,8 +412,7 @@ def test_health_reads_the_store_after_the_meta_await_and_not_across_it(profile):
 
     async def main():
         async with TestClient(TestServer(app)) as client:
-            response = await client.get("/__mock__/health",
-                                        headers={"Host": config.CONTROL_HOST_HEADER})
+            response = await client.get("/__mock__/health", headers={"Host": config.CONTROL_HOST_HEADER})
             return await response.json()
 
     body = asyncio.run(main())
@@ -419,8 +447,7 @@ def test_a_non_string_reset_id_is_a_bad_request_not_a_crash(profile):
 
 def test_reset_is_still_behind_the_content_type_guard(profile):
     seed(profile)
-    status, _, _ = call(profile, "POST", "/__mock__/reset",
-                        raw_body="{}", content_type="text/plain")
+    status, _, _ = call(profile, "POST", "/__mock__/reset", raw_body="{}", content_type="text/plain")
     assert status == 415
 
 
@@ -448,9 +475,9 @@ def test_a_rule_with_an_unknown_field_is_refused_and_not_installed(profile):
             headers = {"Host": config.CONTROL_HOST_HEADER, "Content-Type": "application/json"}
             added = await client.post(
                 "/__mock__/overrides",
-                data=json.dumps({"mode": "replace", "match": {"path": "/api/items"},
-                                 "statsu": 503}),
-                headers=headers)
+                data=json.dumps({"mode": "replace", "match": {"path": "/api/items"}, "statsu": 503}),
+                headers=headers,
+            )
             listed = await client.get("/__mock__/overrides", headers=headers)
             return added.status, await added.json(), await listed.json()
 
@@ -463,6 +490,7 @@ def test_a_rule_with_an_unknown_field_is_refused_and_not_installed(profile):
 
 # MARK: - Answer evidence
 
+
 def test_health_reports_answer_counts_per_rule(profile):
     status, _, body = call(profile, "GET", "/__mock__/health")
     assert status == 200
@@ -473,23 +501,22 @@ def test_health_carries_a_rules_answer_count_over_the_wire(profile):
     """The store and addon tests prove the count is right; this proves it survives to the HTTP
     boundary, which is the only place `assert-answered` can read it from."""
     seed(profile)
-    status, _, body = call(profile, "GET", "/__mock__/health",
-                           prepare=lambda s: store.credit(s.answer_slot("ovr_seq")))
+    status, _, body = call(profile, "GET", "/__mock__/health", prepare=lambda s: store.credit(s.answer_slot("ovr_seq")))
     assert status == 200
-    assert body["answers"] == [
-        {"id": "ovr_seq", "active": True, "count": 1, "runId": body["sequences"][0]["runId"]}], \
+    assert body["answers"] == [{"id": "ovr_seq", "active": True, "count": 1, "runId": body["sequences"][0]["runId"]}], (
         "with the run it was counted in, which is what binds an assertion to a reset boundary"
+    )
 
 
 def test_the_reset_route_stays_behind_the_guard(profile):
     """A new route is a new way in. `_guard` is global, and this pins that it stays that way."""
-    status, _, body = call(profile, "POST", "/__mock__/reset",
-                           headers={"Host": "evil.example.com"}, json_body={})
+    status, _, body = call(profile, "POST", "/__mock__/reset", headers={"Host": "evil.example.com"}, json_body={})
     assert status == 421
     assert body["error"] == "bad_host"
 
 
 # MARK: - A profile that cannot be written
+
 
 def test_a_rule_whose_write_fails_is_reported_and_not_installed(profile, monkeypatch):
     """A bare aiohttp 500 says "Internal Server Error" and sends the operator to the proxy log
@@ -507,12 +534,12 @@ def test_a_rule_whose_write_fails_is_reported_and_not_installed(profile, monkeyp
     async def main():
         async with TestClient(TestServer(app)) as client:
             headers = {"Host": config.CONTROL_HOST_HEADER, "Content-Type": "application/json"}
-            added = await client.post("/__mock__/overrides",
-                                      data=json.dumps({"id": "r", "mode": "replace",
-                                                       "match": {"path": "/a"}}),
-                                      headers=headers)
-            listed = await client.get("/__mock__/overrides",
-                                      headers={"Host": config.CONTROL_HOST_HEADER})
+            added = await client.post(
+                "/__mock__/overrides",
+                data=json.dumps({"id": "r", "mode": "replace", "match": {"path": "/a"}}),
+                headers=headers,
+            )
+            listed = await client.get("/__mock__/overrides", headers={"Host": config.CONTROL_HOST_HEADER})
             return added.status, await added.json(), await listed.json()
 
     status, body, overrides = asyncio.run(main())

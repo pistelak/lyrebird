@@ -13,9 +13,11 @@ other Mac traffic stays DIRECT.
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt        # mitmproxy, aiohttp, click (pinned)
-.venv/bin/pip install -r requirements-dev.txt    # pytest, ruff, mypy
+.venv/bin/pip install --require-hashes -r requirements.txt  # locked runtime dependencies
 ```
+
+For development, run `make setup` and `make check` from the repository root; see
+[CONTRIBUTING.md](../CONTRIBUTING.md) for formatting, tests and dependency updates.
 
 ## Profiles
 

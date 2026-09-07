@@ -173,6 +173,7 @@ def _persistable(session: dict) -> dict:
 # scoped to its session without a second key, all from machinery that was already here for
 # `_problems`.
 
+
 def _runtime(session: dict) -> dict:
     return session.setdefault("_ruleRuntime", {})
 
@@ -239,7 +240,7 @@ def credit(slot: dict) -> None:
     switch therefore credits nobody, instead of crediting whatever rule in the new session happens to
     share its id.
     """
-    slot["answers"] += 1   # `_new_slot` is the only maker of a slot, and it always seeds this
+    slot["answers"] += 1  # `_new_slot` is the only maker of a slot, and it always seeds this
 
 
 class Store:
@@ -374,7 +375,7 @@ class Store:
         overrides = self.active_overrides()
         existing = next((i for i, o in enumerate(overrides) if o.get("id") == override["id"]), None)
         if existing is not None:
-            candidate = [*overrides[:existing], override, *overrides[existing + 1:]]
+            candidate = [*overrides[:existing], override, *overrides[existing + 1 :]]
         else:
             candidate = [*overrides, override]
         self._write_session(self.active_name, {**session, "overrides": candidate})
@@ -404,8 +405,7 @@ class Store:
         return [
             override
             for override in self.active_overrides()
-            if rules.is_active(override)
-            and rules.sequence_steps(override) is not None
+            if rules.is_active(override) and rules.sequence_steps(override) is not None
         ]
 
     def resolve_override(self, override: dict) -> tuple[str, dict | None, dict | None]:
@@ -423,7 +423,7 @@ class Store:
         cursor, count = entry["cursor"], len(steps)
         action, view = rules.resolve_step(override, cursor)
         if cursor >= count:
-            entry["overrunSeen"] = True   # sticky: the cursor alone cannot record this
+            entry["overrunSeen"] = True  # sticky: the cursor alone cannot record this
         else:
             # Counted here and not in `bump_selected`, because this is the only path a winning
             # rule takes regardless of trigger — an `advanceOn` rule serves without ever bumping.
@@ -433,7 +433,7 @@ class Store:
             "runId": entry["runId"],
             "selectedStep": (cursor + 1) if cursor < count else None,
             "stepCount": count,
-            "advanceEvents": cursor,   # for the exhaustion message; not recorded in /recent
+            "advanceEvents": cursor,  # for the exhaustion message; not recorded in /recent
             # This request went past the planned steps — an event, distinct from the live
             # `hasOverrun` below, which says one has happened at some point.
             "overrun": cursor >= count,
@@ -464,12 +464,14 @@ class Store:
             # for a rule that has never been near a request. One lookup feeds both fields, so a
             # count can never be reported under a run id it was not counted in.
             entry = runtime.get(override["id"]) or {}
-            states.append({
-                "id": override["id"],
-                "active": rules.is_active(override),
-                "count": entry.get("answers", 0),
-                "runId": entry.get("runId"),
-            })
+            states.append(
+                {
+                    "id": override["id"],
+                    "active": rules.is_active(override),
+                    "count": entry.get("answers", 0),
+                    "runId": entry.get("runId"),
+                }
+            )
         return states
 
     def bump_selected(self, override: dict) -> None:
@@ -484,9 +486,7 @@ class Store:
         entry = _rule_runtime(self.active_session(), override["id"])
         entry["cursor"] = rules.bumped(entry["cursor"], len(steps))
 
-    def advance_matching(
-        self, method: str, pathname: str, query: dict[str, str], body_text: str
-    ) -> list[str]:
+    def advance_matching(self, method: str, pathname: str, query: dict[str, str], body_text: str) -> list[str]:
         """Advance every rule whose explicit `advanceOn` fits this request; return the ids moved."""
         session = self.active_session()
         advanced = []
@@ -510,18 +510,20 @@ class Store:
             count = len(rules.sequence_steps(override) or [])
             entry = _rule_runtime(session, override["id"])
             cursor = entry["cursor"]
-            states.append({
-                "id": override["id"],
-                "runId": entry["runId"],
-                "advanceOn": "self" if rules.advance_matcher(override) is None else "match",
-                "nextStep": (cursor + 1) if cursor < count else None,
-                "stepCount": count,
-                "exhausted": cursor >= count,             # no planned step remains
-                "hasOverrun": entry["overrunSeen"],       # a request was actually served past it
-                # String keys, matching what any JSON round-trip would force anyway — a consumer
-                # must not need to know whether the payload came straight from the store.
-                "serves": {str(step): n for step, n in entry["serves"].items()},
-            })
+            states.append(
+                {
+                    "id": override["id"],
+                    "runId": entry["runId"],
+                    "advanceOn": "self" if rules.advance_matcher(override) is None else "match",
+                    "nextStep": (cursor + 1) if cursor < count else None,
+                    "stepCount": count,
+                    "exhausted": cursor >= count,  # no planned step remains
+                    "hasOverrun": entry["overrunSeen"],  # a request was actually served past it
+                    # String keys, matching what any JSON round-trip would force anyway — a consumer
+                    # must not need to know whether the payload came straight from the store.
+                    "serves": {str(step): n for step, n in entry["serves"].items()},
+                }
+            )
         return states
 
     def reset_runtime(self, override_id: str | None = None) -> dict | None:
@@ -548,8 +550,8 @@ class Store:
         reset = {}
         for target in targets:
             previous = (runtime.get(target) or {}).get("runId")
-            runtime[target] = _new_slot(previous)   # replaced, not cleared: a slot captured before
-            reset[target] = runtime[target]["runId"]   # the reset credits nobody — see `credit`
+            runtime[target] = _new_slot(previous)  # replaced, not cleared: a slot captured before
+            reset[target] = runtime[target]["runId"]  # the reset credits nobody — see `credit`
         return {"session": self.active_name, "reset": reset}
 
     # MARK: - Sessions
