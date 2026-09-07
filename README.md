@@ -99,6 +99,9 @@ while one endpoint misbehaves.
 You need macOS, a booted iOS Simulator, and **Python 3.12 or newer** (mitmproxy 12 requires it).
 
 ```bash
+git clone https://github.com/pistelak/lyrebird.git && cd lyrebird
+git tag -l 'v*'            # the releases; check out the newest, e.g. git checkout v0.1.0
+
 cd engine && python3 -m venv .venv && .venv/bin/pip install --require-hashes -r requirements.txt && cd ..
 
 bin/lyrebird init          # creates ~/.config/lyrebird
@@ -123,6 +126,10 @@ bin/lyrebird status
 
 bin/lyrebird down                     # puts your proxy settings back
 ```
+
+If the proxy is ever killed outright and your network is left pointing at it,
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md#the-proxy-is-gone-but-the-network-still-points-at-it) has
+the recovery.
 
 `up` relaunches your app if `simBundleId` is set, and `--use` selects the scenario *before* that
 launch — which is why they are one command: `URLSession` holds on to the proxy configuration it
@@ -165,6 +172,59 @@ because the proxy ran.
 Where a profile sits has two consequences worth knowing before you move one: saving a scenario
 requires its file to resolve inside the profile, and the remembered active scenario is keyed by the
 profile's resolved path. [engine/README.md](engine/README.md#profiles) has both.
+
+## Upgrading
+
+Releases are tags, so upgrading is a checkout, not a `git pull`. Dependencies are hash-locked,
+which means the virtualenv is recreated rather than upgraded in place. From the checkout root:
+
+```bash
+lyrebird down &&                          # before the checkout, not after
+  git fetch --tags &&
+  git tag -l 'v*'                         # pick the one you want
+git checkout v0.2.0 &&
+  cd engine &&
+  python3 -m venv --clear .venv &&
+  .venv/bin/pip install --require-hashes -r requirements.txt &&
+  cd ..
+```
+
+Name the tag rather than deriving it: you are standing on the last release, so anything that asks
+git to describe where you are will hand back the version you already have. Rolling back is the same
+with an earlier tag.
+
+The steps are chained because each one only makes sense if the last worked — a checkout that failed
+leaves the old tree, and reinstalling into it would look like an upgrade that happened. `down` comes
+first because swapping dependencies under a running engine leaves a mixed runtime that neither
+version was tested as. Rebuild the menu-bar app afterwards if you use it.
+
+If you skipped the `PATH` symlink, `bin/lyrebird down` from the checkout root does the same.
+
+## Uninstalling
+
+Order matters — the first step is the one that gives you your network back:
+
+```bash
+lyrebird down && rm "$HOME/.local/bin/lyrebird"    # and lb, if you linked it
+```
+
+Chained on purpose: if `down` cannot restore your proxy settings it exits non-zero, and that is the
+moment to stop rather than to delete the command that fixes it. If it does fail,
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md#the-proxy-is-gone-but-the-network-still-points-at-it) has
+the manual recovery — do that first, then come back.
+
+Then delete the checkout, and the app from `/Applications` if you built and copied it. **Quitting
+the menu-bar app does not stop interception** — the engine runs detached from it, and `down` is
+what puts your proxy settings back.
+
+Operational state is separate, and optional to remove: the active-scenario pointer and the CA under
+`~/Library/Application Support/Lyrebird/`, logs under `~/Library/Logs/Lyrebird/`.
+
+Two things deliberately survive. **Your profile** (`~/.config/lyrebird` by default) holds the
+scenarios you wrote — nothing above touches it. And **the CA stays trusted in the simulator**:
+`simctl` cannot remove one root certificate, so `xcrun simctl keychain <udid> reset` is the tool,
+and it clears *every* certificate you have added to that device, not only Lyrebird's. Erasing the
+device does the same. [SECURITY.md](SECURITY.md) has the detail.
 
 ## Where it fits
 
