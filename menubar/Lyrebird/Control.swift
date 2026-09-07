@@ -19,13 +19,16 @@ enum Control {
     /// child's output is read into, whose `isFinished` says whether the reading task ran to
     /// completion. A test needs that to prove the reader was *released* when this call gave up on
     /// it, rather than only that the call itself came back quickly.
-    static func shell(_ launchPath: String, _ arguments: [String],
-                      environment: [String: String] = [:],
-                      readerStarted: ((OutputBuffer) -> Void)? = nil) async -> Result {
+    static func shell(
+        _ launchPath: String, _ arguments: [String],
+        environment: [String: String] = [:],
+        readerStarted: ((OutputBuffer) -> Void)? = nil
+    ) async -> Result {
         guard !launchPath.isEmpty, FileManager.default.isExecutableFile(atPath: launchPath) else {
-            return Result(output: launchPath.isEmpty
-                          ? "lyrebird not found on PATH — set its location in Settings"
-                          : "not found or not executable: \(launchPath)", status: -1)
+            return Result(
+                output: launchPath.isEmpty
+                    ? "lyrebird not found on PATH — set its location in Settings"
+                    : "not found or not executable: \(launchPath)", status: -1)
         }
 
         let process = Process()
@@ -62,10 +65,12 @@ enum Control {
                 }
             }
 
-            let text = await collect(output, from: buffer,
-                                     reading: pipe.fileHandleForReading, within: drainGrace)
-            return Result(output: text.isEmpty && status == -1
-                          ? "failed to run \(launchPath)" : text, status: status)
+            let text = await collect(
+                output, from: buffer,
+                reading: pipe.fileHandleForReading, within: drainGrace)
+            return Result(
+                output: text.isEmpty && status == -1
+                    ? "failed to run \(launchPath)" : text, status: status)
         } onCancel: {
             process.terminate()
             // SIGTERM is a request, and a child may decline it — this call goes on awaiting the
@@ -95,8 +100,10 @@ enum Control {
     /// one to empty it, for as long as that descendant lives. So whenever the reading has not
     /// finished on its own, it is cancelled and the handle closed: the closed handle ends the byte
     /// iteration with an error `drain` already tolerates, and everything holding onto it goes.
-    private static func collect(_ output: Task<Void, Never>, from buffer: OutputBuffer,
-                                reading handle: FileHandle, within seconds: Double) async -> String {
+    private static func collect(
+        _ output: Task<Void, Never>, from buffer: OutputBuffer,
+        reading handle: FileHandle, within seconds: Double
+    ) async -> String {
         if Task.isCancelled {
             stopReading(output, handle)
             return buffer.text
@@ -208,8 +215,9 @@ enum Control {
     }
 
     private static func lyrebird(_ command: [String]) async -> Result {
-        return await shell(Config.lyrebirdPath, arguments(command, profile: Config.profilePath),
-                           environment: controlEnvironment(for: Config.controlURL))
+        return await shell(
+            Config.lyrebirdPath, arguments(command, profile: Config.profilePath),
+            environment: controlEnvironment(for: Config.controlURL))
     }
 
     /// Why the app could not find out which profile it is configured for. Carries the CLI's own
@@ -237,15 +245,16 @@ enum Control {
             group.addTask { await lyrebird(["status", "--json"]) }
             group.addTask {
                 try await Task.sleep(for: .seconds(fingerprintTimeout))
-                return nil          // the timeout won the race
+                return nil  // the timeout won the race
             }
-            defer { group.cancelAll() }   // cancelling the shell task terminates the child
+            defer { group.cancelAll() }  // cancelling the shell task terminates the child
             guard let first = try await group.next() else {
                 throw ProfileUnknown(reason: "the profile lookup produced no result at all")
             }
             guard let result = first else {
-                throw ProfileUnknown(reason: "`lyrebird status --json` did not answer within "
-                                     + "\(Int(fingerprintTimeout))s")
+                throw ProfileUnknown(
+                    reason: "`lyrebird status --json` did not answer within "
+                        + "\(Int(fingerprintTimeout))s")
             }
             return result
         }
@@ -263,9 +272,10 @@ enum Control {
     static func fingerprint(from result: Result) throws -> String {
         guard let fingerprint = fingerprint(fromStatusJSON: Data(result.output.utf8)) else {
             let output = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
-            throw ProfileUnknown(reason: output.isEmpty
-                                 ? "`lyrebird status --json` printed nothing"
-                                 : output)
+            throw ProfileUnknown(
+                reason: output.isEmpty
+                    ? "`lyrebird status --json` printed nothing"
+                    : output)
         }
         return fingerprint
     }
@@ -278,11 +288,13 @@ enum Control {
     /// decoder; nil means the field was not there, never a guess.
     static func fingerprint(fromStatusJSON output: Data) -> String? {
         guard let text = String(data: output, encoding: .utf8),
-              let start = text.firstIndex(of: "{"),
-              let end = text.lastIndex(of: "}"), start < end else { return nil }
+            let start = text.firstIndex(of: "{"),
+            let end = text.lastIndex(of: "}"), start < end
+        else { return nil }
         let object = try? JSONSerialization.jsonObject(with: Data(text[start...end].utf8))
         guard let fingerprint = (object as? [String: Any])?["profileFingerprint"] as? String,
-              !fingerprint.isEmpty else { return nil }
+            !fingerprint.isEmpty
+        else { return nil }
         return fingerprint
     }
 

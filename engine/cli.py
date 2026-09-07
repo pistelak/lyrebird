@@ -40,9 +40,9 @@ import supervisor
 
 # MARK: - CLI
 
+
 @click.group()
-@click.option("--profile", type=click.Path(), default=None,
-              help="Profile directory (overrides $LYREBIRD_PROFILE).")
+@click.option("--profile", type=click.Path(), default=None, help="Profile directory (overrides $LYREBIRD_PROFILE).")
 def cli(profile: str | None) -> None:
     if profile:
         # Paths only; `_require_profile` reads the contents. Not exported into os.environ: the two

@@ -57,8 +57,7 @@ def test_launcher_resolves_a_two_hop_symlink_chain_from_outside_the_checkout(tmp
     checkout = make_checkout(tmp_path)
     link = install_on_path(tmp_path, checkout / "bin" / "lb")
 
-    result = subprocess.run([str(link), "status", "--json"],
-                            cwd=tmp_path, capture_output=True, text=True)
+    result = subprocess.run([str(link), "status", "--json"], cwd=tmp_path, capture_output=True, text=True)
 
     assert result.returncode == 0, result.stderr
     lines = result.stdout.splitlines()
@@ -73,8 +72,7 @@ def test_launcher_names_the_resolved_engine_when_the_venv_is_missing(tmp_path):
     checkout = make_checkout(tmp_path, with_venv=False)
     link = install_on_path(tmp_path, checkout / "bin" / "lb")
 
-    result = subprocess.run([str(link), "status"],
-                            cwd=tmp_path, capture_output=True, text=True)
+    result = subprocess.run([str(link), "status"], cwd=tmp_path, capture_output=True, text=True)
 
     assert result.returncode == 1
     expected = str((checkout / "engine" / ".venv").resolve())
@@ -89,8 +87,7 @@ def test_launcher_fails_clearly_when_no_engine_sits_beside_it(tmp_path):
     stray.mkdir()
     shutil.copy(LAUNCHER, stray / "lyrebird")
 
-    result = subprocess.run([str(stray / "lyrebird"), "status"],
-                            cwd=tmp_path, capture_output=True, text=True)
+    result = subprocess.run([str(stray / "lyrebird"), "status"], cwd=tmp_path, capture_output=True, text=True)
 
     assert result.returncode == 1
     assert "no engine directory" in result.stderr
@@ -110,8 +107,7 @@ def test_launcher_fails_clearly_when_it_cannot_resolve_its_own_path(tmp_path):
     fake.chmod(0o755)
 
     env = dict(os.environ, PATH=f"{sabotage}{os.pathsep}{os.environ['PATH']}")
-    result = subprocess.run([str(link), "status"],
-                            cwd=tmp_path, capture_output=True, text=True, env=env)
+    result = subprocess.run([str(link), "status"], cwd=tmp_path, capture_output=True, text=True, env=env)
 
     assert result.returncode == 1
     assert "cannot resolve the launcher's own path" in result.stderr

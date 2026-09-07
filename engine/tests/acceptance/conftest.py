@@ -131,15 +131,16 @@ def _run_grouped(args: list[str], env: dict, timeout: float) -> subprocess.Compl
     Because every failure path kills and reaps before it propagates, there is never an in-flight
     CLI child by the time a finalizer runs — which is why nothing has to track one.
     """
-    with subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                          env=env, start_new_session=True) as process:
+    with subprocess.Popen(
+        args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env, start_new_session=True
+    ) as process:
         try:
             stdout, stderr = process.communicate(timeout=timeout)
         except BaseException:
             with contextlib.suppress(ProcessLookupError, PermissionError):
                 os.killpg(process.pid, signal.SIGKILL)
             with contextlib.suppress(Exception):
-                process.communicate(timeout=30)   # reap, and drain the pipes we are closing
+                process.communicate(timeout=30)  # reap, and drain the pipes we are closing
             raise
     return subprocess.CompletedProcess(args, process.returncode, stdout, stderr)
 
@@ -167,8 +168,8 @@ class _Interrupts:
     """
 
     def __init__(self) -> None:
-        self.quiet = False       # has the run started unwinding?
-        self.raised = False      # did a signal already become a KeyboardInterrupt?
+        self.quiet = False  # has the run started unwinding?
+        self.raised = False  # did a signal already become a KeyboardInterrupt?
         self.deferred: list[int] = []
 
     def handle(self, signum: int, frame: object) -> None:
@@ -209,8 +210,9 @@ def _uninterrupted() -> Iterator[None]:
         yield
     signum = INTERRUPTS.pending()
     if signum is not None:
-        raise KeyboardInterrupt(f"terminated by signal {signum}; the teardown step in progress was "
-                                f"allowed to finish first")
+        raise KeyboardInterrupt(
+            f"terminated by signal {signum}; the teardown step in progress was allowed to finish first"
+        )
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -224,8 +226,9 @@ def _interruptible() -> Iterator[None]:
     Autouse and dependency-free, so it is set up before the first fixture that changes anything and
     torn down after the last one has put it back.
     """
-    previous = {signum: signal.signal(signum, INTERRUPTS.handle)
-                for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)}
+    previous = {
+        signum: signal.signal(signum, INTERRUPTS.handle) for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+    }
     try:
         yield
     finally:
@@ -239,13 +242,15 @@ def _pid_alive(pid: int) -> bool:
     except ProcessLookupError:
         return False
     except PermissionError:
-        return True   # alive and somebody else's
+        return True  # alive and somebody else's
     return True
 
 
 def _fail(what: str, result: subprocess.CompletedProcess) -> None:
-    pytest.fail(f"{what}\n  command: {' '.join(result.args)}\n"
-                f"  exit: {result.returncode}\n  stdout:\n{result.stdout}\n  stderr:\n{result.stderr}")
+    pytest.fail(
+        f"{what}\n  command: {' '.join(result.args)}\n"
+        f"  exit: {result.returncode}\n  stdout:\n{result.stdout}\n  stderr:\n{result.stderr}"
+    )
 
 
 def _free_ports(count: int) -> list[int]:
@@ -285,8 +290,7 @@ def _active_service() -> str | None:
     order = _try_run(["networksetup", "-listnetworkserviceorder"], timeout=60)
     if order is None:
         return None
-    for name, device in re.findall(r"\(\d+\)\s*(.+?)\n\(Hardware Port:.*?Device:\s*(\w+)\)",
-                                   order.stdout):
+    for name, device in re.findall(r"\(\d+\)\s*(.+?)\n\(Hardware Port:.*?Device:\s*(\w+)\)", order.stdout):
         if device == interface.group(1):
             return name.strip()
     return None
@@ -312,8 +316,10 @@ def _require_xcode() -> None:
     selected = _run(["xcode-select", "-p"], timeout=60)
     developer = Path(selected.stdout.strip()) if selected.returncode == 0 else None
     if developer is None or not (developer / "Platforms/iPhoneSimulator.platform").is_dir():
-        pytest.skip("no full Xcode selected (`xcode-select -p` does not point at a developer "
-                    "directory with an iPhoneSimulator platform) — these checks need one")
+        pytest.skip(
+            "no full Xcode selected (`xcode-select -p` does not point at a developer "
+            "directory with an iPhoneSimulator platform) — these checks need one"
+        )
 
 
 @pytest.fixture(scope="session")
@@ -332,30 +338,36 @@ def simulator() -> Iterator[str]:
     booted = [device for device in devices if device.get("state") == "Booted"]
 
     if wanted:
-        named = [device for device in devices
-                 if device["udid"] == wanted or device.get("name") == wanted]
+        named = [device for device in devices if device["udid"] == wanted or device.get("name") == wanted]
         if not named:
             # A name that names nothing is a typo, not a machine without a simulator: say so
             # rather than skipping and letting the run look like it checked something.
-            pytest.fail(f"LYREBIRD_ACCEPTANCE_SIMULATOR={wanted!r} matches no simulator "
-                        f"(`xcrun simctl list devices` lists {len(devices)})")
+            pytest.fail(
+                f"LYREBIRD_ACCEPTANCE_SIMULATOR={wanted!r} matches no simulator "
+                f"(`xcrun simctl list devices` lists {len(devices)})"
+            )
         if len(named) > 1:
-            pytest.fail(f"LYREBIRD_ACCEPTANCE_SIMULATOR={wanted!r} matches {len(named)} "
-                        f"simulators — give a udid")
+            pytest.fail(f"LYREBIRD_ACCEPTANCE_SIMULATOR={wanted!r} matches {len(named)} simulators — give a udid")
         device = named[0]
         strangers = [other for other in booted if other["udid"] != device["udid"]]
         if strangers:
-            pytest.fail("more than one simulator would be booted, and this run installs the app "
-                        "into one of them. Shut these down first: "
-                        + ", ".join(f"{other['name']} ({other['udid']})" for other in strangers))
+            pytest.fail(
+                "more than one simulator would be booted, and this run installs the app "
+                "into one of them. Shut these down first: "
+                + ", ".join(f"{other['name']} ({other['udid']})" for other in strangers)
+            )
     else:
         if not booted:
-            pytest.skip("no booted simulator. Boot one (`xcrun simctl boot <udid>`) or set "
-                        "LYREBIRD_ACCEPTANCE_SIMULATOR=<udid-or-name> to have this boot it")
+            pytest.skip(
+                "no booted simulator. Boot one (`xcrun simctl boot <udid>`) or set "
+                "LYREBIRD_ACCEPTANCE_SIMULATOR=<udid-or-name> to have this boot it"
+            )
         if len(booted) > 1:
-            pytest.fail("more than one simulator is booted, and this run installs the app into "
-                        "one of them. Shut all but one down: "
-                        + ", ".join(f"{other['name']} ({other['udid']})" for other in booted))
+            pytest.fail(
+                "more than one simulator is booted, and this run installs the app into "
+                "one of them. Shut all but one down: "
+                + ", ".join(f"{other['name']} ({other['udid']})" for other in booted)
+            )
         device = booted[0]
 
     udid = device["udid"]
@@ -378,8 +390,10 @@ def simulator() -> Iterator[str]:
             with _uninterrupted():
                 stopped = _try_run(["xcrun", "simctl", "shutdown", udid], timeout=BOOT_TIMEOUT)
             if stopped is None or stopped.returncode != 0:
-                pytest.fail(f"this run booted {device['name']} ({udid}) and could not shut it "
-                            f"down again: {stopped.stderr if stopped else 'simctl did not run'}")
+                pytest.fail(
+                    f"this run booted {device['name']} ({udid}) and could not shut it "
+                    f"down again: {stopped.stderr if stopped else 'simctl did not run'}"
+                )
 
 
 def _documents(udid: str) -> Path:
@@ -401,15 +415,28 @@ def fixture_app(simulator: str) -> Iterator[Path]:
     if shutil.which("xcodegen") is None:
         pytest.skip("xcodegen is not installed (`brew install xcodegen`)")
 
-    generated = _run(["xcodegen", "generate", "--project", str(FIXTURE_APP_DIR),
-                      "--spec", str(FIXTURE_APP_DIR / "project.yml")])
+    generated = _run(
+        ["xcodegen", "generate", "--project", str(FIXTURE_APP_DIR), "--spec", str(FIXTURE_APP_DIR / "project.yml")]
+    )
     if generated.returncode != 0:
         _fail("xcodegen could not generate the fixture app project", generated)
 
-    built = _run(["xcodebuild", "-project", str(FIXTURE_APP_DIR / "FixtureApp.xcodeproj"),
-                  "-scheme", "FixtureApp", "-configuration", "Debug",
-                  "-destination", "generic/platform=iOS Simulator",
-                  "-derivedDataPath", str(FIXTURE_APP_DIR / ".build"), "build"])
+    built = _run(
+        [
+            "xcodebuild",
+            "-project",
+            str(FIXTURE_APP_DIR / "FixtureApp.xcodeproj"),
+            "-scheme",
+            "FixtureApp",
+            "-configuration",
+            "Debug",
+            "-destination",
+            "generic/platform=iOS Simulator",
+            "-derivedDataPath",
+            str(FIXTURE_APP_DIR / ".build"),
+            "build",
+        ]
+    )
     if built.returncode != 0:
         _fail("the fixture app did not build", built)
 
@@ -417,7 +444,7 @@ def fixture_app(simulator: str) -> Iterator[Path]:
     if not app.is_dir():
         pytest.fail(f"xcodebuild reported success but there is no app at {app}")
 
-    _try_run(["xcrun", "simctl", "uninstall", simulator, BUNDLE_ID])   # may not be installed; fine
+    _try_run(["xcrun", "simctl", "uninstall", simulator, BUNDLE_ID])  # may not be installed; fine
     # Owed from before the install is attempted: an install that timed out may have finished, and
     # everything after it — the container lookup included — can fail with the app on the device.
     try:
@@ -430,10 +457,12 @@ def fixture_app(simulator: str) -> Iterator[Path]:
         documents = _documents(simulator)
         stale = [name for name in EVIDENCE_FILES if (documents / name).is_file()]
         if stale:
-            pytest.fail(f"{BUNDLE_ID} was reinstalled and its container still holds "
-                        f"{', '.join(stale)} from an earlier run — every check below would read "
-                        f"those as this run's.\n  container: {documents}\n"
-                        f"  fix: `xcrun simctl uninstall {simulator} {BUNDLE_ID}`")
+            pytest.fail(
+                f"{BUNDLE_ID} was reinstalled and its container still holds "
+                f"{', '.join(stale)} from an earlier run — every check below would read "
+                f"those as this run's.\n  container: {documents}\n"
+                f"  fix: `xcrun simctl uninstall {simulator} {BUNDLE_ID}`"
+            )
         yield documents
     finally:
         # The CA stays trusted in this simulator — simctl offers no way to remove one root cert —
@@ -441,8 +470,10 @@ def fixture_app(simulator: str) -> Iterator[Path]:
         with _uninterrupted():
             removed = _try_run(["xcrun", "simctl", "uninstall", simulator, BUNDLE_ID])
         if removed is None or removed.returncode != 0:
-            pytest.fail(f"could not uninstall {BUNDLE_ID} from {simulator}: "
-                        f"{removed.stderr if removed else 'simctl did not run'}")
+            pytest.fail(
+                f"could not uninstall {BUNDLE_ID} from {simulator}: "
+                f"{removed.stderr if removed else 'simctl did not run'}"
+            )
 
 
 class Pac(NamedTuple):
@@ -482,15 +513,13 @@ class Harness:
         """
         result = self.attempt(*args, timeout=timeout)
         if result.returncode != expect:
-            _fail(f"`lyrebird {' '.join(args)}` exited {result.returncode}, expected {expect}",
-                  result)
+            _fail(f"`lyrebird {' '.join(args)}` exited {result.returncode}, expected {expect}", result)
         return result
 
     def attempt(self, *args: str, timeout: float = 180) -> subprocess.CompletedProcess:
         """The same call without the assertion, for the cleanup — which has to go on to check the
         network whatever the command did."""
-        return _run_grouped([str(LYREBIRD), "--profile", str(self.profile), *args],
-                            self.env, timeout)
+        return _run_grouped([str(LYREBIRD), "--profile", str(self.profile), *args], self.env, timeout)
 
     def up(self, *args: str, expect: int = 0) -> subprocess.CompletedProcess:
         """`up`, always naming the device this run means.
@@ -521,10 +550,12 @@ class Harness:
         print(f"— phase: {name}", flush=True)
         now = _active_service()
         if now != self.service:
-            pytest.fail(f"the active network service changed from '{self.service}' to '{now}' "
-                        f"before the phase '{name}'. Stopping: a PAC installed on '{now}' is not "
-                        f"one this run recorded a baseline for. '{self.service}' is restored on "
-                        f"the way out; check '{now}' by hand if an earlier phase reached it.")
+            pytest.fail(
+                f"the active network service changed from '{self.service}' to '{now}' "
+                f"before the phase '{name}'. Stopping: a PAC installed on '{now}' is not "
+                f"one this run recorded a baseline for. '{self.service}' is restored on "
+                f"the way out; check '{now}' by hand if an earlier phase reached it."
+            )
 
     def status(self) -> dict:
         """`status --json` whatever it exits — the exit code is the intercept state, and parts of
@@ -589,7 +620,7 @@ class Harness:
         """
         now = now if now is not None else self._read_pac()
         if now is None:
-            return False   # unread is not restored
+            return False  # unread is not restored
         expected_enabled = self.baseline.enabled and bool(self.baseline.url)
         if now.enabled != expected_enabled:
             return False
@@ -606,7 +637,7 @@ class Harness:
         try:
             return json.loads(path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
-            return []   # caught mid-write; the caller is polling
+            return []  # caught mid-write; the caller is polling
 
     def launches(self) -> list[dict]:
         """One record per launch, written before any networking. This is what "the app was not
@@ -631,7 +662,8 @@ class Harness:
             pytest.fail(
                 f"the fixture app recorded {len(records)} result(s) in {timeout:g}s, expected "
                 f"{count}.\n  app records: {json.dumps(records, indent=2)}\n"
-                f"  proxy saw: {recent.stdout or recent.stderr}")
+                f"  proxy saw: {recent.stdout or recent.stderr}"
+            )
         return records
 
     def wait_for_displayed(self, marker: str, timeout: float = RESULT_TIMEOUT) -> str:
@@ -640,13 +672,16 @@ class Harness:
         Polled rather than read once: the app records the result before it publishes the new
         summary, so the label's record lands a moment after the one the caller just read.
         """
+
         def shown(records: list[dict]) -> bool:
             return any(marker in str(record.get("text", "")) for record in records)
 
         records = self._wait(self.displayed, shown, timeout)
         if not shown(records):
-            pytest.fail(f"the response arrived but no label carrying {marker!r} was rendered "
-                        f"within {timeout:g}s.\n  labels: {json.dumps(records, indent=2)}")
+            pytest.fail(
+                f"the response arrived but no label carrying {marker!r} was rendered "
+                f"within {timeout:g}s.\n  labels: {json.dumps(records, indent=2)}"
+            )
         return next(str(record["text"]) for record in records if marker in str(record.get("text")))
 
     @staticmethod
@@ -678,8 +713,9 @@ class Harness:
         signum = INTERRUPTS.pending()
         if signum is not None:
             detail = f"; the cleanup reported: {' | '.join(problems)}" if problems else ""
-            raise KeyboardInterrupt(f"terminated by signal {signum} during the cleanup, which was "
-                                    f"allowed to finish first{detail}")
+            raise KeyboardInterrupt(
+                f"terminated by signal {signum} during the cleanup, which was allowed to finish first{detail}"
+            )
         return problems
 
     def _restore_the_network(self) -> list[str]:
@@ -700,11 +736,9 @@ class Harness:
                 # inside the tool this check exists to exercise.
                 stopped = self._attempt_down()
             if stopped is None:
-                problems.append(f"`lyrebird down` did not complete within {DOWN_TIMEOUT}s or "
-                                f"could not be started")
+                problems.append(f"`lyrebird down` did not complete within {DOWN_TIMEOUT}s or could not be started")
             elif stopped.returncode != 0:
-                problems.append(f"`lyrebird down` exited {stopped.returncode}:\n"
-                                f"{stopped.stdout}\n{stopped.stderr}")
+                problems.append(f"`lyrebird down` exited {stopped.returncode}:\n{stopped.stdout}\n{stopped.stderr}")
 
             # Unconditional, and not driven by the runtime file. `up` starts mitmdump detached and
             # records its pid only once it is healthy and the CA is trusted (engine/cli.py), so an
@@ -715,17 +749,21 @@ class Harness:
             problems.extend(self._stop_our_proxies())
 
             if not self.restored():
-                problems.append(f"the Mac's auto-proxy settings were not restored on "
-                                f"'{self.service}' by `lyrebird down`.\n"
-                                f"  before: {self.baseline.describe()}\n"
-                                f"  after:  {self._describe_now()}")
+                problems.append(
+                    f"the Mac's auto-proxy settings were not restored on "
+                    f"'{self.service}' by `lyrebird down`.\n"
+                    f"  before: {self.baseline.describe()}\n"
+                    f"  after:  {self._describe_now()}"
+                )
                 problems.extend(self._restore_by_hand())
-        except BaseException as unexpected:   # noqa: BLE001 - a finalizer that raises cleans nothing
+        except BaseException as unexpected:  # noqa: BLE001 - a finalizer that raises cleans nothing
             # Not the deferred signals — those cannot arrive here any more. Anything else that goes
             # wrong is reported rather than raised, so the caller still hears about the network.
-            problems.append(f"the cleanup itself failed with {unexpected!r}; the network may not "
-                            f"be restored — check System Settings ▸ Network ▸ {self.service} ▸ "
-                            f"Proxies")
+            problems.append(
+                f"the cleanup itself failed with {unexpected!r}; the network may not "
+                f"be restored — check System Settings ▸ Network ▸ {self.service} ▸ "
+                f"Proxies"
+            )
         return problems
 
     def _attempt_down(self) -> subprocess.CompletedProcess | None:
@@ -747,8 +785,10 @@ class Harness:
         waiting for it to exit also waits for any `networksetup` it started, which would otherwise
         land on top of this one.
         """
-        notes = ["this harness restored them itself, because a cleanup that depends on the command "
-                 "it is checking cannot be relied on to run"]
+        notes = [
+            "this harness restored them itself, because a cleanup that depends on the command "
+            "it is checking cannot be relied on to run"
+        ]
 
         deadline = time.time() + WATCHDOG_GRACE
         while not self.restored() and time.time() < deadline:
@@ -765,27 +805,36 @@ class Harness:
                 # Set the URL, and prove it took before switching anything on: `-setautoproxyurl`
                 # enables the PAC as a side effect, so enabling after a failed set would route the
                 # Mac at whatever URL is in the field — which, right now, is ours.
-                _try_run(["networksetup", "-setautoproxyurl", self.service, self.baseline.url],
-                         timeout=60)
+                _try_run(["networksetup", "-setautoproxyurl", self.service, self.baseline.url], timeout=60)
                 now = self._read_pac()
                 if now is None or now.url != self.baseline.url:
-                    _try_run(["networksetup", "-setautoproxystate", self.service, "off"],
-                             timeout=60)
-                    notes.append(f"AND FAILED: could not put the previous PAC URL back on "
-                                 f"'{self.service}' (it now reads {self._describe_now()}), so "
-                                 f"routing was switched off rather than left pointing at ours. "
-                                 f"Set it by hand: System Settings ▸ Network ▸ {self.service} ▸ "
-                                 f"Proxies")
+                    _try_run(["networksetup", "-setautoproxystate", self.service, "off"], timeout=60)
+                    notes.append(
+                        f"AND FAILED: could not put the previous PAC URL back on "
+                        f"'{self.service}' (it now reads {self._describe_now()}), so "
+                        f"routing was switched off rather than left pointing at ours. "
+                        f"Set it by hand: System Settings ▸ Network ▸ {self.service} ▸ "
+                        f"Proxies"
+                    )
                     return notes
             # macOS rejects an empty URL, so with nothing recorded the only thing to restore is
             # "off" — which is exactly what `restore_pac` does, and leaves our URL in the field.
-            _try_run(["networksetup", "-setautoproxystate", self.service,
-                      "on" if (self.baseline.enabled and self.baseline.url) else "off"], timeout=60)
+            _try_run(
+                [
+                    "networksetup",
+                    "-setautoproxystate",
+                    self.service,
+                    "on" if (self.baseline.enabled and self.baseline.url) else "off",
+                ],
+                timeout=60,
+            )
 
         if not self.restored():
-            notes.append(f"AND FAILED: the settings on '{self.service}' are still "
-                         f"{self._describe_now()}, wanted {self.baseline.describe()}. "
-                         f"Fix by hand: System Settings ▸ Network ▸ {self.service} ▸ Proxies")
+            notes.append(
+                f"AND FAILED: the settings on '{self.service}' are still "
+                f"{self._describe_now()}, wanted {self.baseline.describe()}. "
+                f"Fix by hand: System Settings ▸ Network ▸ {self.service} ▸ Proxies"
+            )
         return notes
 
     def _stop_our_proxies(self) -> list[str]:
@@ -804,12 +853,14 @@ class Harness:
         problems = []
         for pid in self._our_proxy_pids():
             if self._wait_for_exit(pid, SHUTDOWN_GRACE):
-                continue   # `down` had it in hand after all
+                continue  # `down` had it in hand after all
             with contextlib.suppress(OSError):
                 os.kill(pid, signal.SIGKILL)
             gone = self._wait_for_exit(pid, KILL_WAIT)
-            problems.append(f"a proxy this run started was still running after `down` (pid {pid}); "
-                            f"it was killed here{'' if gone else f', and did not exit within {KILL_WAIT:g}s'}")
+            problems.append(
+                f"a proxy this run started was still running after `down` (pid {pid}); "
+                f"it was killed here{'' if gone else f', and did not exit within {KILL_WAIT:g}s'}"
+            )
         return problems
 
     def _our_proxy_pids(self) -> list[int]:
@@ -842,8 +893,7 @@ class Harness:
 
 
 @pytest.fixture(scope="session")
-def harness(tmp_path_factory: pytest.TempPathFactory, simulator: str,
-            fixture_app: Path) -> Iterator[Harness]:
+def harness(tmp_path_factory: pytest.TempPathFactory, simulator: str, fixture_app: Path) -> Iterator[Harness]:
     """A temporary profile, a temporary state directory, free ports — and the promise that the
     Mac's proxy settings are what they were when this returns.
 
@@ -883,10 +933,12 @@ def harness(tmp_path_factory: pytest.TempPathFactory, simulator: str,
     profile_file = profile / "profile.json"
     document = json.loads(profile_file.read_text(encoding="utf-8"))
     if FIXTURE_HOST not in document.get("hosts", []):
-        pytest.fail(f"`lyrebird init` wrote a profile that does not intercept {FIXTURE_HOST}, "
-                    f"which is the host the fixture app calls: {document.get('hosts')}\n"
-                    f"  fix acceptance/FixtureApp/FixtureApp/FixtureApp.swift and this constant "
-                    f"together, or restore the host in engine/examples/profile.json")
+        pytest.fail(
+            f"`lyrebird init` wrote a profile that does not intercept {FIXTURE_HOST}, "
+            f"which is the host the fixture app calls: {document.get('hosts')}\n"
+            f"  fix acceptance/FixtureApp/FixtureApp/FixtureApp.swift and this constant "
+            f"together, or restore the host in engine/examples/profile.json"
+        )
     document["simBundleId"] = BUNDLE_ID
     profile_file.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
 
@@ -895,16 +947,19 @@ def harness(tmp_path_factory: pytest.TempPathFactory, simulator: str,
 
     world.service = _active_service()
     if not world.service:
-        pytest.fail("no active network service — macOS has nothing to install a PAC on, so "
-                    "nothing here could be intercepted")
+        pytest.fail(
+            "no active network service — macOS has nothing to install a PAC on, so nothing here could be intercepted"
+        )
     world.baseline = world.pac()
     if world.baseline.enabled and LYREBIRD_PAC.match(world.baseline.url):
         # An *enabled* Lyrebird PAC means another session is live on this machine. Starting now
         # would record its PAC as the thing to restore, hand it back at the end with this run's
         # idea of whose it was, and leave that session pointing at a proxy this run stopped. A
         # disabled one is only the URL a previous `down` left behind, and is restored verbatim.
-        pytest.fail(f"a Lyrebird PAC is already enabled on '{world.service}': "
-                    f"{world.baseline.describe()}\n  run `lyrebird down` for that profile first")
+        pytest.fail(
+            f"a Lyrebird PAC is already enabled on '{world.service}': "
+            f"{world.baseline.describe()}\n  run `lyrebird down` for that profile first"
+        )
 
     try:
         yield world

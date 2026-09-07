@@ -39,7 +39,7 @@ filterwarnings = [
 ]
 
 [tool.ruff]
-line-length = 120          # longest line today is 115 — flags nothing now, guards later
+line-length = 120
 target-version = "py312"   # matches requires-python
 src = ["."]
 
@@ -53,9 +53,8 @@ select = ["E", "F", "I", "B", "UP", "C4"]
 # it sorts in with click and pytest.
 known-first-party = ["cli_doubles"]
 
-# No formatter. The code is already consistently styled, so a formatter's real benefit — ending
-# style arguments on a team — is worth nothing here, while it would explode the hand-packed
-# constant tables and rewrap the CLI strings whose line breaks track sentences.
+# Ruff owns Python formatting. Use statement-level `# fmt: off` / `# fmt: on` only
+# for tables whose alignment conveys meaning; ordinary code follows the formatter.
 
 [tool.mypy]
 files = ["addon.py", "api.py", "cli.py", "config.py",

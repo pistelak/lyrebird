@@ -98,12 +98,12 @@ def launch_traffic_is_answered_by_the_scenario_up_selected(harness):
     assert REPLACED in _body(replaced), replaced
     assert DECOY not in _body(replaced), (
         "the app was answered by the session that was active before `--use` — the scenario `up` "
-        "selected is not the one the launch met")
+        "selected is not the one the launch met"
+    )
     assert len(harness.launches()) == launches + 1, "up did not relaunch the app"
 
     shown = harness.wait_for_displayed(REPLACED)
-    assert str(replaced["status"]) in shown, (
-        f"the body reached the label but the status did not: {shown!r}")
+    assert str(replaced["status"]) in shown, f"the body reached the label but the status did not: {shown!r}"
 
     state = harness.status()
     assert state["intercepting"] is True, state
@@ -144,8 +144,7 @@ def a_sequence_moves_to_its_second_step_on_the_next_launch(harness):
 
     # Already served by the time this runs, which `sequence wait` answers immediately rather than
     # burning its timeout on.
-    served = harness.run("sequence", "wait", "ovr_fixture_sequence", "--step", "2",
-                         "--timeout", "30")
+    served = harness.run("sequence", "wait", "ovr_fixture_sequence", "--step", "2", "--timeout", "30")
     assert "step 2" in served.stdout, served.stdout
 
 
@@ -168,8 +167,8 @@ def up_refuses_an_unknown_scenario_and_launches_nothing(harness):
     # cannot be satisfied by an app that was started and then never got an answer.
     started = harness.launches()
     assert len(started) == launches, (
-        f"the app was launched anyway: {len(started) - launches} extra launch(es), "
-        f"last {started[-1]}")
+        f"the app was launched anyway: {len(started) - launches} extra launch(es), last {started[-1]}"
+    )
     assert len(harness.results()) == results
 
     # Still up, still intercepting, still the session the caller had — nothing was torn down and
@@ -184,13 +183,11 @@ def down_restores_the_proxy_settings_that_were_there_before(harness):
     """Normal teardown. The comparison is against macOS, not against Lyrebird's own account of
     what it did."""
     harness.phase("`down` restores the proxy settings that were there before")
-    assert harness.pac_is_ours(), (
-        f"the run was not intercepting before `down`: {harness.pac().describe()}")
+    assert harness.pac_is_ours(), f"the run was not intercepting before `down`: {harness.pac().describe()}"
 
     harness.run("down")
 
-    assert harness.restored(), (
-        f"before: {harness.baseline.describe()} · after: {harness.pac().describe()}")
+    assert harness.restored(), f"before: {harness.baseline.describe()} · after: {harness.pac().describe()}"
     state = harness.status()
     assert state["proxyUp"] is False, state
     assert state["intercepting"] is False, state
@@ -217,4 +214,5 @@ def the_watchdog_restores_the_settings_when_the_proxy_is_killed(harness):
 
     assert harness.restored(), (
         f"the proxy was killed and the PAC was still pointing at it {WATCHDOG_WINDOW:g}s later.\n"
-        f"  before: {harness.baseline.describe()}\n  now:    {harness.pac().describe()}")
+        f"  before: {harness.baseline.describe()}\n  now:    {harness.pac().describe()}"
+    )

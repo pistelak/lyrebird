@@ -52,24 +52,26 @@ def sequence_wait(override_id: str, step: int, timeout: int) -> None:
         click.echo(f"{ui.RED}✗ no sequence '{override_id}' in the active session{ui.R}")
         raise SystemExit(1)
     if not 1 <= step <= state["stepCount"]:
-        click.echo(f"{ui.RED}✗ '{override_id}' has {state['stepCount']} step(s); "
-                   f"--step {step} is out of range{ui.R}")
+        click.echo(f"{ui.RED}✗ '{override_id}' has {state['stepCount']} step(s); --step {step} is out of range{ui.R}")
         raise SystemExit(1)
 
     run_id, next_step = state["runId"], state["nextStep"]
     already = (state.get("serves") or {}).get(str(step), 0)
     if already:
-        click.echo(f"✓ {override_id} served step {step}/{state['stepCount']} this run "
-                   f"({already}×, before the wait began)")
+        click.echo(
+            f"✓ {override_id} served step {step}/{state['stepCount']} this run ({already}×, before the wait began)"
+        )
         return
 
     # Fail now, not at the deadline. Ordered after the serve check: a cursor past the step with
     # no serve recorded means the run advanced over the step without ever serving it.
     if next_step is None or next_step > step:
         position = "exhausted" if next_step is None else f"now at step {next_step}"
-        click.echo(f"{ui.RED}✗ '{override_id}' is already past step {step} ({position}) and never "
-                   f"served it this run.{ui.R}\n"
-                   f"   Run `lyrebird reset {override_id}` before triggering the action.")
+        click.echo(
+            f"{ui.RED}✗ '{override_id}' is already past step {step} ({position}) and never "
+            f"served it this run.{ui.R}\n"
+            f"   Run `lyrebird reset {override_id}` before triggering the action."
+        )
         raise SystemExit(1)
 
     deadline = time.time() + timeout
@@ -78,7 +80,7 @@ def sequence_wait(override_id: str, step: int, timeout: int) -> None:
     while True:
         current_health = api._health()
         if current_health is None:
-            unreachable = True   # transient until the deadline says otherwise; keep polling
+            unreachable = True  # transient until the deadline says otherwise; keep polling
         else:
             unreachable = False
             # Re-checked: this wait's baseline is a run id from whichever store answered first.
@@ -86,18 +88,26 @@ def sequence_wait(override_id: str, step: int, timeout: int) -> None:
             current = _find_sequence(current_health, override_id)
             if current is None or current.get("runId") != run_id:
                 what = "was removed" if current is None else "was reset"
-                click.echo(f"{ui.RED}✗ '{override_id}' {what} while waiting; "
-                           f"this wait's baseline no longer applies.{ui.R}")
+                click.echo(
+                    f"{ui.RED}✗ '{override_id}' {what} while waiting; this wait's baseline no longer applies.{ui.R}"
+                )
                 raise SystemExit(1)
             if (current.get("serves") or {}).get(str(step), 0):
-                detail = next((e for e in api._get_json("/__mock__/recent", timeout=2) or []
-                               if e.get("sequenceId") == override_id and e.get("runId") == run_id
-                               and e.get("selectedStep") == step), None)
+                detail = next(
+                    (
+                        e
+                        for e in api._get_json("/__mock__/recent", timeout=2) or []
+                        if e.get("sequenceId") == override_id
+                        and e.get("runId") == run_id
+                        and e.get("selectedStep") == step
+                    ),
+                    None,
+                )
                 served = f"✓ {override_id} served step {step}/{current['stepCount']}"
                 if detail:
                     click.echo(f"{served} for {detail['method']} {detail['path']} → {detail['status']}")
                 else:
-                    click.echo(served)   # the serve outlived its /recent entry
+                    click.echo(served)  # the serve outlived its /recent entry
                 return
             now_next = current.get("nextStep")
             if now_next is None or now_next > step:
@@ -105,22 +115,28 @@ def sequence_wait(override_id: str, step: int, timeout: int) -> None:
                 # success, but one that advanced over it without serving can never satisfy this
                 # wait — burning the rest of the timeout would blame the wrong thing.
                 position = "exhausted" if now_next is None else f"now at step {now_next}"
-                click.echo(f"{ui.RED}✗ '{override_id}' advanced past step {step} without serving it "
-                           f"({position}).{ui.R}\n"
-                           f"   Something advanced the sequence that was not the request you were "
-                           f"waiting for; check `lyrebird recent`.")
+                click.echo(
+                    f"{ui.RED}✗ '{override_id}' advanced past step {step} without serving it "
+                    f"({position}).{ui.R}\n"
+                    f"   Something advanced the sequence that was not the request you were "
+                    f"waiting for; check `lyrebird recent`."
+                )
                 raise SystemExit(1)
         if time.time() >= deadline:
             break
         time.sleep(1)
 
     if unreachable:
-        click.echo(f"{ui.RED}✗ lost the control API while waiting — the proxy may have stopped; "
-                   f"whether step {step} was served is unknown.{ui.R}")
+        click.echo(
+            f"{ui.RED}✗ lost the control API while waiting — the proxy may have stopped; "
+            f"whether step {step} was served is unknown.{ui.R}"
+        )
     else:
-        click.echo(f"{ui.RED}✗ '{override_id}' did not serve step {step} within {timeout}s "
-                   f"(next step: {(current or state).get('nextStep')}).{ui.R}\n"
-                   f"   Check `lyrebird recent` for what did arrive.")
+        click.echo(
+            f"{ui.RED}✗ '{override_id}' did not serve step {step} within {timeout}s "
+            f"(next step: {(current or state).get('nextStep')}).{ui.R}\n"
+            f"   Check `lyrebird recent` for what did arrive."
+        )
     raise SystemExit(1)
 
 
@@ -178,27 +194,38 @@ def _require_run(override_id: str, state: dict, required: str) -> None:
     either as a rule that answered nothing would send someone to debug a matcher that is fine.
     """
     if "runId" not in state:
-        click.echo(f"{ui.RED}✗ this proxy does not report which run a count belongs to — restart it "
-                   f"(`lyrebird down && lyrebird up`) to pick up the current engine.{ui.R}\n"
-                   f"   Without --run the assertion reads whatever run is current instead.")
+        click.echo(
+            f"{ui.RED}✗ this proxy does not report which run a count belongs to — restart it "
+            f"(`lyrebird down && lyrebird up`) to pick up the current engine.{ui.R}\n"
+            f"   Without --run the assertion reads whatever run is current instead."
+        )
         raise SystemExit(_ASSERTION_NOT_MADE)
     current = state["runId"]
     if current == required:
         return
-    reason = (f"is in run {current}" if current else
-              "has no run at all — a session switch or a rule replaced under the same id "
-              "dropped its run state")
-    click.echo(f"{ui.RED}✗ '{override_id}' {reason}, not run {required}.{ui.R}\n"
-               f"   Whatever it has answered belongs to a different run than the one you set up, "
-               f"so this assertion cannot be made.\n"
-               f"   Reset, trigger the action, then assert — with the run id that reset printed.")
+    reason = (
+        f"is in run {current}"
+        if current
+        else "has no run at all — a session switch or a rule replaced under the same id dropped its run state"
+    )
+    click.echo(
+        f"{ui.RED}✗ '{override_id}' {reason}, not run {required}.{ui.R}\n"
+        f"   Whatever it has answered belongs to a different run than the one you set up, "
+        f"so this assertion cannot be made.\n"
+        f"   Reset, trigger the action, then assert — with the run id that reset printed."
+    )
     raise SystemExit(_ASSERTION_NOT_MADE)
 
 
 @click.command(name="assert-answered")
 @click.argument("override_id")
-@click.option("--run", "required_run", default=None, metavar="ID",
-              help="Require the answer to belong to this run id (printed by `lyrebird reset`).")
+@click.option(
+    "--run",
+    "required_run",
+    default=None,
+    metavar="ID",
+    help="Require the answer to belong to this run id (printed by `lyrebird reset`).",
+)
 @click.option("--timeout", default=0, help="Seconds to wait for the first answer (0 checks now).")
 def assert_answered(override_id: str, required_run: str | None, timeout: int) -> None:
     """Exit non-zero unless that rule has answered a request in the run you name.
@@ -253,8 +280,10 @@ def assert_answered(override_id: str, required_run: str | None, timeout: int) ->
             raise SystemExit(unproven)
         api._require_same_profile(health, unproven_exit=unproven)
         if "answers" not in health:
-            click.echo(f"{ui.RED}✗ this proxy does not report answer counts — restart it "
-                       f"(`lyrebird down && lyrebird up`) to pick up the current engine.{ui.R}")
+            click.echo(
+                f"{ui.RED}✗ this proxy does not report answer counts — restart it "
+                f"(`lyrebird down && lyrebird up`) to pick up the current engine.{ui.R}"
+            )
             # An engine that cannot count answers certainly cannot say which run they are in, so
             # under --run this joins the other identity failures: a harness branching on 3 must not
             # have to learn that one flavour of version skew arrives as 1.
@@ -269,8 +298,7 @@ def assert_answered(override_id: str, required_run: str | None, timeout: int) ->
                 # The rule can also vanish *during* the wait — a session switched to one that does
                 # not carry this id — and that destroys the boundary rather than answering the
                 # question about it. Same code as a run that moved, for the same reason.
-                click.echo(f"   Run {required_run} cannot be checked: the rule is not there to "
-                           f"have answered in it.")
+                click.echo(f"   Run {required_run} cannot be checked: the rule is not there to have answered in it.")
             raise SystemExit(unproven)
         # Before the count, and re-checked every poll: a run that changes between the action and
         # the assertion — or while the assertion waits — makes the count that follows evidence
@@ -302,13 +330,13 @@ def assert_answered(override_id: str, required_run: str | None, timeout: int) ->
     scope = f"in run {required_run}" if required_run else "this run"
     click.echo(f"{ui.RED}✗ '{override_id}' has not answered any request {scope}{waited}.{ui.R}")
     if not entries:
-        click.echo("   Nothing has reached the proxy at all — relaunch the app, and check the host "
-                   "is listed in your profile.")
+        click.echo(
+            "   Nothing has reached the proxy at all — relaunch the app, and check the host is listed in your profile."
+        )
     else:
         # The distinct paths, not the count: a count cannot tell "the app went somewhere else"
         # from "the path pattern is wrong", and those have completely different fixes.
-        seen = list(dict.fromkeys(
-            f"{entry.get('method', '?'):6} {entry.get('path', '?')}" for entry in entries))
+        seen = list(dict.fromkeys(f"{entry.get('method', '?'):6} {entry.get('path', '?')}" for entry in entries))
         click.echo(f"   {len(entries)} request(s) in the recent buffer, on these paths:")
         for line in seen[:5]:
             click.echo(f"     {ui.DIM}{line}{ui.R}")
@@ -316,21 +344,25 @@ def assert_answered(override_id: str, required_run: str | None, timeout: int) ->
             click.echo(f"     {ui.DIM}… and {len(seen) - 5} more{ui.R}")
         # The buffer is not scoped to the run, so these may predate the reset. Enough to tell
         # "the app is not reaching us" from "it is, on other paths"; not enough to blame the rule.
-        click.echo("   `lyrebird explain-match <method> <path>` says which rule one of those "
-                   "would select, and why yours was not it.")
+        click.echo(
+            "   `lyrebird explain-match <method> <path>` says which rule one of those "
+            "would select, and why yours was not it."
+        )
     raise SystemExit(_ANSWERED_NONE)
 
 
 @click.command(name="wait-ready")
 @click.option("--timeout", default=30, help="Seconds to wait.")
-@click.option("--match", "want_match", is_flag=True,
-              help="Wait for a request an override actually matched, not just any traffic.")
+@click.option(
+    "--match", "want_match", is_flag=True, help="Wait for a request an override actually matched, not just any traffic."
+)
 def wait_ready(timeout: int, want_match: bool) -> None:
     """Block until the app's traffic reaches the proxy (avoids cold-launch flakiness).
 
     With --match, wait until an override actually fires. Traffic arriving proves the PAC works;
     it does not prove your rule matched, which is usually the thing you are waiting to confirm.
     """
+
     def newest(entries: list) -> str:
         return entries[0].get("time", "") if entries else ""
 
@@ -339,24 +371,25 @@ def wait_ready(timeout: int, want_match: bool) -> None:
     baseline = newest(api._get_json("/__mock__/recent", timeout=2) or [])
     deadline = time.time() + timeout
     while time.time() < deadline:
-        recent = [e for e in (api._get_json("/__mock__/recent", timeout=2) or [])
-                  if e.get("time", "") > baseline]
+        recent = [e for e in (api._get_json("/__mock__/recent", timeout=2) or []) if e.get("time", "") > baseline]
         matched = [entry for entry in recent if entry.get("matched")]
         if matched if want_match else recent:
             if want_match:
                 hit = matched[0]
-                click.echo(f"✓ override {hit['matched']} matched {hit['method']} {hit['path']} "
-                           f"→ {hit['status']}")
+                click.echo(f"✓ override {hit['matched']} matched {hit['method']} {hit['path']} → {hit['status']}")
             else:
                 click.echo(f"✓ app is live ({len(recent)} proxied request(s) seen)")
             return
         time.sleep(1)
     if want_match:
-        seen = len([e for e in (api._get_json("/__mock__/recent", timeout=2) or [])
-                    if e.get("time", "") > baseline])
-        click.echo(f"{ui.RED}✗ no override matched within {timeout}s ({seen} request(s) reached the "
-                   f"proxy). Check the path in your rule against `lyrebird logs`.{ui.R}")
+        seen = len([e for e in (api._get_json("/__mock__/recent", timeout=2) or []) if e.get("time", "") > baseline])
+        click.echo(
+            f"{ui.RED}✗ no override matched within {timeout}s ({seen} request(s) reached the "
+            f"proxy). Check the path in your rule against `lyrebird logs`.{ui.R}"
+        )
     else:
-        click.echo(f"{ui.RED}✗ no proxied requests within {timeout}s — is the app relaunched, and is it "
-                   f"calling a host listed in your profile?{ui.R}")
+        click.echo(
+            f"{ui.RED}✗ no proxied requests within {timeout}s — is the app relaunched, and is it "
+            f"calling a host listed in your profile?{ui.R}"
+        )
     raise SystemExit(1)

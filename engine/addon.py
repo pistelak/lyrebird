@@ -25,7 +25,7 @@ from store import Store, credit
 # into its own event log, so this reaches the same place without polluting the log with warnings.
 _log = logging.getLogger("lyrebird")
 
-BODYLESS_STATUSES = (204, 304)   # must not carry a body or a Content-Length
+BODYLESS_STATUSES = (204, 304)  # must not carry a body or a Content-Length
 # How long `/health` waits for the PAC observation before answering without it. Well under the
 # CLI's 1.5s read timeout (`cli._get_json`), because two silent health reads are what the watchdog
 # takes for a dead proxy — so health answering late is the same failure as health not answering.
@@ -83,8 +83,11 @@ class Lyrebird:
         await control.start(self.store, self._meta)
         _log.info(
             "control http://%s:%s | proxy :%s | session '%s' (%d overrides)",
-            config.CONTROL_HOST, config.CONTROL_PORT, config.PROXY_PORT,
-            self.store.active_name, len(self.store.active_overrides()),
+            config.CONTROL_HOST,
+            config.CONTROL_PORT,
+            config.PROXY_PORT,
+            self.store.active_name,
+            len(self.store.active_overrides()),
         )
         for problem in self.store.load_problems:
             _log.warning("%s", problem)
@@ -110,7 +113,8 @@ class Lyrebird:
             # Shielded: the deadline gives up on *this* answer, not on the observation — cancelling
             # it would leave the next poll starting another thread against the same stuck command.
             service, intercepting, pac_error = await asyncio.wait_for(
-                asyncio.shield(observation), timeout=_OBSERVE_DEADLINE)
+                asyncio.shield(observation), timeout=_OBSERVE_DEADLINE
+            )
         except TimeoutError:
             service, intercepting = self._last_service, False
             pac_error = f"PAC read did not finish within {_OBSERVE_DEADLINE}s"
@@ -118,7 +122,7 @@ class Lyrebird:
             self._last_service = service
         meta = {
             "proxyUp": True,
-            "intercepting": intercepting,   # PAC enabled AND pointing at us — not merely "process alive"
+            "intercepting": intercepting,  # PAC enabled AND pointing at us — not merely "process alive"
             "pacEnabled": intercepting,
             "service": service,
             "proxyPort": config.PROXY_PORT,
@@ -146,7 +150,7 @@ class Lyrebird:
         `networksetup` via `netproxy.active_service`, so it can time out exactly as the PAC read
         can, and a failure there is the same unproven answer.
         """
-        service = self._last_service   # kept if discovery itself is what fails
+        service = self._last_service  # kept if discovery itself is what fails
         try:
             service = self._service()
             return service, netproxy.intercepting(service), None
@@ -217,10 +221,10 @@ class Lyrebird:
         its response hook never reaches `_record` at all, though the override certainly answered it.
         """
         if action == rules.PASS_THROUGH:
-            return   # sequence exhausted and told to stand aside: the real upstream answers, not us
+            return  # sequence exhausted and told to stand aside: the real upstream answers, not us
         if action == rules.EXHAUSTED_ERROR:
             flow.response = self._exhausted_response(flow, override)
-            flow.metadata["mock_matched"] = override["id"]   # an override did answer, with a 500
+            flow.metadata["mock_matched"] = override["id"]  # an override did answer, with a 500
             credit(self.store.answer_slot(override["id"]))
             return
         if resolved is None:
@@ -256,18 +260,18 @@ class Lyrebird:
         """
         progress = flow.metadata.get("mock_sequence") or {}
         steps = len(rules.sequence_steps(override) or [])
-        body = {"error": {
-            "code": "SEQUENCE_EXHAUSTED",
-            "message": (
-                f"Lyrebird: sequence '{override['id']}' defines {steps} step(s) and has seen "
-                f"{progress.get('advanceEvents', steps)} advance event(s). Set "
-                f"sequence.onExhausted to 'repeatLast' or 'passThrough' if more requests are "
-                f"expected."
-            ),
-        }}
-        return http.Response.make(
-            500, json.dumps(body).encode("utf-8"), {"Content-Type": "application/json"}
-        )
+        body = {
+            "error": {
+                "code": "SEQUENCE_EXHAUSTED",
+                "message": (
+                    f"Lyrebird: sequence '{override['id']}' defines {steps} step(s) and has seen "
+                    f"{progress.get('advanceEvents', steps)} advance event(s). Set "
+                    f"sequence.onExhausted to 'repeatLast' or 'passThrough' if more requests are "
+                    f"expected."
+                ),
+            }
+        }
+        return http.Response.make(500, json.dumps(body).encode("utf-8"), {"Content-Type": "application/json"})
 
     def responseheaders(self, flow: http.HTTPFlow) -> None:
         response = flow.response
@@ -305,7 +309,7 @@ class Lyrebird:
                 status = flow.response.status_code
                 slot = flow.metadata.get("mock_answer_slot")
                 if slot is not None:
-                    credit(slot)   # now, and only now, has the patch answered anything
+                    credit(slot)  # now, and only now, has the patch answered anything
             else:
                 flow.metadata["mock_patch_skipped"] = "body_unavailable_or_not_json"
 
@@ -329,9 +333,11 @@ class Lyrebird:
         # `mock_advanced` counts too: a request no override answered can still have moved a
         # sequence, and if its upstream then fails the cursor has changed with nothing in /recent
         # to explain why.
-        if not (flow.metadata.get("mock_sequence")
-                or flow.metadata.get("mock_advanced")
-                or flow.metadata.get("mock_matched")):
+        if not (
+            flow.metadata.get("mock_sequence")
+            or flow.metadata.get("mock_advanced")
+            or flow.metadata.get("mock_matched")
+        ):
             return
         if not config.is_intercepted_host(flow.request.pretty_host):
             return

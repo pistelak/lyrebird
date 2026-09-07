@@ -40,7 +40,8 @@ def profile(tmp_path, monkeypatch):
 def hosts(profile):
     """A profile configured to intercept a single host."""
     (profile / "profile.json").write_text(
-        '{"hosts": ["api.example.com"], "simBundleId": "com.example.Store"}', encoding="utf-8")
+        '{"hosts": ["api.example.com"], "simBundleId": "com.example.Store"}', encoding="utf-8"
+    )
     config.reload_profile()
     yield ["api.example.com"]
     config.reload_profile()
@@ -66,8 +67,7 @@ def fake_network(monkeypatch):
     state = {"service": "Wi-Fi", "restored": None, "terminated": []}
 
     monkeypatch.setattr(netproxy, "active_service", lambda: state["service"])
-    monkeypatch.setattr(netproxy, "pac_status",
-                        lambda service: netproxy.PacStatus(netproxy.pac_url(), True, True))
+    monkeypatch.setattr(netproxy, "pac_status", lambda service: netproxy.PacStatus(netproxy.pac_url(), True, True))
 
     def restore(service, url, enabled):
         state["restored"] = (service, url, enabled)
@@ -80,6 +80,7 @@ def fake_network(monkeypatch):
 @pytest.fixture
 def offline(monkeypatch):
     """Fails the test if anything reaches the proxy, the network or the store."""
+
     def refuse(*_args, **_kwargs):
         raise AssertionError("an offline command must not talk to the proxy or construct a Store")
 

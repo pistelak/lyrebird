@@ -60,9 +60,10 @@ final class AppModel {
     }
 
     private static var currentSettings: Settings {
-        Settings(profilePath: Config.profilePath,
-                 lyrebirdPath: Config.lyrebirdPath,
-                 controlURL: Config.controlURL)
+        Settings(
+            profilePath: Config.profilePath,
+            lyrebirdPath: Config.lyrebirdPath,
+            controlURL: Config.controlURL)
     }
 
     /// The settings `expectedFingerprint` was discovered under. A fingerprint names the profile it
@@ -83,10 +84,12 @@ final class AppModel {
     /// The app calls this with no arguments. `autoStart: false` lets a test exercise one action
     /// without the poll loop firing refreshes underneath it; `discover` lets it name the profile
     /// without shelling out.
-    init(client: MockClient? = nil,
-         autoStart: Bool = true,
-         expectedFingerprint: String? = nil,
-         discover: (@Sendable () async throws -> String)? = nil) {
+    init(
+        client: MockClient? = nil,
+        autoStart: Bool = true,
+        expectedFingerprint: String? = nil,
+        discover: (@Sendable () async throws -> String)? = nil
+    ) {
         self.injectedClient = client
         self.expectedFingerprint = expectedFingerprint
         self.discover = discover ?? { try await Control.fingerprint() }
@@ -170,13 +173,15 @@ final class AppModel {
         // are read only when that is ours. Showing another profile's sessions under this
         // profile's name is the same mistake as showing its health.
         if case .up(let health) = read, health.proxyUp == true,
-           health.profileFingerprint == nil || health.profileFingerprint == expected {
+            health.profileFingerprint == nil || health.profileFingerprint == expected
+        {
             sessions = await client.sessions()
             recent = await client.recent()
         }
 
         guard generation == refreshGeneration, configuration == configGeneration,
-              settings == Self.currentSettings else { return }
+            settings == Self.currentSettings
+        else { return }
         self.healthRead = read
         self.sessions = sessions
         self.recent = recent
@@ -252,7 +257,7 @@ final class AppModel {
     }
 
     func toggle() async {
-        guard !busy else { return }   // guard here, not only via .disabled: SwiftUI re-renders late
+        guard !busy else { return }  // guard here, not only via .disabled: SwiftUI re-renders late
         busy = true
         defer { busy = false }
         // `up` is what repairs a disabled PAC, so anything short of intercepting starts — except
@@ -269,8 +274,9 @@ final class AppModel {
         guard expectedFingerprint != nil else {
             // Without the header this write would be scoped to nothing and applied to whichever
             // profile holds the port.
-            lastError = "activate '\(name)': the app does not know which profile it is configured "
-                      + "for — check the launcher path in Settings"
+            lastError =
+                "activate '\(name)': the app does not know which profile it is configured "
+                + "for — check the launcher path in Settings"
             return
         }
         do {

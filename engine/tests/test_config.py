@@ -13,16 +13,20 @@ import config
 
 # MARK: - Host validation
 
-@pytest.mark.parametrize("host", [
-    "https://api.example.com",   # scheme
-    "api.example.com/path",      # path
-    "api.example.com:443",       # port
-    "*.example.com",             # wildcard
-    "api example.com",           # whitespace
-    "api.example.com\"});alert(1);//",  # PAC JavaScript injection attempt
-    "-leading-dash.example.com",
-    "",
-])
+
+@pytest.mark.parametrize(
+    "host",
+    [
+        "https://api.example.com",  # scheme
+        "api.example.com/path",  # path
+        "api.example.com:443",  # port
+        "*.example.com",  # wildcard
+        "api example.com",  # whitespace
+        'api.example.com"});alert(1);//',  # PAC JavaScript injection attempt
+        "-leading-dash.example.com",
+        "",
+    ],
+)
 def test_invalid_hosts_are_rejected(host):
     with pytest.raises(ValueError):
         config.validate_host(host)
@@ -33,6 +37,7 @@ def test_hosts_are_lowercased():
 
 
 # MARK: - Fail-closed profile loading
+
 
 def test_empty_host_list_means_intercept_nothing(profile):
     """An explicitly empty list must not fall back to a built-in default."""
@@ -76,6 +81,7 @@ def test_missing_profile_is_reported_not_defaulted(profile):
 
 # MARK: - The three mechanisms agree
 
+
 def test_addon_matching_is_exact(hosts):
     assert config.is_intercepted_host("api.example.com") is True
     assert config.is_intercepted_host("api.example.com:443") is True
@@ -111,6 +117,7 @@ def test_pac_advertises_the_proxy_host_not_the_control_host(hosts):
 # Profiles are configuration and belong in ~/.config, as do the sessions you save into
 # one. Nothing the tool writes for its own purposes does, and the two places it writes differ in
 # what may destroy them: state and the CA must survive, the log is for a person to read.
+
 
 def test_default_profile_lives_in_config_home(monkeypatch):
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
@@ -149,15 +156,25 @@ def test_state_dir_override_collapses_both(monkeypatch, tmp_path):
     monkeypatch.setenv("LYREBIRD_STATE_DIR", str(tmp_path / "elsewhere"))
     config.configure()
 
-    for path in (config.STATE_FILE, config.LOG_FILE,
-                 config.runtime_file(), config.lock_file(), config.mitmproxy_confdir()):
+    for path in (
+        config.STATE_FILE,
+        config.LOG_FILE,
+        config.runtime_file(),
+        config.lock_file(),
+        config.mitmproxy_confdir(),
+    ):
         assert config.STATE_ROOT in path.parents, f"{path} escaped the override"
 
 
 def test_state_paths_stay_out_of_the_profile(profile):
     """A profile kept in git must never have runtime files written into it."""
-    for path in (config.STATE_FILE, config.LOG_FILE,
-                 config.runtime_file(), config.lock_file(), config.mitmproxy_confdir()):
+    for path in (
+        config.STATE_FILE,
+        config.LOG_FILE,
+        config.runtime_file(),
+        config.lock_file(),
+        config.mitmproxy_confdir(),
+    ):
         assert config.PROFILE_DIR not in path.parents, f"{path} is inside the profile"
 
 
@@ -201,9 +218,9 @@ def test_the_same_profile_gets_one_fingerprint_however_it_is_named(monkeypatch, 
     # below take the explicit branch and quietly test nothing.
     monkeypatch.delenv("LYREBIRD_PROFILE", raising=False)
 
-    config.configure()                                  # implicit: XDG_CONFIG_HOME/lyrebird
+    config.configure()  # implicit: XDG_CONFIG_HOME/lyrebird
     implicit = config.PROFILE_FINGERPRINT
-    config.configure(str(link / "lyrebird"))            # explicit: the same directory, named
+    config.configure(str(link / "lyrebird"))  # explicit: the same directory, named
     assert config.PROFILE_FINGERPRINT == implicit
 
 
@@ -212,6 +229,7 @@ def test_the_same_profile_gets_one_fingerprint_however_it_is_named(monkeypatch, 
 # atomic_write promises, in its first sentence, that what it writes is never world-readable and
 # never observed half-written. It used to write first and chmod second, so the payload sat at 0644
 # for the width of that gap.
+
 
 def test_atomic_write_creates_the_file_already_private(tmp_path, monkeypatch):
     """Read the mode off the descriptor while it is open, because the finished file cannot tell you.
@@ -288,8 +306,10 @@ def test_atomic_write_closes_the_descriptor_when_the_wrapper_cannot_be_built(tmp
     assert survived, "cleanup closed a descriptor it no longer owned"
     assert not list(tmp_path.iterdir()), "a temporary file was left behind"
 
+
 def test_atomic_write_reports_the_write_failure_not_the_cleanup_failure(tmp_path, monkeypatch):
     """If tidying up also fails, the caller still needs to know why the write did."""
+
     def refuse_replace(self, target):
         raise OSError("replace failed")
 

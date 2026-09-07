@@ -125,8 +125,9 @@ struct MockClient: Sendable {
             throw ClientError.transport("the control API answered with something other than HTTP")
         }
         guard (200..<300).contains(http.statusCode) else {
-            throw ClientError.http(status: http.statusCode,
-                                   message: Self.message(status: http.statusCode, body: data))
+            throw ClientError.http(
+                status: http.statusCode,
+                message: Self.message(status: http.statusCode, body: data))
         }
     }
 
@@ -144,8 +145,9 @@ struct MockClient: Sendable {
         if let detail = json?["detail"] as? String, !detail.isEmpty { return detail }
         let slug = json?["error"] as? String
         if slug == "profile_mismatch",
-           let running = json?["running"] as? String, !running.isEmpty,
-           let requested = json?["requested"] as? String, !requested.isEmpty {
+            let running = json?["running"] as? String, !running.isEmpty,
+            let requested = json?["requested"] as? String, !requested.isEmpty
+        {
             return "another profile (running \(running), asked for \(requested))"
         }
         if let slug, !slug.isEmpty { return slug }

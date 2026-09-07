@@ -30,6 +30,7 @@ def test_proxy_options_are_accepted_by_mitmproxy(hosts):
 
 def config_allow_hosts():
     import config
+
     return config.allow_hosts_regexes()
 
 
@@ -45,11 +46,15 @@ def test_connection_strategy_is_lazy(hosts):
 
 # MARK: - Response construction
 
-@pytest.mark.parametrize("headers,expected", [
-    ({}, {"Content-Type": "application/json"}),
-    ({"Content-Type": "application/json;charset=UTF-8"}, {"Content-Type": "application/json;charset=UTF-8"}),
-    ({"content-type": "text/plain"}, {"content-type": "text/plain"}),
-])
+
+@pytest.mark.parametrize(
+    "headers,expected",
+    [
+        ({}, {"Content-Type": "application/json"}),
+        ({"Content-Type": "application/json;charset=UTF-8"}, {"Content-Type": "application/json;charset=UTF-8"}),
+        ({"content-type": "text/plain"}, {"content-type": "text/plain"}),
+    ],
+)
 def test_content_type_is_merged_case_insensitively(headers, expected):
     """A session spelling the header `Content-Type` used to emit both that and a lowercase
     `content-type` on the wire."""
@@ -58,8 +63,6 @@ def test_content_type_is_merged_case_insensitively(headers, expected):
 
 def test_no_content_type_is_added_for_a_bodyless_response():
     assert addon.Lyrebird._headers_with_default_content_type({}, json_body=False) == {}
-
-
 
 
 # MARK: - The wire behaviour, exercised through mitmproxy's own flow objects
@@ -80,9 +83,15 @@ def run_request(subject, flow):
 
 def test_replace_short_circuits_without_an_upstream(hosts, profile):
     subject = addon.Lyrebird()
-    subject.store.add_override({"id": "o", "mode": "replace", "status": 503,
-                                "match": {"method": "GET", "path": "/api/v1/orders/*"},
-                                "body": {"error": "mocked"}})
+    subject.store.add_override(
+        {
+            "id": "o",
+            "mode": "replace",
+            "status": 503,
+            "match": {"method": "GET", "path": "/api/v1/orders/*"},
+            "body": {"error": "mocked"},
+        }
+    )
     flow = _flow()
     run_request(subject, flow)
     assert flow.response is not None
@@ -94,8 +103,9 @@ def test_replace_short_circuits_without_an_upstream(hosts, profile):
 def test_bodyless_status_carries_no_body_or_length(hosts, profile):
     """204 with a Content-Length is malformed, and clients do notice."""
     subject = addon.Lyrebird()
-    subject.store.add_override({"id": "d", "mode": "replace", "status": 204,
-                                "match": {"method": "DELETE", "path": "/api/v1/orders/*"}})
+    subject.store.add_override(
+        {"id": "d", "mode": "replace", "status": 204, "match": {"method": "DELETE", "path": "/api/v1/orders/*"}}
+    )
     flow = _flow(method="DELETE")
     run_request(subject, flow)
     assert flow.response.status_code == 204
@@ -105,8 +115,7 @@ def test_bodyless_status_carries_no_body_or_length(hosts, profile):
 
 def test_a_non_intercepted_host_is_left_alone(hosts, profile):
     subject = addon.Lyrebird()
-    subject.store.add_override({"id": "o", "mode": "replace", "status": 503,
-                                "match": {"path": "/api/v1/orders/*"}})
+    subject.store.add_override({"id": "o", "mode": "replace", "status": 503, "match": {"path": "/api/v1/orders/*"}})
     flow = _flow(host="elsewhere.example.com")
     run_request(subject, flow)
     assert flow.response is None, "only hosts listed in the profile may be touched"
@@ -114,8 +123,9 @@ def test_a_non_intercepted_host_is_left_alone(hosts, profile):
 
 def test_patch_defers_to_the_response_hook(hosts, profile):
     subject = addon.Lyrebird()
-    subject.store.add_override({"id": "p", "mode": "patch", "match": {"path": "/api/v1/orders/*"},
-                                "patch": {"extra": True}})
+    subject.store.add_override(
+        {"id": "p", "mode": "patch", "match": {"path": "/api/v1/orders/*"}, "patch": {"extra": True}}
+    )
     flow = _flow()
     run_request(subject, flow)
     assert flow.response is None, "patch needs the upstream response, so it must not short-circuit"
@@ -148,17 +158,22 @@ def test_a_non_json_response_is_never_patched(hosts, profile):
 # These go through real flow objects because the ordering inside `request()` is the whole design:
 # select, then answer, then advance. A unit test of the store cannot catch getting that wrong.
 
+
 def _body(flow):
     return json.loads(flow.response.get_text()) if flow.response else None
 
 
 LIST_RULES = [
-    {"id": "ovr_list", "mode": "replace", "match": {"method": "GET", "path": "/api/v1/items"},
-     "sequence": {"advanceOn": {"method": "DELETE", "path": "/api/v1/items/*"},
-                  "steps": [{"body": {"items": ["a", "b", "c"]}},
-                            {"body": {"items": ["a", "c"]}}]}},
-    {"id": "ovr_del", "mode": "replace", "status": 204,
-     "match": {"method": "DELETE", "path": "/api/v1/items/*"}},
+    {
+        "id": "ovr_list",
+        "mode": "replace",
+        "match": {"method": "GET", "path": "/api/v1/items"},
+        "sequence": {
+            "advanceOn": {"method": "DELETE", "path": "/api/v1/items/*"},
+            "steps": [{"body": {"items": ["a", "b", "c"]}}, {"body": {"items": ["a", "c"]}}],
+        },
+    },
+    {"id": "ovr_del", "mode": "replace", "status": 204, "match": {"method": "DELETE", "path": "/api/v1/items/*"}},
 ]
 
 
@@ -188,7 +203,7 @@ def test_a_request_no_override_answers_still_advances_a_sequence(hosts, profile)
     """The advance scan sits outside the 'an override matched' branch on purpose: a DELETE going
     straight to the real backend must still move a rule that is watching for it."""
     subject = addon.Lyrebird()
-    subject.store.add_override(dict(LIST_RULES[0]))   # the list rule only — nothing answers DELETE
+    subject.store.add_override(dict(LIST_RULES[0]))  # the list rule only — nothing answers DELETE
 
     deletion = _flow(method="DELETE", path="/api/v1/items/b")
     run_request(subject, deletion)
@@ -205,9 +220,14 @@ def _retry_subject(policy=None):
     if policy:
         sequence["onExhausted"] = policy
     subject = addon.Lyrebird()
-    subject.store.add_override({"id": "ovr_retry", "mode": "replace",
-                                "match": {"method": "GET", "path": "/api/v1/orders/*"},
-                                "sequence": sequence})
+    subject.store.add_override(
+        {
+            "id": "ovr_retry",
+            "mode": "replace",
+            "match": {"method": "GET", "path": "/api/v1/orders/*"},
+            "sequence": sequence,
+        }
+    )
     return subject
 
 
@@ -268,11 +288,18 @@ def test_pass_through_is_distinguishable_from_no_rule_matching(hosts, profile):
 # selection and response construction one synchronous block, and it is why sequences need no
 # generation counter or staleness tracking. Both tests below fail if the order is reversed.
 
+
 def _delayed_subject():
     subject = addon.Lyrebird()
-    subject.store.add_override({"id": "ovr_slow", "mode": "replace", "delayMs": 60,
-                                "match": {"method": "GET", "path": "/api/v1/orders/*"},
-                                "sequence": {"steps": [{"status": 201}, {"status": 202}]}})
+    subject.store.add_override(
+        {
+            "id": "ovr_slow",
+            "mode": "replace",
+            "delayMs": 60,
+            "match": {"method": "GET", "path": "/api/v1/orders/*"},
+            "sequence": {"steps": [{"status": 201}, {"status": 202}]},
+        }
+    )
     return subject
 
 
@@ -286,7 +313,7 @@ def test_a_reset_during_the_delay_is_honoured(hosts, profile):
     async def reset_mid_flight():
         flow = _flow()
         task = asyncio.create_task(subject.request(flow))
-        await asyncio.sleep(0.01)              # let it reach the sleep
+        await asyncio.sleep(0.01)  # let it reach the sleep
         subject.store.reset_runtime()
         await task
         return flow
@@ -310,6 +337,7 @@ def test_two_concurrent_delayed_flows_take_different_steps(hosts, profile):
 
 
 # MARK: - The error hook
+
 
 def test_a_failed_pass_through_overrun_still_reaches_recent(hosts, profile):
     """The case this hook exists for: the sequence stood aside, the real upstream was down, and
@@ -335,9 +363,9 @@ def test_a_mock_answered_flow_that_errors_keeps_its_matched_id(hosts, profile):
     Recording `matched: null` there would say nothing answered — the same signal as a rule that
     never fired, which is the collision this codebase keeps having to fix."""
     subject = addon.Lyrebird()
-    subject.store.add_override({"id": "s", "mode": "replace",
-                                "match": {"path": "/api/v1/orders/*"},
-                                "sequence": {"steps": [{"status": 201}]}})
+    subject.store.add_override(
+        {"id": "s", "mode": "replace", "match": {"path": "/api/v1/orders/*"}, "sequence": {"steps": [{"status": 201}]}}
+    )
     flow = _flow()
     run_request(subject, flow)
     assert flow.response.status_code == 201
@@ -362,19 +390,26 @@ def test_the_error_hook_ignores_flows_with_no_sequence(hosts, profile):
 # synchronous block. But the *rule* was chosen before the sleep, so it has to be re-selected
 # afterwards or a delayed flow answers from a definition that is no longer live.
 
+
 def _replaceable(statuses):
-    return {"id": "s", "mode": "replace", "delayMs": 60, "match": {"path": "/api/v1/orders/*"},
-            "sequence": {"steps": [{"status": status} for status in statuses]}}
+    return {
+        "id": "s",
+        "mode": "replace",
+        "delayMs": 60,
+        "match": {"path": "/api/v1/orders/*"},
+        "sequence": {"steps": [{"status": status} for status in statuses]},
+    }
 
 
 def _mid_flight(subject, disturb):
     async def scenario():
         flow = _flow()
         task = asyncio.create_task(subject.request(flow))
-        await asyncio.sleep(0.01)     # let it reach the sleep
+        await asyncio.sleep(0.01)  # let it reach the sleep
         disturb()
         await task
         return flow
+
     return asyncio.run(scenario())
 
 
@@ -411,7 +446,7 @@ def test_a_failed_advance_only_request_still_reaches_recent(hosts, profile):
     """A request no override answered can still move a sequence. If its upstream then fails, the
     cursor has changed with nothing in /recent to explain why."""
     subject = addon.Lyrebird()
-    subject.store.add_override(dict(LIST_RULES[0]))   # nothing answers the DELETE
+    subject.store.add_override(dict(LIST_RULES[0]))  # nothing answers the DELETE
 
     deletion = _flow(method="DELETE", path="/api/v1/items/b")
     run_request(subject, deletion)
@@ -429,14 +464,14 @@ def test_a_failed_advance_only_request_still_reaches_recent(hosts, profile):
 # recording-time counting gave the wrong answer: a rule credited for a response it never produced,
 # or a response produced and never credited.
 
+
 def _answers(subject):
     return {state["id"]: state["count"] for state in subject.store.answer_states()}
 
 
 def test_a_replace_is_credited_once(hosts, profile):
     subject = addon.Lyrebird()
-    subject.store.add_override({"id": "o", "mode": "replace", "status": 200,
-                                "match": {"path": "/api/v1/orders/*"}})
+    subject.store.add_override({"id": "o", "mode": "replace", "status": 200, "match": {"path": "/api/v1/orders/*"}})
     run_request(subject, _flow())
     assert _answers(subject) == {"o": 1}
 
@@ -445,10 +480,10 @@ def test_a_rule_that_matched_but_lost_is_never_credited(hosts, profile):
     """`find_override` returns only the most specific match, so a rule whose matcher fits the
     request may not be the rule that answered it."""
     subject = addon.Lyrebird()
-    subject.store.add_override({"id": "broad", "mode": "replace", "status": 200,
-                                "match": {"path": "/api/v1/*"}})
-    subject.store.add_override({"id": "narrow", "mode": "replace", "status": 201,
-                                "match": {"path": "/api/v1/orders/1"}})
+    subject.store.add_override({"id": "broad", "mode": "replace", "status": 200, "match": {"path": "/api/v1/*"}})
+    subject.store.add_override(
+        {"id": "narrow", "mode": "replace", "status": 201, "match": {"path": "/api/v1/orders/1"}}
+    )
     run_request(subject, _flow())
     assert _answers(subject) == {"broad": 0, "narrow": 1}
 
@@ -457,14 +492,14 @@ def test_a_patch_is_not_credited_until_it_has_actually_merged(hosts, profile):
     """A patch that is selected has answered nothing yet — the upstream may turn out to be a
     stream, or not JSON, in which case the request is served by the real backend."""
     subject = addon.Lyrebird()
-    subject.store.add_override({"id": "p", "mode": "patch", "match": {"path": "/api/v1/orders/*"},
-                                "patch": {"extra": True}})
+    subject.store.add_override(
+        {"id": "p", "mode": "patch", "match": {"path": "/api/v1/orders/*"}, "patch": {"extra": True}}
+    )
     flow = _flow()
     run_request(subject, flow)
     assert _answers(subject) == {"p": 0}, "selected is not answered"
 
-    flow.response = tutils.tresp(headers=((b"content-type", b"application/json"),),
-                                 content=b'{"a": 1}')
+    flow.response = tutils.tresp(headers=((b"content-type", b"application/json"),), content=b'{"a": 1}')
     subject.response(flow)
     assert _answers(subject) == {"p": 1}
     assert _body(flow) == {"a": 1, "extra": True}
@@ -474,8 +509,9 @@ def test_a_skipped_patch_is_never_credited(hosts, profile):
     """`patchSkipped` means the real backend answered. Crediting it would report a mock in play for
     a screen that was served live — the precise thing an assertion exists to rule out."""
     subject = addon.Lyrebird()
-    subject.store.add_override({"id": "p", "mode": "patch", "match": {"path": "/api/v1/orders/*"},
-                                "patch": {"extra": True}})
+    subject.store.add_override(
+        {"id": "p", "mode": "patch", "match": {"path": "/api/v1/orders/*"}, "patch": {"extra": True}}
+    )
     flow = _flow()
     run_request(subject, flow)
     flow.response = tutils.tresp(headers=((b"content-type", b"text/html"),), content=b"<html>")
@@ -488,9 +524,14 @@ def test_a_skipped_patch_is_never_credited(hosts, profile):
 def test_an_exhausted_pass_through_is_never_credited(hosts, profile):
     """It stands aside on purpose: the real upstream answers, so the rule answered nothing."""
     subject = addon.Lyrebird()
-    subject.store.add_override({
-        "id": "seq", "mode": "replace", "match": {"path": "/api/v1/orders/*"},
-        "sequence": {"onExhausted": "passThrough", "steps": [{"status": 200}]}})
+    subject.store.add_override(
+        {
+            "id": "seq",
+            "mode": "replace",
+            "match": {"path": "/api/v1/orders/*"},
+            "sequence": {"onExhausted": "passThrough", "steps": [{"status": 200}]},
+        }
+    )
     run_request(subject, _flow())
     overrun = _flow()
     run_request(subject, overrun)
@@ -502,9 +543,14 @@ def test_an_exhausted_error_is_credited_because_it_did_answer(hosts, profile):
     """Lyrebird's own 500 is still an answer from that rule, and the test that gets it should be
     told the mock was in play — it explains the 500."""
     subject = addon.Lyrebird()
-    subject.store.add_override({
-        "id": "seq", "mode": "replace", "match": {"path": "/api/v1/orders/*"},
-        "sequence": {"steps": [{"status": 200}]}})
+    subject.store.add_override(
+        {
+            "id": "seq",
+            "mode": "replace",
+            "match": {"path": "/api/v1/orders/*"},
+            "sequence": {"steps": [{"status": 200}]},
+        }
+    )
     run_request(subject, _flow())
     overrun = _flow()
     run_request(subject, overrun)
@@ -516,8 +562,7 @@ def test_a_replace_whose_flow_dies_is_credited_and_recorded(hosts, profile):
     """The override produced the response; the client hanging up does not un-answer it. It must
     also reach /recent, or a rule shows answers with no traffic to account for them."""
     subject = addon.Lyrebird()
-    subject.store.add_override({"id": "o", "mode": "replace", "status": 200,
-                                "match": {"path": "/api/v1/orders/*"}})
+    subject.store.add_override({"id": "o", "mode": "replace", "status": 200, "match": {"path": "/api/v1/orders/*"}})
     flow = _flow()
     run_request(subject, flow)
     subject.error(flow)
@@ -539,32 +584,30 @@ def test_a_patch_landing_after_a_session_switch_credits_nobody(hosts, profile):
     """The whole reason the slot is captured rather than looked up by id: session B has its own
     rule under the same id, and it never saw this request."""
     subject = addon.Lyrebird()
-    subject.store.add_override({"id": "shared", "mode": "patch",
-                                "match": {"path": "/api/v1/orders/*"}, "patch": {"a": 1}})
+    subject.store.add_override(
+        {"id": "shared", "mode": "patch", "match": {"path": "/api/v1/orders/*"}, "patch": {"a": 1}}
+    )
     flow = _flow()
     run_request(subject, flow)
 
     subject.store.create_session("other")
     subject.store.set_active("other")
-    subject.store.add_override({"id": "shared", "mode": "patch",
-                                "match": {"path": "/api/v1/orders/*"}, "patch": {"a": 1}})
+    subject.store.add_override(
+        {"id": "shared", "mode": "patch", "match": {"path": "/api/v1/orders/*"}, "patch": {"a": 1}}
+    )
 
-    flow.response = tutils.tresp(headers=((b"content-type", b"application/json"),),
-                                 content=b'{"b": 2}')
+    flow.response = tutils.tresp(headers=((b"content-type", b"application/json"),), content=b'{"b": 2}')
     subject.response(flow)
     assert _answers(subject) == {"shared": 0}, "session B's rule never answered this request"
 
 
 def test_a_patch_landing_after_its_rule_is_replaced_credits_nobody(hosts, profile):
     subject = addon.Lyrebird()
-    subject.store.add_override({"id": "r", "mode": "patch",
-                                "match": {"path": "/api/v1/orders/*"}, "patch": {"a": 1}})
+    subject.store.add_override({"id": "r", "mode": "patch", "match": {"path": "/api/v1/orders/*"}, "patch": {"a": 1}})
     flow = _flow()
     run_request(subject, flow)
-    subject.store.add_override({"id": "r", "mode": "patch",
-                                "match": {"path": "/api/v1/orders/*"}, "patch": {"a": 2}})
-    flow.response = tutils.tresp(headers=((b"content-type", b"application/json"),),
-                                 content=b'{"b": 2}')
+    subject.store.add_override({"id": "r", "mode": "patch", "match": {"path": "/api/v1/orders/*"}, "patch": {"a": 2}})
+    flow.response = tutils.tresp(headers=((b"content-type", b"application/json"),), content=b'{"b": 2}')
     subject.response(flow)
     assert _answers(subject) == {"r": 0}
 
@@ -573,12 +616,13 @@ def test_a_repeated_last_step_is_credited_like_any_other_answer(hosts, profile):
     """`repeatLast` answers from the rule, so each repeat is an answer — a test asserting the mock
     was in play must not stop counting the moment the sequence runs out of planned steps."""
     subject = _retry_subject("repeatLast")
-    for _ in range(4):        # two planned steps, then two repeats of the last
+    for _ in range(4):  # two planned steps, then two repeats of the last
         run_request(subject, _flow())
     assert _answers(subject) == {"ovr_retry": 4}
 
 
 # MARK: - Health under a PAC that cannot be read
+
 
 def test_health_reports_an_unreadable_pac_instead_of_dying(profile, monkeypatch):
     """The CLI reads "no health" as "no proxy": the watchdog would restore the network over a live
@@ -595,7 +639,7 @@ def test_health_reports_an_unreadable_pac_instead_of_dying(profile, monkeypatch)
     assert meta["proxyUp"] is True
     assert meta["intercepting"] is False
     assert "networksetup" in meta["pacError"]
-    assert meta["service"] == "Wi-Fi"   # discovery succeeded; only the PAC read did not
+    assert meta["service"] == "Wi-Fi"  # discovery succeeded; only the PAC read did not
 
 
 def test_health_reports_a_pac_read_that_could_not_be_launched(profile, monkeypatch):
@@ -621,6 +665,7 @@ def blocking_pac_status(monkeypatch, entered, release):
     because a double that let go on its own proves nothing about the code under test.
     """
     import netproxy
+
     state = {"entries": 0, "expired": None}
 
     def blocked(service):
@@ -652,8 +697,7 @@ def test_a_blocked_pac_read_does_not_stall_the_proxys_other_traffic(hosts, monke
             health = asyncio.ensure_future(client.get("/__mock__/health", headers=headers))
             try:
                 assert await asyncio.to_thread(entered.wait, 2), "the PAC read never started"
-                recent = await asyncio.wait_for(
-                    client.get("/__mock__/recent", headers=headers), 2)
+                recent = await asyncio.wait_for(client.get("/__mock__/recent", headers=headers), 2)
                 assert recent.status == 200
                 assert not health.done(), "health answered before the PAC read was released"
             finally:
@@ -664,7 +708,7 @@ def test_a_blocked_pac_read_does_not_stall_the_proxys_other_traffic(hosts, monke
     status, body = asyncio.run(main())
     assert status == 200
     assert body["intercepting"] is True
-    assert state["expired"] is False   # the double was released, not rescued by its own cap
+    assert state["expired"] is False  # the double was released, not rescued by its own cap
 
 
 def test_concurrent_health_polls_share_one_bounded_observation(hosts, monkeypatch):
@@ -684,8 +728,9 @@ def test_concurrent_health_polls_share_one_bounded_observation(hosts, monkeypatc
         async with TestClient(TestServer(app)) as client:
             started = time.monotonic()
             try:
-                responses = await asyncio.wait_for(asyncio.gather(
-                    *(client.get("/__mock__/health", headers=headers) for _ in range(10))), 4)
+                responses = await asyncio.wait_for(
+                    asyncio.gather(*(client.get("/__mock__/health", headers=headers) for _ in range(10))), 4
+                )
                 bodies = [await response.json() for response in responses]
                 return time.monotonic() - started, [r.status for r in responses], bodies
             finally:
@@ -696,7 +741,7 @@ def test_concurrent_health_polls_share_one_bounded_observation(hosts, monkeypatc
     assert elapsed < 3, "the bound did not hold: health waited for the wedged PAC read"
     for body in bodies:
         assert body["proxyUp"] is True
-        assert body["intercepting"] is False        # unproven, not seen to be off
+        assert body["intercepting"] is False  # unproven, not seen to be off
         assert body["pacError"] == "PAC read did not finish within 1.0s"
     assert state["entries"] == 1, "each poll started its own observation"
 

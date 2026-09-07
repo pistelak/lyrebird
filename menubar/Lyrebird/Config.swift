@@ -37,7 +37,7 @@ enum Config {
             let candidate = (directory as NSString).appendingPathComponent("lyrebird")
             if FileManager.default.isExecutableFile(atPath: candidate) { return candidate }
         }
-        return ""   // empty → Control.shell reports a clear "not found" instead of failing opaquely
+        return ""  // empty → Control.shell reports a clear "not found" instead of failing opaquely
     }
 
     /// The profile directory. Empty means "let the engine use its own default".

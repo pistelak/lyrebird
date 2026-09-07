@@ -11,12 +11,18 @@ struct SettingsView: View {
             Text("Settings").font(.headline)
             field("Control URL", text: $controlURL, placeholder: Config.defaultControlURL)
             field("lyrebird launcher path", text: $lyrebirdPath, placeholder: Config.lyrebirdPath)
-            field("Profile directory", text: $profilePath,
-                  placeholder: "~/lyrebird-profiles/my-app")
-            Text("The profile holds the hosts to intercept, your saved sessions, and the "
-                 + "simulator bundle id. Leave blank to use the engine's default profile.")
-                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            HStack { Spacer(); Button("Done") { dismiss() }.keyboardShortcut(.defaultAction) }
+            field(
+                "Profile directory", text: $profilePath,
+                placeholder: "~/lyrebird-profiles/my-app")
+            Text(
+                "The profile holds the hosts to intercept, your saved sessions, and the "
+                    + "simulator bundle id. Leave blank to use the engine's default profile."
+            )
+            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Spacer()
+                Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
+            }
         }
         .padding(16)
         .frame(width: 420)

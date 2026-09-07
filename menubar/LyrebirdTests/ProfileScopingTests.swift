@@ -25,10 +25,13 @@ final class ProfileScopingTests: XCTestCase {
 
     /// A model that already knows its profile, driven by the injected client. Discovery is not
     /// wired up unless a test asks for it, so nothing here shells out.
-    private func makeModel(expecting fingerprint: String? = Fixture.ours,
-                           discover: (@Sendable () async throws -> String)? = nil) -> AppModel {
-        AppModel(client: MockClient(base: Stub.base, session: StubURLProtocol.session()),
-                 autoStart: false, expectedFingerprint: fingerprint, discover: discover)
+    private func makeModel(
+        expecting fingerprint: String? = Fixture.ours,
+        discover: (@Sendable () async throws -> String)? = nil
+    ) -> AppModel {
+        AppModel(
+            client: MockClient(base: Stub.base, session: StubURLProtocol.session()),
+            autoStart: false, expectedFingerprint: fingerprint, discover: discover)
     }
 
     private func headers(ofRequestsTo path: String) -> [String?] {
@@ -57,9 +60,10 @@ final class ProfileScopingTests: XCTestCase {
         let sent = StubURLProtocol.requests
         XCTAssertEqual(sent.count, 4, "one request per call")
         for request in sent {
-            XCTAssertEqual(request.value(forHTTPHeaderField: MockClient.profileHeader),
-                           Fixture.ours,
-                           "\(request.httpMethod ?? "") \(request.url?.path ?? "") went unscoped")
+            XCTAssertEqual(
+                request.value(forHTTPHeaderField: MockClient.profileHeader),
+                Fixture.ours,
+                "\(request.httpMethod ?? "") \(request.url?.path ?? "") went unscoped")
         }
     }
 
@@ -146,8 +150,11 @@ final class ProfileScopingTests: XCTestCase {
         // explanation, and "profile_mismatch" alone leaves the operator with no way to tell which
         // proxy answered.
         StubURLProtocol.install { request in
-            (Stub.response(request, 409),
-             Data(#"{"error":"profile_mismatch","running":"\#(Fixture.theirs)","requested":"\#(Fixture.ours)"}"#.utf8))
+            (
+                Stub.response(request, 409),
+                Data(
+                    #"{"error":"profile_mismatch","running":"\#(Fixture.theirs)","requested":"\#(Fixture.ours)"}"#.utf8)
+            )
         }
 
         do {
@@ -171,14 +178,16 @@ final class ProfileScopingTests: XCTestCase {
         await model.refresh()
 
         XCTAssertEqual(model.status, .foreignProfile(running: Fixture.theirs))
-        XCTAssertTrue(model.statusLine.contains(Fixture.theirs),
-                      "the line must name the proxy that answered: \(model.statusLine)")
+        XCTAssertTrue(
+            model.statusLine.contains(Fixture.theirs),
+            "the line must name the proxy that answered: \(model.statusLine)")
         XCTAssertNil(model.sessions, "another profile's sessions are not this profile's to show")
         XCTAssertTrue(model.recent.isEmpty, "nor its traffic")
         XCTAssertNil(model.simBundleId, "relaunching another profile's app is not a thing to offer")
         XCTAssertTrue(model.stopsRatherThanStarts, "the remedy is to stop the proxy holding the port")
-        XCTAssertEqual(StubURLProtocol.requests.map { $0.url?.path }, ["/__mock__/health"],
-                       "the secondary reads were made against a proxy that is not ours")
+        XCTAssertEqual(
+            StubURLProtocol.requests.map { $0.url?.path }, ["/__mock__/health"],
+            "the secondary reads were made against a proxy that is not ours")
     }
 
     func testAMatchingFingerprintIsTheOrdinaryInterceptingReading() async {
@@ -216,9 +225,12 @@ final class ProfileScopingTests: XCTestCase {
         // Start repairs, and it must not be confused with either of the new ones.
         StubURLProtocol.install { request in
             request.url?.path == "/__mock__/health"
-                ? (Stub.response(request, 200),
-                   Fixture.health(fingerprint: Fixture.ours, intercepting: false,
-                                   extra: #","pacError":"networksetup failed""#))
+                ? (
+                    Stub.response(request, 200),
+                    Fixture.health(
+                        fingerprint: Fixture.ours, intercepting: false,
+                        extra: #","pacError":"networksetup failed""#)
+                )
                 : Stub.read(request)
         }
         let model = makeModel()
@@ -247,8 +259,9 @@ final class ProfileScopingTests: XCTestCase {
 
     func testAProfileTheCLICouldNotNameLeavesTheMenuSilentRatherThanUnscoped() async {
         StubURLProtocol.install { request in Stub.read(request) }
-        let model = makeModel(expecting: nil,
-                              discover: { throw Control.ProfileUnknown(reason: "lyrebird not found") })
+        let model = makeModel(
+            expecting: nil,
+            discover: { throw Control.ProfileUnknown(reason: "lyrebird not found") })
 
         await model.discoverProfile()
         await model.refresh()
@@ -258,8 +271,9 @@ final class ProfileScopingTests: XCTestCase {
         }
         XCTAssertEqual(reason, "lyrebird not found")
         XCTAssertTrue(model.lastError?.contains("lyrebird not found") == true, model.lastError ?? "nil")
-        XCTAssertTrue(StubURLProtocol.requests.isEmpty,
-                      "an unscoped request is answered by whatever profile holds the port")
+        XCTAssertTrue(
+            StubURLProtocol.requests.isEmpty,
+            "an unscoped request is answered by whatever profile holds the port")
         XCTAssertNil(model.simBundleId)
         XCTAssertFalse(model.stopsRatherThanStarts)
     }
@@ -282,18 +296,20 @@ final class ProfileScopingTests: XCTestCase {
                 : Stub.read(request)
         }
         let fingerprint = MutableFingerprint(Fixture.ours)
-        let model = AppModel(client: MockClient(base: Stub.base, session: StubURLProtocol.session()),
-                             autoStart: false, expectedFingerprint: Fixture.ours,
-                             discover: { fingerprint.value })
+        let model = AppModel(
+            client: MockClient(base: Stub.base, session: StubURLProtocol.session()),
+            autoStart: false, expectedFingerprint: Fixture.ours,
+            discover: { fingerprint.value })
         await model.refresh()
         XCTAssertEqual(model.status, .intercepting)
         XCTAssertNotNil(model.sessions)
 
-        fingerprint.value = Fixture.theirs      // Settings now points at another profile
+        fingerprint.value = Fixture.theirs  // Settings now points at another profile
         await model.settingsChanged()
 
-        XCTAssertEqual(model.status, .foreignProfile(running: Fixture.ours),
-                       "the proxy did not move; the profile the menu means did")
+        XCTAssertEqual(
+            model.status, .foreignProfile(running: Fixture.ours),
+            "the proxy did not move; the profile the menu means did")
         XCTAssertNil(model.sessions, "the old profile's session list outlived the profile")
         XCTAssertTrue(model.recent.isEmpty)
     }
@@ -335,8 +351,9 @@ final class ProfileScopingTests: XCTestCase {
         UserDefaults.standard.set("/tmp/another-profile", forKey: Config.profilePathKey)
         await model.refresh()
 
-        XCTAssertTrue(StubURLProtocol.requests.isEmpty,
-                      "the call went out scoped to the profile that is no longer configured")
+        XCTAssertTrue(
+            StubURLProtocol.requests.isEmpty,
+            "the call went out scoped to the profile that is no longer configured")
         XCTAssertNil(model.healthRead)
         XCTAssertNil(model.sessions)
         XCTAssertTrue(model.recent.isEmpty)
@@ -355,8 +372,9 @@ final class ProfileScopingTests: XCTestCase {
         await model.toggle()
 
         XCTAssertEqual(model.status, .down)
-        XCTAssertTrue(model.lastError?.contains("/does-not-exist/lyrebird") == true,
-                      model.lastError ?? "nil")
+        XCTAssertTrue(
+            model.lastError?.contains("/does-not-exist/lyrebird") == true,
+            model.lastError ?? "nil")
         XCTAssertFalse(model.busy)
     }
 
@@ -370,16 +388,18 @@ final class ProfileScopingTests: XCTestCase {
         let reader = ReaderHandle()
         let started = Date()
         let task = Task {
-            await Control.shell("/bin/sh", ["-c", #"trap "" TERM; sleep 30"#],
-                                readerStarted: { reader.buffer = $0 })
+            await Control.shell(
+                "/bin/sh", ["-c", #"trap "" TERM; sleep 30"#],
+                readerStarted: { reader.buffer = $0 })
         }
         try await Task.sleep(for: .milliseconds(300))
 
         task.cancel()
         _ = await task.value
 
-        XCTAssertLessThan(Date().timeIntervalSince(started), 6,
-                          "the call waited for a child that had been asked politely and refused")
+        XCTAssertLessThan(
+            Date().timeIntervalSince(started), 6,
+            "the call waited for a child that had been asked politely and refused")
         // And returning is not enough: the `sleep` still holds the write end for another half
         // minute, so a reader merely stopped being waited for would sit on the pipe and go on
         // filling a buffer nobody will read.
@@ -407,9 +427,9 @@ final class ProfileScopingTests: XCTestCase {
         // discovery itself calls, so a later "require exit 0" would fail here rather than in the
         // one situation the menu most needs to explain.
         let payload = #"""
-        {"proxyUp":true,"intercepting":false,"profileMismatch":true,
-         "profileFingerprint":"\#(Fixture.ours)","runningProfileFingerprint":"\#(Fixture.theirs)"}
-        """#
+            {"proxyUp":true,"intercepting":false,"profileMismatch":true,
+             "profileFingerprint":"\#(Fixture.ours)","runningProfileFingerprint":"\#(Fixture.theirs)"}
+            """#
 
         let fingerprint = try Control.fingerprint(from: Control.Result(output: payload, status: 1))
 
@@ -420,23 +440,28 @@ final class ProfileScopingTests: XCTestCase {
         let result = Control.Result(output: "lyrebird: no such profile directory\n", status: 2)
 
         XCTAssertThrowsError(try Control.fingerprint(from: result)) { error in
-            XCTAssertTrue(error.localizedDescription.contains("no such profile directory"),
-                          "the reason lives in the CLI's own output: \(error.localizedDescription)")
+            XCTAssertTrue(
+                error.localizedDescription.contains("no such profile directory"),
+                "the reason lives in the CLI's own output: \(error.localizedDescription)")
         }
     }
 
     func testTextAroundTheJsonIsToleratedBecauseTheLauncherMergesStderrIntoStdout() {
-        let output = "warning: something on stderr\n"
+        let output =
+            "warning: something on stderr\n"
             + #"{"profileFingerprint":"\#(Fixture.ours)"}"# + "\ntrailing noise\n"
 
         XCTAssertEqual(Control.fingerprint(fromStatusJSON: Data(output.utf8)), Fixture.ours)
     }
 
     func testAnOutputWithNoFingerprintYieldsNilRatherThanAGuess() {
-        for output in ["", "Usage: lyrebird [OPTIONS]", #"{"proxyUp":true}"#,
-                       #"{"profileFingerprint":""}"#] {
-            XCTAssertNil(Control.fingerprint(fromStatusJSON: Data(output.utf8)),
-                         "'\(output)' produced a fingerprint out of nothing")
+        for output in [
+            "", "Usage: lyrebird [OPTIONS]", #"{"proxyUp":true}"#,
+            #"{"profileFingerprint":""}"#,
+        ] {
+            XCTAssertNil(
+                Control.fingerprint(fromStatusJSON: Data(output.utf8)),
+                "'\(output)' produced a fingerprint out of nothing")
         }
     }
 }
@@ -452,9 +477,10 @@ private enum Fixture {
     /// A health body with whatever the test needs said about it.
     static func health(fingerprint: String?, intercepting: Bool = true, extra: String = "") -> Data {
         let profile = fingerprint.map { #""profileFingerprint":"\#($0)","# } ?? ""
-        return Data((#"{"activeSession":"baseline","overrideCount":2,"proxyUp":true,"# +
-                     #""intercepting":\#(intercepting),\#(profile)"# +
-                     #""simBundleId":"com.example.Store"\#(extra)}"#).utf8)
+        return Data(
+            (#"{"activeSession":"baseline","overrideCount":2,"proxyUp":true,"#
+                + #""intercepting":\#(intercepting),\#(profile)"# + #""simBundleId":"com.example.Store"\#(extra)}"#)
+                .utf8)
     }
 }
 
@@ -465,8 +491,16 @@ private final class ReaderHandle: @unchecked Sendable {
     private var stored: Control.OutputBuffer?
 
     var buffer: Control.OutputBuffer? {
-        get { lock.lock(); defer { lock.unlock() }; return stored }
-        set { lock.lock(); stored = newValue; lock.unlock() }
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return stored
+        }
+        set {
+            lock.lock()
+            stored = newValue
+            lock.unlock()
+        }
     }
 }
 
@@ -479,7 +513,15 @@ private final class MutableFingerprint: @unchecked Sendable {
     init(_ value: String) { stored = value }
 
     var value: String {
-        get { lock.lock(); defer { lock.unlock() }; return stored }
-        set { lock.lock(); stored = newValue; lock.unlock() }
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return stored
+        }
+        set {
+            lock.lock()
+            stored = newValue
+            lock.unlock()
+        }
     }
 }

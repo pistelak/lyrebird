@@ -23,11 +23,11 @@ import simulator as sim
 import ui
 
 MITMDUMP = config.ROOT / ".venv" / "bin" / "mitmdump"
-_DOWN_WAIT_SECONDS = 5.0   # how long `down` waits for SIGTERM to take effect
-_WATCHDOG_RESTORE_ATTEMPTS = 5   # `networksetup` fails transiently; one try is not a restore
+_DOWN_WAIT_SECONDS = 5.0  # how long `down` waits for SIGTERM to take effect
+_WATCHDOG_RESTORE_ATTEMPTS = 5  # `networksetup` fails transiently; one try is not a restore
 # An attempt is four `networksetup`/`route` calls, each bounded by `netproxy._COMMAND_TIMEOUT`,
 # so a hung command costs ~20s per attempt rather than the whole restore.
-_LOCK_WAIT_SECONDS = 60.0   # how long `up` waits for another `up`, or a watchdog restore, to finish
+_LOCK_WAIT_SECONDS = 60.0  # how long `up` waits for another `up`, or a watchdog restore, to finish
 
 
 def _discover_service() -> tuple[str | None, str | None]:
@@ -81,7 +81,9 @@ def _child_env() -> dict:
 def _spawn_watchdog(service: str) -> int:
     proc = subprocess.Popen(
         [sys.executable, str(config.ROOT / "cli.py"), "_watchdog", service],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
         env=_child_env(),
     )
     return proc.pid
@@ -123,24 +125,39 @@ def init(path: str | None) -> None:
     target.mkdir(parents=True, exist_ok=True)
     shutil.copytree(config.EXAMPLES_DIR, target, dirs_exist_ok=True)
     click.echo(f"✓ profile created at {ui.BOLD}{target}{ui.R}")
-    click.echo(f"  Edit {target}/profile.json: set `hosts` to the API your app calls, and\n"
-               f"  `simBundleId` to your app's bundle identifier. The examples are a schema\n"
-               f"  template, not a runnable demo — api.example.com serves none of these paths.")
+    click.echo(
+        f"  Edit {target}/profile.json: set `hosts` to the API your app calls, and\n"
+        f"  `simBundleId` to your app's bundle identifier. The examples are a schema\n"
+        f"  template, not a runnable demo — api.example.com serves none of these paths."
+    )
     click.echo(f"  Then:  lyrebird --profile {target} up")
 
 
 @click.command()
-@click.option("--relaunch", "bundle_id", default=None,
-              help="Terminate + relaunch this app bundle id after up (strongly recommended).")
-@click.option("--no-relaunch", is_flag=True, default=False,
-              help="Launch nothing; the caller starts the app once `up` has exited 0.")
-@click.option("--use", "use_name", default=None,
-              help="Select this session before the app is relaunched, so the launch meets it.")
-@click.option("--simulator", "simulator_selector", default=None, metavar="UDID-OR-NAME",
-              help="Which simulator to trust the CA in and relaunch on. Defaults to the booted "
-                   "one; required when more than one is booted.")
-def up(bundle_id: str | None, no_relaunch: bool, use_name: str | None,
-       simulator_selector: str | None) -> None:
+@click.option(
+    "--relaunch",
+    "bundle_id",
+    default=None,
+    help="Terminate + relaunch this app bundle id after up (strongly recommended).",
+)
+@click.option(
+    "--no-relaunch",
+    is_flag=True,
+    default=False,
+    help="Launch nothing; the caller starts the app once `up` has exited 0.",
+)
+@click.option(
+    "--use", "use_name", default=None, help="Select this session before the app is relaunched, so the launch meets it."
+)
+@click.option(
+    "--simulator",
+    "simulator_selector",
+    default=None,
+    metavar="UDID-OR-NAME",
+    help="Which simulator to trust the CA in and relaunch on. Defaults to the booted "
+    "one; required when more than one is booted.",
+)
+def up(bundle_id: str | None, no_relaunch: bool, use_name: str | None, simulator_selector: str | None) -> None:
     """Start the proxy, trust the CA in the simulator, and install the host-scoped PAC.
 
     With `--use NAME` the session is selected — and its sequences rewound — before the app is
@@ -190,7 +207,8 @@ def _acquire_lock(lock: Any, timeout: float = _LOCK_WAIT_SECONDS) -> None:
             if time.time() >= deadline:
                 raise SystemExit(
                     f"{ui.RED}another `lyrebird up` or a watchdog restore is still in progress on port "
-                    f"{config.CONTROL_PORT} after {timeout:g}s{ui.R}") from None
+                    f"{config.CONTROL_PORT} after {timeout:g}s{ui.R}"
+                ) from None
             if not waiting:
                 click.echo(f"{ui.DIM}waiting for another `lyrebird up` or a watchdog restore to finish…{ui.R}")
                 waiting = True
@@ -208,8 +226,10 @@ def _activate_session(name: str) -> None:
     result = api._control("/__mock__/sessions/active", "PUT", {"name": name})
     previous = result.get("previous")
     if previous and previous["name"] != result["active"]:
-        click.echo(f"switched: {previous['name']} ({previous['overrideCount']} override(s)) → "
-                   f"{ui.BOLD}{result['active']}{ui.R}")
+        click.echo(
+            f"switched: {previous['name']} ({previous['overrideCount']} override(s)) → "
+            f"{ui.BOLD}{result['active']}{ui.R}"
+        )
     else:
         click.echo(f"active: {result['active']}")
 
@@ -253,18 +273,22 @@ def _select_before_relaunch(name: str, health: dict | None) -> str | None:
     """
     problems = _load_problems_for(health, name)
     if problems is None:
-        click.echo(f"{ui.RED}✗ the running proxy is older than this CLI and cannot say whether "
-                   f"'{name}' loaded whole — the app was NOT relaunched against a session "
-                   f"nothing could check.{ui.R}\n"
-                   f"   restart the proxy: `lyrebird down && lyrebird up --use {name}`.\n"
-                   f"   the proxy is running — stop it with `lyrebird down`.")
+        click.echo(
+            f"{ui.RED}✗ the running proxy is older than this CLI and cannot say whether "
+            f"'{name}' loaded whole — the app was NOT relaunched against a session "
+            f"nothing could check.{ui.R}\n"
+            f"   restart the proxy: `lyrebird down && lyrebird up --use {name}`.\n"
+            f"   the proxy is running — stop it with `lyrebird down`."
+        )
         return f"the running proxy did not report whether '{name}' loaded whole"
     if problems:
         detail = "; ".join(problems)
-        click.echo(f"{ui.RED}✗ session '{name}' did not load whole: {detail}{ui.R}\n"
-                   f"   the app was NOT relaunched — fix the file, then "
-                   f"`lyrebird down && lyrebird up --use {name}`.\n"
-                   f"   the proxy is running — stop it with `lyrebird down`.")
+        click.echo(
+            f"{ui.RED}✗ session '{name}' did not load whole: {detail}{ui.R}\n"
+            f"   the app was NOT relaunched — fix the file, then "
+            f"`lyrebird down && lyrebird up --use {name}`.\n"
+            f"   the proxy is running — stop it with `lyrebird down`."
+        )
         return f"session '{name}' did not load whole: {detail}"
 
     try:
@@ -275,14 +299,17 @@ def _select_before_relaunch(name: str, health: dict | None) -> str | None:
         # front of some session other than the one the caller named.
         known = [str(session) for session in (health or {}).get("sessions") or []]
         listing = f"\n   sessions in this profile: {', '.join(known)}" if known else ""
-        click.echo(f"{ui.RED}   could not select '{name}' — the app was NOT relaunched.{ui.R}{listing}\n"
-                   f"   the proxy is running — stop it with `lyrebird down`.")
+        click.echo(
+            f"{ui.RED}   could not select '{name}' — the app was NOT relaunched.{ui.R}{listing}\n"
+            f"   the proxy is running — stop it with `lyrebird down`."
+        )
         return f"could not select session '{name}'"
     return None
 
 
-def _up_locked(bundle_id: str | None, no_relaunch: bool = False, use_name: str | None = None,
-               simulator_selector: str | None = None) -> None:
+def _up_locked(
+    bundle_id: str | None, no_relaunch: bool = False, use_name: str | None = None, simulator_selector: str | None = None
+) -> None:
     runtime = config.read_runtime()
     existing = api._health()
     # Kept rather than fetched again later: this is the reading `--use` checks its session against.
@@ -297,11 +324,21 @@ def _up_locked(bundle_id: str | None, no_relaunch: bool = False, use_name: str |
         # Popen dups the fd for the child, so closing our copy immediately is correct.
         with open(config.LOG_FILE, "a", encoding="utf-8") as log:
             proc = subprocess.Popen(
-                [str(MITMDUMP),
-                 "--listen-host", config.PROXY_LISTEN_HOST, "--listen-port", str(config.PROXY_PORT),
-                 "--set", f"confdir={config.mitmproxy_confdir()}",
-                 "-s", str(config.ROOT / "addon.py")],
-                cwd=str(config.ROOT), stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
+                [
+                    str(MITMDUMP),
+                    "--listen-host",
+                    config.PROXY_LISTEN_HOST,
+                    "--listen-port",
+                    str(config.PROXY_PORT),
+                    "--set",
+                    f"confdir={config.mitmproxy_confdir()}",
+                    "-s",
+                    str(config.ROOT / "addon.py"),
+                ],
+                cwd=str(config.ROOT),
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
                 env=_child_env(),
             )
         deadline = time.time() + 12
@@ -319,8 +356,10 @@ def _up_locked(bundle_id: str | None, no_relaunch: bool = False, use_name: str |
                     proc.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     proc.kill()
-                click.echo(f"{ui.RED}proxy did not become healthy in time — last log lines:{ui.R}\n"
-                           f"{ui._tail_log(20)}\n   full log: {config.LOG_FILE}")
+                click.echo(
+                    f"{ui.RED}proxy did not become healthy in time — last log lines:{ui.R}\n"
+                    f"{ui._tail_log(20)}\n   full log: {config.LOG_FILE}"
+                )
                 raise SystemExit(1)
             time.sleep(0.3)
         proxy_pid = proc.pid
@@ -334,8 +373,7 @@ def _up_locked(bundle_id: str | None, no_relaunch: bool = False, use_name: str |
         simulator: sim.Simulator | None = sim.resolve_simulator(simulator_selector)
     except sim.SimulatorError as error:
         simulator = None
-        click.echo(f"{ui.RED}✗ simulator: {error}{ui.R}\n"
-                   f"   the CA was NOT trusted and nothing was relaunched.")
+        click.echo(f"{ui.RED}✗ simulator: {error}{ui.R}\n   the CA was NOT trusted and nothing was relaunched.")
         failures.append(f"no simulator to work on: {str(error).splitlines()[0]}")
 
     if simulator is not None:
@@ -369,10 +407,12 @@ def _up_locked(bundle_id: str | None, no_relaunch: bool = False, use_name: str |
         try:
             _restore_previous_pac(recorded_service, runtime)
         except netproxy.NetworkSetupError as error:
-            click.echo(f"{ui.RED}✗ could not restore the previous PAC on '{recorded_service}' before "
-                       f"switching to '{service}': {error}{ui.R}\n"
-                       f"   the record is kept; run `lyrebird down` once '{recorded_service}' can "
-                       f"be reached.")
+            click.echo(
+                f"{ui.RED}✗ could not restore the previous PAC on '{recorded_service}' before "
+                f"switching to '{service}': {error}{ui.R}\n"
+                f"   the record is kept; run `lyrebird down` once '{recorded_service}' can "
+                f"be reached."
+            )
             raise SystemExit(1) from None
         recorded = None
     state: dict = {"proxyPid": proxy_pid, "service": service}
@@ -405,8 +445,10 @@ def _up_locked(bundle_id: str | None, no_relaunch: bool = False, use_name: str |
             config.write_runtime(state)
             netproxy.set_pac(service)
         except netproxy.NetworkSetupError as error:
-            click.echo(f"{ui.RED}✗ could not install the PAC on '{service}': {error}{ui.R}\n"
-                       f"   the proxy is running — stop it with `lyrebird down`.")
+            click.echo(
+                f"{ui.RED}✗ could not install the PAC on '{service}': {error}{ui.R}\n"
+                f"   the proxy is running — stop it with `lyrebird down`."
+            )
             raise SystemExit(1) from None
 
         # A watchdog watches one service, given on its command line. One left over from a run on
@@ -423,8 +465,10 @@ def _up_locked(bundle_id: str | None, no_relaunch: bool = False, use_name: str |
         # an operator told only the first goes looking at Wi-Fi, and one told only the second
         # does not learn that nothing is being intercepted.
         why = f" ({discovery_error})" if discovery_error else ""
-        click.echo(f"{ui.RED}✗ could not detect the active network service{why} — set the PAC "
-                   f"manually:{ui.R}\n   {netproxy.pac_url()}")
+        click.echo(
+            f"{ui.RED}✗ could not detect the active network service{why} — set the PAC "
+            f"manually:{ui.R}\n   {netproxy.pac_url()}"
+        )
         failures.append(f"no active network service{why}: traffic is NOT being intercepted")
 
     config.write_runtime(state)
@@ -449,10 +493,12 @@ def _up_locked(bundle_id: str | None, no_relaunch: bool = False, use_name: str |
         if not launched:
             failures.append(f"could not relaunch {target}: {detail}")
     elif simulator is not None:
-        click.echo(f"{ui.BOLD}{ui.YELLOW}⚠ RELAUNCH THE APP NOW{ui.R} — URLSession caches the proxy config, so an "
-                   f"already-running app won't use the PAC until it's relaunched.\n"
-                   f"   lyrebird relaunch <bundleid>   # on {simulator}, the device this run used\n"
-                   f"   (or set simBundleId in profile.json and it happens here)")
+        click.echo(
+            f"{ui.BOLD}{ui.YELLOW}⚠ RELAUNCH THE APP NOW{ui.R} — URLSession caches the proxy config, so an "
+            f"already-running app won't use the PAC until it's relaunched.\n"
+            f"   lyrebird relaunch <bundleid>   # on {simulator}, the device this run used\n"
+            f"   (or set simBundleId in profile.json and it happens here)"
+        )
     # And no `else`: with no simulator resolved there is nothing to launch on, and no device to
     # tell the operator to launch on by hand either. That failure was printed and counted where
     # the device could not be resolved; saying it again here would turn one problem into two.
@@ -559,9 +605,11 @@ def _down_locked() -> None:
             # No proxy and no record, but the one read that could have found a PAC of ours still
             # installed never answered. "Nothing to stop" is true of the proxy and unproven of the
             # network, and exit 0 would claim both.
-            click.echo(f"{ui.RED}✗ nothing to stop, but the proxy settings could not be checked: the "
-                       f"active network service could not be detected ({discovery_error}){ui.R}\n"
-                       f"   check System Settings ▸ Network ▸ <service> ▸ Proxies by hand.")
+            click.echo(
+                f"{ui.RED}✗ nothing to stop, but the proxy settings could not be checked: the "
+                f"active network service could not be detected ({discovery_error}){ui.R}\n"
+                f"   check System Settings ▸ Network ▸ <service> ▸ Proxies by hand."
+            )
             raise SystemExit(1)
         click.echo(f"{ui.DIM}nothing to stop — no proxy running and no runtime state{ui.R}")
         return
@@ -577,16 +625,20 @@ def _down_locked() -> None:
         # second failure on top of this one — but `down` must not then print "stopped" and exit 0,
         # because the network is exactly as this command found it.
         unrestorable = True
-        click.echo(f"{ui.RED}✗ could not restore the proxy settings: the active network service "
-                   f"could not be detected ({discovery_error}) and none is recorded{ui.R}\n"
-                   f"   the proxy is being stopped anyway; check System Settings ▸ Network ▸ "
-                   f"<service> ▸ Proxies by hand.")
+        click.echo(
+            f"{ui.RED}✗ could not restore the proxy settings: the active network service "
+            f"could not be detected ({discovery_error}) and none is recorded{ui.R}\n"
+            f"   the proxy is being stopped anyway; check System Settings ▸ Network ▸ "
+            f"<service> ▸ Proxies by hand."
+        )
     if service:
         try:
             previous = _restore_previous_pac(service, runtime)
         except netproxy.NetworkSetupError as error:
-            click.echo(f"{ui.RED}✗ could not restore proxy settings on '{service}': {error}{ui.R}\n"
-                       f"   fix manually: System Settings ▸ Network ▸ {service} ▸ Proxies{ui.R}")
+            click.echo(
+                f"{ui.RED}✗ could not restore proxy settings on '{service}': {error}{ui.R}\n"
+                f"   fix manually: System Settings ▸ Network ▸ {service} ▸ Proxies{ui.R}"
+            )
             raise SystemExit(1) from error
         if previous is None:
             click.echo(f"{ui.DIM}PAC on '{service}' is not ours — left untouched{ui.R}")
@@ -610,7 +662,7 @@ def _down_locked() -> None:
         click.echo(f"{ui.YELLOW}⚠ proxy still responding on port {config.CONTROL_PORT} after SIGTERM{ui.R}")
         raise SystemExit(1)
     if unrestorable:
-        raise SystemExit(1)   # the proxy is down; the network was never put back
+        raise SystemExit(1)  # the proxy is down; the network was never put back
 
 
 @click.command()
@@ -660,55 +712,65 @@ def status(as_json: bool) -> None:
         # is reported as unknown rather than handed over under this profile's name. `proxyUp`
         # stays true — the port really is held — and `profileMismatch` says by whom.
         mine = {} if foreign else (health or {})
-        click.echo(json.dumps({
-            "proxyUp": health is not None,
-            "intercepting": intercepting,
-            "profileMismatch": foreign,
-            "profileFingerprint": config.PROFILE_FINGERPRINT,
-            "runningProfileFingerprint": running,
-            "pacError": pac_error,
-            "activeSession": mine.get("activeSession"),
-            "overrideCount": mine.get("overrideCount"),
-            "sessions": None if foreign else (health or {}).get("sessions", []),
-            # `null` when the running engine did not supply the field, never `[]`. A current
-            # engine always sends both, with one entry per rule — so `[]` is a real state ("no
-            # rules here") and a missing key is a capability signal ("this proxy cannot tell
-            # you"). Defaulting to `[]` collapsed those into the claim that nothing has answered,
-            # which is the shape this file exists to avoid. The exit code is computed separately
-            # and still does not depend on either field existing.
-            "sequences": mine.get("sequences"),
-            "answers": mine.get("answers"),
-            "simBundleId": mine.get("simBundleId"),
-            "profile": str(config.PROFILE_DIR),
-            "service": service,
-            # `{"udid": …, "name": …}`, or null when no `up` has recorded one — which is a real
-            # state ("nothing here trusted a CA") and not the same as "the default device".
-            "simulator": simulator,
-            "pac": {"url": pac.url, "enabled": pac.enabled, "ours": pac.ours} if pac else None,
-        }, indent=2))
+        click.echo(
+            json.dumps(
+                {
+                    "proxyUp": health is not None,
+                    "intercepting": intercepting,
+                    "profileMismatch": foreign,
+                    "profileFingerprint": config.PROFILE_FINGERPRINT,
+                    "runningProfileFingerprint": running,
+                    "pacError": pac_error,
+                    "activeSession": mine.get("activeSession"),
+                    "overrideCount": mine.get("overrideCount"),
+                    "sessions": None if foreign else (health or {}).get("sessions", []),
+                    # `null` when the running engine did not supply the field, never `[]`. A current
+                    # engine always sends both, with one entry per rule — so `[]` is a real state ("no
+                    # rules here") and a missing key is a capability signal ("this proxy cannot tell
+                    # you"). Defaulting to `[]` collapsed those into the claim that nothing has answered,
+                    # which is the shape this file exists to avoid. The exit code is computed separately
+                    # and still does not depend on either field existing.
+                    "sequences": mine.get("sequences"),
+                    "answers": mine.get("answers"),
+                    "simBundleId": mine.get("simBundleId"),
+                    "profile": str(config.PROFILE_DIR),
+                    "service": service,
+                    # `{"udid": …, "name": …}`, or null when no `up` has recorded one — which is a real
+                    # state ("nothing here trusted a CA") and not the same as "the default device".
+                    "simulator": simulator,
+                    "pac": {"url": pac.url, "enabled": pac.enabled, "ours": pac.ours} if pac else None,
+                },
+                indent=2,
+            )
+        )
     else:
         click.echo(f"{ui.DIM}profile: {config.PROFILE_DIR}{ui.R}")
         if foreign:
             # Not the banner: "PAC is disabled/not ours" would send the operator to `lyrebird up`,
             # which refuses this exact situation. The remedy is to stop that proxy or aim
             # elsewhere, so say which proxy answered and print both fingerprints to identify it.
-            click.echo(f"{ui.BOLD}{ui.YELLOW}🟠 PROXY UP, ANOTHER PROFILE{ui.R} — nothing is intercepting "
-                       f"for this profile.")
+            click.echo(
+                f"{ui.BOLD}{ui.YELLOW}🟠 PROXY UP, ANOTHER PROFILE{ui.R} — nothing is intercepting for this profile."
+            )
             click.echo(api._profile_mismatch(str(running)))
         elif pac_error and health is not None:
             # Not the banner: its "PAC is disabled/not ours" is a diagnosis this read never made.
             # `service` is None when discovery itself is what failed, and "on 'None'" would name a
             # network service that does not exist.
             where = f" on '{service}'" if service else ""
-            click.echo(f"{ui.BOLD}{ui.YELLOW}🟠 PROXY UP, PAC UNREADABLE{ui.R} — could not read the PAC"
-                       f"{where}: {pac_error}")
+            click.echo(
+                f"{ui.BOLD}{ui.YELLOW}🟠 PROXY UP, PAC UNREADABLE{ui.R} — could not read the PAC{where}: {pac_error}"
+            )
         else:
             ui._banner(health, service, intercepting)
         if health and not foreign:
             click.echo(f"  sessions: {', '.join(health['sessions'])}")
             for state in health.get("sequences", []):
-                position = (f"next step {state['nextStep']}/{state['stepCount']}"
-                            if state["nextStep"] else f"{ui.RED}exhausted{ui.R}")
+                position = (
+                    f"next step {state['nextStep']}/{state['stepCount']}"
+                    if state["nextStep"]
+                    else f"{ui.RED}exhausted{ui.R}"
+                )
                 overrun = f" {ui.YELLOW}· overrun{ui.R}" if state["hasOverrun"] else ""
                 trigger = "own calls" if state["advanceOn"] == "self" else "advanceOn"
                 click.echo(f"  sequence {state['id']}: {position} · {trigger}{overrun}")
@@ -717,8 +779,10 @@ def status(as_json: bool) -> None:
             owner = "" if pac.ours or not pac.url else " · not ours"
             click.echo(f"  PAC on '{service}': {pac.url or '(none)'} · {state}{owner}")
         if simulator:
-            click.echo(f"  simulator: {simulator.get('name')} ({simulator.get('udid')}) "
-                       f"{ui.DIM}· CA + relaunch only; the PAC is not scoped to it{ui.R}")
+            click.echo(
+                f"  simulator: {simulator.get('name')} ({simulator.get('udid')}) "
+                f"{ui.DIM}· CA + relaunch only; the PAC is not scoped to it{ui.R}"
+            )
 
     raise SystemExit(0 if health is not None and intercepting else 1)
 
@@ -737,7 +801,7 @@ def watchdog(service: str) -> None:
         if api._health() is None:
             if _restore_after_death(service):
                 return
-            continue   # a replacement proxy is live: go back to watching it
+            continue  # a replacement proxy is live: go back to watching it
         _repair_pac(service)
         time.sleep(2)
 
@@ -755,11 +819,11 @@ def _repair_pac(service: str) -> None:
     with open(config.lock_file(), "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         if config.read_runtime().get("service") != service:
-            return   # migrated away from, or `down` has been: not ours to touch any more
+            return  # migrated away from, or `down` has been: not ours to touch any more
         try:
             pac = netproxy.pac_status(service)
         except netproxy.NetworkSetupError:
-            return   # unknown is not "off": neither reinstall nor give up, just ask again
+            return  # unknown is not "off": neither reinstall nor give up, just ask again
         if not (pac.enabled and pac.ours) and pac.url in ("", netproxy.pac_url()):
             with contextlib.suppress(netproxy.NetworkSetupError):
                 netproxy.set_pac(service)

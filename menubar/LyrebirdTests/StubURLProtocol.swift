@@ -93,8 +93,9 @@ enum Stub {
     static let base = URL(string: "http://lyrebird.test:8088")!
 
     static func response(_ request: URLRequest, _ status: Int) -> HTTPURLResponse {
-        HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: "HTTP/1.1",
-                        headerFields: ["Content-Type": "application/json"])!
+        HTTPURLResponse(
+            url: request.url!, statusCode: status, httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "application/json"])!
     }
 
     /// Plausible bodies for the three polled reads, so a refresh triggered by `activate` succeeds

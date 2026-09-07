@@ -94,8 +94,7 @@ def test_a_refused_call_does_not_print_the_bare_slug(profile, runner, monkeypatc
     assert "profile_mismatch" not in result.output
 
 
-def test_a_polling_read_refused_for_the_wrong_profile_is_not_reported_as_unreachable(
-        profile, runner, monkeypatch):
+def test_a_polling_read_refused_for_the_wrong_profile_is_not_reported_as_unreachable(profile, runner, monkeypatch):
     """`_get_json` answers None for "not reachable", and a 409 is the opposite of that: the proxy is
     up and talking. Reporting it as silence sends the operator to look for a dead port."""
     _answers_with_a_conflict(monkeypatch)
@@ -111,8 +110,7 @@ def test_up_refuses_to_adopt_a_proxy_running_another_profile(profile, runner, mo
     """`up` must not report INTERCEPT ACTIVE for a proxy serving somebody else's rules."""
     (profile / "profile.json").write_text('{"hosts": ["api.example.com"]}', encoding="utf-8")
     config.reload_profile()
-    monkeypatch.setattr(api, "_health", lambda: _health_payload(
-        profileFingerprint=FOREIGN_FINGERPRINT))
+    monkeypatch.setattr(api, "_health", lambda: _health_payload(profileFingerprint=FOREIGN_FINGERPRINT))
 
     result = runner.invoke(cli.cli, ["up"])
 
@@ -121,20 +119,27 @@ def test_up_refuses_to_adopt_a_proxy_running_another_profile(profile, runner, mo
     assert "lyrebird down" in result.output
 
 
-@pytest.mark.parametrize("command", [
-    ["sequence", "wait", "ovr_a", "--step", "1"],
-    ["assert-answered", "ovr_a"],
-])
-def test_a_command_reading_health_refuses_another_profiles_reading(profile, runner, monkeypatch,
-                                                                   command):
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["sequence", "wait", "ovr_a", "--step", "1"],
+        ["assert-answered", "ovr_a"],
+    ],
+)
+def test_a_command_reading_health_refuses_another_profiles_reading(profile, runner, monkeypatch, command):
     """Health is unscoped at the API — that is how `down` recovers across profiles — so a command
     that *interprets* a reading has to compare the fingerprint itself, or it reports a stranger's
     sequence cursors and answer counts as evidence about this profile's rules."""
-    monkeypatch.setattr(api, "_health", lambda: _health_payload(
-        profileFingerprint=FOREIGN_FINGERPRINT,
-        sequences=[_BASE_SEQ], answers=[{"id": "ovr_a", "active": True, "count": 7}]))
-    monkeypatch.setattr(time, "sleep",
-                        lambda _seconds: pytest.fail("a mismatch must fail before any polling"))
+    monkeypatch.setattr(
+        api,
+        "_health",
+        lambda: _health_payload(
+            profileFingerprint=FOREIGN_FINGERPRINT,
+            sequences=[_BASE_SEQ],
+            answers=[{"id": "ovr_a", "active": True, "count": 7}],
+        ),
+    )
+    monkeypatch.setattr(time, "sleep", lambda _seconds: pytest.fail("a mismatch must fail before any polling"))
 
     result = runner.invoke(cli.cli, command)
 
@@ -147,11 +152,15 @@ def test_a_bound_assertion_reports_a_foreign_profile_as_unproven(profile, runner
     """The port can change hands between the reset and the assertion. Refusing is right, but under
     --run exit 1 claims "the rule is in your run and answered nothing" — about a run this command
     never got to look at, in a store that is not even the one the reset drew its boundary in."""
-    monkeypatch.setattr(api, "_health", lambda: _health_payload(
-        profileFingerprint=FOREIGN_FINGERPRINT,
-        answers=[{"id": "ovr_a", "active": True, "count": 7, "runId": "run1"}]))
-    monkeypatch.setattr(time, "sleep",
-                        lambda _seconds: pytest.fail("a mismatch must fail before any polling"))
+    monkeypatch.setattr(
+        api,
+        "_health",
+        lambda: _health_payload(
+            profileFingerprint=FOREIGN_FINGERPRINT,
+            answers=[{"id": "ovr_a", "active": True, "count": 7, "runId": "run1"}],
+        ),
+    )
+    monkeypatch.setattr(time, "sleep", lambda _seconds: pytest.fail("a mismatch must fail before any polling"))
 
     result = runner.invoke(cli.cli, ["assert-answered", "ovr_a", "--run", "run1", "--timeout", "30"])
 
@@ -164,10 +173,16 @@ def test_a_bound_assertion_refuses_a_profile_that_changes_under_the_poll(profile
     """The same swap arriving mid-wait: this profile's proxy is stopped and another profile's is
     started on the port. The fingerprint is re-read every poll, so the wait ends where it lost the
     ability to answer — rather than burning its timeout on, or believing, a stranger's counters."""
-    monkeypatch.setattr(api, "_health", _polling(
-        [{}, {"profileFingerprint": FOREIGN_FINGERPRINT}],
-        lambda state: _health_payload(
-            answers=[{"id": "ovr_a", "active": True, "count": 0, "runId": "run1"}], **state)))
+    monkeypatch.setattr(
+        api,
+        "_health",
+        _polling(
+            [{}, {"profileFingerprint": FOREIGN_FINGERPRINT}],
+            lambda state: _health_payload(
+                answers=[{"id": "ovr_a", "active": True, "count": 0, "runId": "run1"}], **state
+            ),
+        ),
+    )
     monkeypatch.setattr(time, "sleep", lambda _seconds: None)
 
     result = runner.invoke(cli.cli, ["assert-answered", "ovr_a", "--run", "run1", "--timeout", "30"])
@@ -177,7 +192,8 @@ def test_a_bound_assertion_refuses_a_profile_that_changes_under_the_poll(profile
 
 
 def test_a_bound_assertion_refuses_a_profile_that_takes_the_port_before_the_diagnostic_read(
-        profile, runner, monkeypatch):
+    profile, runner, monkeypatch
+):
     """The last call a failing assertion makes is the `/recent` read behind its "what did arrive"
     hint, and unlike `/health` that one is scoped, so the API refuses it with a 409. Exiting 1 there
     prints a profile mismatch under the code that means "your run was checked and nothing answered",
@@ -191,8 +207,7 @@ def test_a_bound_assertion_refuses_a_profile_that_takes_the_port_before_the_diag
     assert FOREIGN_FINGERPRINT in result.output
 
 
-def test_an_unbound_assertion_still_exits_one_when_the_diagnostic_read_is_refused(
-        profile, runner, monkeypatch):
+def test_an_unbound_assertion_still_exits_one_when_the_diagnostic_read_is_refused(profile, runner, monkeypatch):
     """The same moment without --run: no boundary was claimed, so nothing here may start returning
     a code the older contract never had."""
     monkeypatch.setattr(api, "_health", _answers_over({"count": 0, "runId": "run1"}))
@@ -216,14 +231,16 @@ def test_a_health_reading_without_a_fingerprint_is_still_accepted(profile, runne
     assert result.exit_code == 0
 
 
-def test_down_still_stops_a_proxy_that_belongs_to_another_profile(profile, runner, fake_network,
-                                                                  monkeypatch):
+def test_down_still_stops_a_proxy_that_belongs_to_another_profile(profile, runner, fake_network, monkeypatch):
     """`down` is the recovery command: it must put the network back whatever is running, or the
     scoping added everywhere else would strand the Mac pointing at a proxy it may not name."""
     config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
     config.runtime_file().write_bytes(b"not json at all\xff")
-    monkeypatch.setattr(api, "_health", lambda: None if fake_network["terminated"] else
-                        {"pid": 4242, "profileFingerprint": FOREIGN_FINGERPRINT})
+    monkeypatch.setattr(
+        api,
+        "_health",
+        lambda: None if fake_network["terminated"] else {"pid": 4242, "profileFingerprint": FOREIGN_FINGERPRINT},
+    )
 
     result = runner.invoke(cli.cli, ["down"])
 
@@ -269,8 +286,7 @@ def test_status_json_says_empty_when_the_engine_reports_nothing_to_show(profile,
     assert payload["answers"] == [] and payload["sequences"] == []
 
 
-def test_status_json_reports_a_discovery_timeout_rather_than_printing_nothing(profile, runner,
-                                                                             monkeypatch):
+def test_status_json_reports_a_discovery_timeout_rather_than_printing_nothing(profile, runner, monkeypatch):
     """`--json` is what a script reads. An uncaught error from discovery printed no JSON at all,
     so the caller could not tell "not intercepting" from "the command fell over" — and the exit
     code is 1 for both. The reason goes where every other unproven PAC goes."""

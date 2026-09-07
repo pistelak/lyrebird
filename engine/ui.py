@@ -41,9 +41,13 @@ def _banner(health: dict | None, service: str | None, intercepting: bool) -> Non
         click.echo(f"{DIM}⚪ proxy not reachable{R}")
         return
     if intercepting:
-        click.echo(f"{BOLD}{RED}🔴 INTERCEPT ACTIVE{R}  "
-                   f"session {BOLD}{health['activeSession']}{R} · "
-                   f"{health['overrideCount']} override(s) · proxy :{health['proxyPort']} · PAC on {service}")
+        click.echo(
+            f"{BOLD}{RED}🔴 INTERCEPT ACTIVE{R}  "
+            f"session {BOLD}{health['activeSession']}{R} · "
+            f"{health['overrideCount']} override(s) · proxy :{health['proxyPort']} · PAC on {service}"
+        )
     else:
-        click.echo(f"{BOLD}{YELLOW}🟠 PROXY UP BUT NOT INTERCEPTING{R} — PAC is disabled/not ours. "
-                   f"Run {BOLD}lyrebird up{R} to (re)install it.")
+        click.echo(
+            f"{BOLD}{YELLOW}🟠 PROXY UP BUT NOT INTERCEPTING{R} — PAC is disabled/not ours. "
+            f"Run {BOLD}lyrebird up{R} to (re)install it."
+        )

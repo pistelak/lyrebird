@@ -30,6 +30,7 @@ def fake_run(monkeypatch, stdout="", returncode=0, stderr=""):
 
 # MARK: - pac_status parsing
 
+
 def test_pac_status_reads_url_and_enabled(monkeypatch, hosts):
     fake_run(monkeypatch, stdout=f"URL: {netproxy.pac_url()}\nEnabled: Yes\n")
     status = netproxy.pac_status("Wi-Fi")
@@ -56,6 +57,7 @@ def test_pac_status_treats_null_as_no_url(monkeypatch):
 
 
 # MARK: - intercepting()
+
 
 def test_intercepting_requires_both_enabled_and_ours(monkeypatch):
     fake_run(monkeypatch, stdout=f"URL: {netproxy.pac_url()}\nEnabled: No\n")
@@ -107,6 +109,7 @@ def test_active_service_is_none_when_no_service_matches(monkeypatch):
 
 # MARK: - Failures are raised, not swallowed
 
+
 def test_set_pac_raises_when_the_setting_does_not_take(monkeypatch):
     """networksetup can exit 0 and not apply the change; the read-back is what catches that."""
     fake_run(monkeypatch, stdout="URL: (null)\nEnabled: No\n", returncode=0)
@@ -134,7 +137,7 @@ def fake_networksetup(monkeypatch, url="", enabled=False, *, fail=(), inert=()):
         if verb not in inert:
             if verb == "-setautoproxyurl":
                 state["url"] = args[3]
-                state["enabled"] = True   # as macOS does: setting the URL switches the PAC on
+                state["enabled"] = True  # as macOS does: setting the URL switches the PAC on
             elif verb == "-setautoproxystate":
                 state["enabled"] = args[3] == "on"
         return subprocess.CompletedProcess(args, 0, "", "")
@@ -196,6 +199,7 @@ def test_restore_pac_partial_failure_leaves_the_url_ours_or_the_target(monkeypat
 
 # MARK: - A command that never returns
 
+
 def test_every_command_is_bounded(monkeypatch, hosts):
     """The bound is on `subprocess.run` itself, so it is asserted there. Without it a hung
     `networksetup` took its whole caller with it — including `/health`, which runs on the proxy's
@@ -225,6 +229,7 @@ def test_a_command_that_does_not_finish_is_raised_not_read_as_no_pac(monkeypatch
     """A `networksetup` that never answered has said nothing about the PAC. Reported as empty
     output it would parse as "no PAC", which is the mistake `pac_status` exists to prevent — and
     the one that makes `down` delete the only record of what to put back."""
+
     def _subprocess_run(args, *rest, **kwargs):
         raise subprocess.TimeoutExpired(args, kwargs.get("timeout"))
 

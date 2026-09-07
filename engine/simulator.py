@@ -14,6 +14,7 @@ import ui
 
 # MARK: - Small helpers
 
+
 def _run(args: list[str]) -> subprocess.CompletedProcess:
     return subprocess.run(args, check=False, capture_output=True, text=True)
 
@@ -60,12 +61,10 @@ def _simctl_devices() -> list[dict]:
     except OSError as error:
         raise SimulatorError(f"could not run `{printable}`: {error} — is Xcode installed?") from None
     if result.returncode != 0:
-        raise SimulatorError(f"`{printable}` failed: "
-                             f"{_first_line(result, f'exit {result.returncode}')}")
+        raise SimulatorError(f"`{printable}` failed: {_first_line(result, f'exit {result.returncode}')}")
     try:
         listing = json.loads(result.stdout)["devices"]
-        return [{**device, "runtime": runtime}
-                for runtime, devices in listing.items() for device in devices]
+        return [{**device, "runtime": runtime} for runtime, devices in listing.items() for device in devices]
     except (ValueError, TypeError, KeyError, AttributeError):
         raise SimulatorError(f"could not read the output of `{printable}`") from None
 
@@ -73,8 +72,7 @@ def _simctl_devices() -> list[dict]:
 def _is_named(device: dict, wanted: str) -> bool:
     """UDID or full device name, either case. Never a substring: `--simulator 'iPhone 17'` picking
     an 'iPhone 17 Pro' is the same wrong-device bug this option exists to end."""
-    return wanted.casefold() in (str(device.get("udid", "")).casefold(),
-                                 str(device.get("name", "")).casefold())
+    return wanted.casefold() in (str(device.get("udid", "")).casefold(), str(device.get("name", "")).casefold())
 
 
 def _platform(device: dict) -> str:
@@ -97,9 +95,11 @@ def _is_eligible(device: dict) -> bool:
 
 
 def _listing(devices: list[dict]) -> str:
-    return "".join(f"\n     · {device.get('name', '?')}  {device.get('udid', '?')}  "
-                   f"[{_platform(device) or 'unknown runtime'} · {device.get('state', 'unknown')}]"
-                   for device in devices)
+    return "".join(
+        f"\n     · {device.get('name', '?')}  {device.get('udid', '?')}  "
+        f"[{_platform(device) or 'unknown runtime'} · {device.get('state', 'unknown')}]"
+        for device in devices
+    )
 
 
 def resolve_simulator(selector: str | None) -> Simulator:
@@ -133,14 +133,17 @@ def resolve_simulator(selector: str | None) -> Simulator:
                 raise SimulatorError(
                     f"no booted iOS simulator — what is booted is not something Lyrebird can "
                     f"trust a CA in and relaunch an iOS app on:{_listing(booted)}\n"
-                    f"   boot an iOS simulator, or name one with `--simulator <udid-or-name>`")
-            raise SimulatorError("no booted simulator — boot one (Simulator.app, or "
-                                 "`xcrun simctl boot <udid>`), then run this again")
+                    f"   boot an iOS simulator, or name one with `--simulator <udid-or-name>`"
+                )
+            raise SimulatorError(
+                "no booted simulator — boot one (Simulator.app, or `xcrun simctl boot <udid>`), then run this again"
+            )
         if len(eligible) > 1:
             raise SimulatorError(
                 f"{len(eligible)} iOS simulators are booted, and which one you meant is not "
                 f"simctl's guess to make:{_listing(eligible)}\n"
-                f"   name one with `--simulator <udid-or-name>`")
+                f"   name one with `--simulator <udid-or-name>`"
+            )
         return _as_simulator(eligible[0])
 
     wanted = selector.strip()
@@ -148,8 +151,10 @@ def resolve_simulator(selector: str | None) -> Simulator:
         raise SimulatorError("--simulator needs a device UDID or name")
     matches = [device for device in booted if _is_named(device, wanted)]
     if len(matches) > 1:
-        raise SimulatorError(f"'{wanted}' names {len(matches)} booted simulators:{_listing(matches)}\n"
-                             f"   name one by UDID with `--simulator <udid>`")
+        raise SimulatorError(
+            f"'{wanted}' names {len(matches)} booted simulators:{_listing(matches)}\n"
+            f"   name one by UDID with `--simulator <udid>`"
+        )
     if matches:
         # Booted is not the same as usable, and a device named by hand deserves the reason it
         # cannot be used rather than a quiet promotion of some other device in its place.
@@ -160,8 +165,7 @@ def resolve_simulator(selector: str | None) -> Simulator:
     # rest of the same listing is consulted rather than reporting whichever is shorter to say.
     known = [device for device in devices if _is_named(device, wanted)]
     if not known:
-        raise SimulatorError(f"no simulator '{wanted}' on this Mac — `xcrun simctl list devices` "
-                             f"shows what there is")
+        raise SimulatorError(f"no simulator '{wanted}' on this Mac — `xcrun simctl list devices` shows what there is")
     usable = [device for device in known if _is_eligible(device)]
     if not usable:
         # Booting it would not make it usable, so the answer here is not "boot it": say what is
@@ -170,8 +174,7 @@ def resolve_simulator(selector: str | None) -> Simulator:
     # One name can belong to several devices — the same model on two runtimes — so the UDID to
     # boot is only named when there is one of them to name.
     which = usable[0].get("udid", wanted) if len(usable) == 1 else "<udid above>"
-    raise SimulatorError(f"'{wanted}' is not booted:{_listing(usable)}\n"
-                         f"   boot it with `xcrun simctl boot {which}`")
+    raise SimulatorError(f"'{wanted}' is not booted:{_listing(usable)}\n   boot it with `xcrun simctl boot {which}`")
 
 
 def _require_eligible(device: dict, wanted: str) -> None:
@@ -183,7 +186,8 @@ def _require_eligible(device: dict, wanted: str) -> None:
     if platform != "iOS":
         raise SimulatorError(
             f"'{wanted}' is a {platform or 'non-iOS'} simulator — Lyrebird trusts its CA in, and "
-            f"relaunches an iOS app on, an iOS simulator. Name one with `--simulator <udid>`.")
+            f"relaunches an iOS app on, an iOS simulator. Name one with `--simulator <udid>`."
+        )
 
 
 def _as_simulator(device: dict) -> Simulator:
@@ -199,8 +203,9 @@ def trust_ca_in_sim(simulator: Simulator) -> tuple[bool, str]:
     result = _run(["xcrun", "simctl", "keychain", simulator.udid, "add-root-cert", str(_ca_cert())])
     if result.returncode == 0:
         return True, f"trusted in {simulator}"
-    return False, (f"could not trust the CA in {simulator}: "
-                   f"{_first_line(result, f'simctl exited {result.returncode}')}")
+    return False, (
+        f"could not trust the CA in {simulator}: {_first_line(result, f'simctl exited {result.returncode}')}"
+    )
 
 
 def _relaunch(bundle_id: str, simulator: Simulator) -> tuple[bool, str]:
@@ -238,8 +243,13 @@ def _bound_simulator(selector: str | None) -> Simulator:
 
 @click.command(name="relaunch")
 @click.argument("bundle_id", metavar="[BUNDLEID]", required=False)
-@click.option("--simulator", "simulator_selector", default=None, metavar="UDID-OR-NAME",
-              help="Relaunch on this simulator instead of the one `up` recorded.")
+@click.option(
+    "--simulator",
+    "simulator_selector",
+    default=None,
+    metavar="UDID-OR-NAME",
+    help="Relaunch on this simulator instead of the one `up` recorded.",
+)
 def relaunch_cmd(bundle_id: str | None, simulator_selector: str | None) -> None:
     """Terminate and relaunch the app on the simulator this run is bound to.
 
@@ -254,8 +264,9 @@ def relaunch_cmd(bundle_id: str | None, simulator_selector: str | None) -> None:
         config.reload_profile()
     target = bundle_id or config.PROFILE.sim_bundle_id
     if not target:
-        click.echo(f"{ui.RED}✗ nothing to relaunch: pass a bundle id, or set simBundleId in "
-                   f"{config.PROFILE_FILE}{ui.R}")
+        click.echo(
+            f"{ui.RED}✗ nothing to relaunch: pass a bundle id, or set simBundleId in {config.PROFILE_FILE}{ui.R}"
+        )
         raise SystemExit(1)
     try:
         simulator = _bound_simulator(simulator_selector)
@@ -269,9 +280,13 @@ def relaunch_cmd(bundle_id: str | None, simulator_selector: str | None) -> None:
 
 
 @click.command(name="trust-ca")
-@click.option("--simulator", "simulator_selector", default=None, metavar="UDID-OR-NAME",
-              help="Which simulator to trust the CA in. Defaults to the booted one; required "
-                   "when more than one is booted.")
+@click.option(
+    "--simulator",
+    "simulator_selector",
+    default=None,
+    metavar="UDID-OR-NAME",
+    help="Which simulator to trust the CA in. Defaults to the booted one; required when more than one is booted.",
+)
 def trust_ca_cmd(simulator_selector: str | None) -> None:
     """(Re)trust the Lyrebird CA in a booted simulator.
 
@@ -293,10 +308,12 @@ def trust_ca_cmd(simulator_selector: str | None) -> None:
 @click.command(name="untrust-ca")
 def untrust_ca_cmd() -> None:
     """Explain how to remove the Lyrebird CA from the simulator."""
-    click.echo("simctl exposes no remove-root-cert; to drop trust use either:\n"
-               "  xcrun simctl keychain <udid> reset        # clears added certs on that simulator\n"
-               "  Device ▸ Erase All Content and Settings   # full reset\n"
-               "  (`lyrebird status` names the simulator the last `up` used; `xcrun simctl list\n"
-               "   devices booted` lists the rest)\n"
-               f"\nLyrebird's CA lives in {config.mitmproxy_confdir()} — delete that directory to\n"
-               "rotate it; a new one is generated on the next `up`.")
+    click.echo(
+        "simctl exposes no remove-root-cert; to drop trust use either:\n"
+        "  xcrun simctl keychain <udid> reset        # clears added certs on that simulator\n"
+        "  Device ▸ Erase All Content and Settings   # full reset\n"
+        "  (`lyrebird status` names the simulator the last `up` used; `xcrun simctl list\n"
+        "   devices booted` lists the rest)\n"
+        f"\nLyrebird's CA lives in {config.mitmproxy_confdir()} — delete that directory to\n"
+        "rotate it; a new one is generated on the next `up`."
+    )

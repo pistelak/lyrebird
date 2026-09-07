@@ -57,8 +57,8 @@ RECENT_CAP = 200
 MAX_DELAY_MS = 60000  # ceiling for a per-override delayMs so a typo can't wedge a flow indefinitely
 
 
-
 # MARK: - Profile and state locations
+
 
 def _default_profile() -> Path:
     """`~/.config/lyrebird`, honouring XDG_CONFIG_HOME.
@@ -247,8 +247,7 @@ def validate_host(raw: object) -> str:
         raise ValueError(f"invalid host {raw!r} — give a hostname, not an address")
     if not _HOSTNAME_RE.match(host):
         raise ValueError(
-            f"invalid host {raw!r} — give a bare hostname such as 'api.example.com' "
-            f"(no scheme, port, path or wildcard)"
+            f"invalid host {raw!r} — give a bare hostname such as 'api.example.com' (no scheme, port, path or wildcard)"
         )
     return host
 
@@ -309,6 +308,7 @@ def reload_profile() -> None:
 
 
 # MARK: - The three host-scoping mechanisms (all generated from INTERCEPT_HOSTS)
+
 
 def is_intercepted_host(host: str) -> bool:
     """Exact hostname match. Subdomains are not implied — list them explicitly if you need them."""

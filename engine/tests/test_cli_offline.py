@@ -12,8 +12,11 @@ import config
 
 _RULES = [
     {"id": "ovr_broad", "mode": "replace", "match": {"method": "GET", "path": "/api/items"}},
-    {"id": "ovr_alpha", "mode": "replace",
-     "match": {"method": "GET", "path": "/api/items", "query": {"kind": "alpha"}}},
+    {
+        "id": "ovr_alpha",
+        "mode": "replace",
+        "match": {"method": "GET", "path": "/api/items", "query": {"kind": "alpha"}},
+    },
     {"id": "ovr_other", "mode": "replace", "match": {"method": "GET", "path": "/api/orders"}},
     {"id": "ovr_off", "active": False, "mode": "replace", "match": {"path": "/api/items"}},
 ]
@@ -66,8 +69,7 @@ def test_explain_match_reports_an_inactive_rule_separately(profile, runner, monk
 
 def test_explain_match_does_not_claim_a_patch_will_answer(profile, runner, monkeypatch):
     """Whether a patch answers depends on the upstream content type, which no dry run can know."""
-    monkeypatch.setattr(api, "_control",
-                        lambda *a, **k: [{"id": "p", "mode": "patch", "match": {"path": "/a"}}])
+    monkeypatch.setattr(api, "_control", lambda *a, **k: [{"id": "p", "mode": "patch", "match": {"path": "/a"}}])
     result = runner.invoke(cli.cli, ["explain-match", "GET", "/a"])
     assert result.exit_code == 0
     assert "is selected" in result.output
@@ -82,8 +84,7 @@ def test_control_surfaces_the_apis_detail_not_just_its_slug(profile, runner, mon
     class _Body:
         @staticmethod
         def read():
-            return json.dumps({"error": "invalid_payload",
-                               "detail": "match: unknown field 'kind'"}).encode()
+            return json.dumps({"error": "invalid_payload", "detail": "match: unknown field 'kind'"}).encode()
 
     def raise_http(*_args, **_kwargs):
         raise urllib.error.HTTPError("http://x", 400, "Bad Request", {}, _Body())  # type: ignore[arg-type]
@@ -108,18 +109,22 @@ def write_session(profile, name, payload):
     return path
 
 
-_WHOLE = {"name": "whole", "overrides": [
-    {"id": "ovr_orders", "mode": "replace", "status": 500,
-     "match": {"method": "GET", "path": "/api/v1/orders/*"}},
-]}
+_WHOLE = {
+    "name": "whole",
+    "overrides": [
+        {"id": "ovr_orders", "mode": "replace", "status": 500, "match": {"method": "GET", "path": "/api/v1/orders/*"}},
+    ],
+}
 
 
-_PARTIAL = {"name": "partial", "overrides": [
-    {"id": "ovr_orders", "mode": "replace", "status": 500,
-     "match": {"method": "GET", "path": "/api/v1/orders/*"}},
-    {"id": "ovr_typo", "mode": "replace", "status": 200, "match": {"paths": "/api/v1/users"}},
-    {"id": "ovr_orders", "mode": "replace", "status": 204, "match": {"path": "/api/v1/dupe"}},
-]}
+_PARTIAL = {
+    "name": "partial",
+    "overrides": [
+        {"id": "ovr_orders", "mode": "replace", "status": 500, "match": {"method": "GET", "path": "/api/v1/orders/*"}},
+        {"id": "ovr_typo", "mode": "replace", "status": 200, "match": {"paths": "/api/v1/users"}},
+        {"id": "ovr_orders", "mode": "replace", "status": 204, "match": {"path": "/api/v1/dupe"}},
+    ],
+}
 
 
 def test_validate_accepts_a_session_that_loads_whole(profile, runner, offline):
@@ -171,22 +176,27 @@ def test_validate_reports_a_file_that_points_at_itself(profile, runner, offline)
     assert text.exit_code == 1 and "cannot resolve path" in text.output
     assert machine.exit_code == 1
     payload = json.loads(machine.output)
-    assert any("loop.json" in problem
-               for session in payload["sessions"] for problem in session["problems"])
+    assert any("loop.json" in problem for session in payload["sessions"] for problem in session["problems"])
 
 
 def test_validate_reports_a_delay_that_is_not_a_finite_number(profile, runner, offline):
     """`1e309` parses as `inf` and `int(inf)` raises OverflowError, which is not a ValidationError
     and not even a ValueError — so the rule that should have been one line of diagnostics took the
     whole command down instead."""
-    write_session(profile, "wild", {"name": "wild", "overrides": [
-        {"id": "ovr_slow", "mode": "replace", "status": 200, "delayMs": 1e309},
-    ]})
+    write_session(
+        profile,
+        "wild",
+        {
+            "name": "wild",
+            "overrides": [
+                {"id": "ovr_slow", "mode": "replace", "status": 200, "delayMs": 1e309},
+            ],
+        },
+    )
     result = runner.invoke(cli.cli, ["validate", "wild", "--json"])
     assert result.exit_code == 1
     payload = json.loads(result.output)
-    assert any("override[0]" in problem and "finite" in problem
-               for problem in payload["sessions"][0]["problems"])
+    assert any("override[0]" in problem and "finite" in problem for problem in payload["sessions"][0]["problems"])
 
 
 def test_explain_match_reports_a_file_that_points_at_itself(profile, runner, offline):
@@ -277,8 +287,7 @@ def test_validate_json_stays_json_for_a_name_that_could_not_be_one(profile, runn
     assert any("invalid session name" in problem for problem in payload["problems"])
 
 
-def test_validate_does_not_bless_a_session_symlinked_out_of_the_profile(profile, runner, offline,
-                                                                       tmp_path):
+def test_validate_does_not_bless_a_session_symlinked_out_of_the_profile(profile, runner, offline, tmp_path):
     """Reported as a bulk-mode gap: `validate NAME` refused the escaping file by name while
     `validate` blessed the very same file found by the glob."""
     outside = tmp_path / "outside.json"
@@ -306,8 +315,7 @@ def test_explain_match_against_a_file_never_asks_the_proxy(profile, runner, offl
     """The whole point: the answer comes from the file and the engine's own matching code, with no
     proxy running and nothing on the machine changed."""
     write_session(profile, "whole", _WHOLE)
-    result = runner.invoke(
-        cli.cli, ["explain-match", "--session", "whole", "GET", "/api/v1/orders/42"])
+    result = runner.invoke(cli.cli, ["explain-match", "--session", "whole", "GET", "/api/v1/orders/42"])
     assert result.exit_code == 0
     assert "ovr_orders is selected" in result.output
 
@@ -325,15 +333,14 @@ def test_explain_match_against_a_partly_loaded_file_exits_non_zero(profile, runn
     """A ranking computed without the rules the loader dropped answers "which rule wins" while
     hiding that the rule you asked about was never a candidate."""
     write_session(profile, "partial", _PARTIAL)
-    result = runner.invoke(
-        cli.cli, ["explain-match", "--session", "partial", "GET", "/api/v1/orders/42"])
+    result = runner.invoke(cli.cli, ["explain-match", "--session", "partial", "GET", "/api/v1/orders/42"])
     assert result.exit_code == 1, "the ranking does not cover the rules the file was written with"
     assert "ovr_orders is selected" in result.output
     assert "dropped at load" in result.output and "override[1]" in result.output
 
 
 def test_explain_match_names_the_file_it_could_not_read(profile, runner, offline):
-    """"Nothing would be selected" is the sentence an empty session produces, and this is not that:
+    """ "Nothing would be selected" is the sentence an empty session produces, and this is not that:
     every rule in the file is absent, not out-ranked."""
     write_session(profile, "broken", "{not json")
     result = runner.invoke(cli.cli, ["explain-match", "--session", "broken", "GET", "/a"])
@@ -351,8 +358,7 @@ def test_explain_match_refuses_a_session_that_does_not_exist(profile, runner, of
 
 def test_explain_match_json_carries_the_diagnostics_for_a_file(profile, runner, offline):
     write_session(profile, "partial", _PARTIAL)
-    result = runner.invoke(
-        cli.cli, ["explain-match", "--session", "partial", "--json", "GET", "/api/v1/orders/42"])
+    result = runner.invoke(cli.cli, ["explain-match", "--session", "partial", "--json", "GET", "/api/v1/orders/42"])
     assert result.exit_code == 1
     payload = json.loads(result.output)
     assert payload["selected"] == "ovr_orders"
@@ -369,8 +375,7 @@ def test_explain_match_json_for_an_unreadable_file_still_has_the_live_shape(prof
     assert payload["problems"]
 
 
-def test_explain_match_against_the_proxy_does_not_claim_its_session_loaded_whole(profile, runner,
-                                                                                monkeypatch):
+def test_explain_match_against_the_proxy_does_not_claim_its_session_loaded_whole(profile, runner, monkeypatch):
     """`problems: []` on the live path would assert something this command never checked — the
     running session's load problems live in the proxy, not in a file it read."""
     monkeypatch.setattr(api, "_control", lambda *a, **k: _RULES)

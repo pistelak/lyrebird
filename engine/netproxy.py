@@ -31,14 +31,11 @@ _COMMAND_TIMEOUT = 5.0
 
 def _run(args: list[str], check: bool = False) -> subprocess.CompletedProcess:
     try:
-        result = subprocess.run(args, check=False, capture_output=True, text=True,
-                                timeout=_COMMAND_TIMEOUT)
+        result = subprocess.run(args, check=False, capture_output=True, text=True, timeout=_COMMAND_TIMEOUT)
     except subprocess.TimeoutExpired:
         # Raised, never returned as empty output: a `networksetup` that did not answer has told us
         # nothing about the PAC, and reading that as "no PAC" is the mistake `pac_status` documents.
-        raise NetworkSetupError(
-            f"`{' '.join(args)}` did not finish within {_COMMAND_TIMEOUT:g}s"
-        ) from None
+        raise NetworkSetupError(f"`{' '.join(args)}` did not finish within {_COMMAND_TIMEOUT:g}s") from None
     if check and result.returncode != 0:
         detail = (result.stderr or result.stdout or "").strip()
         raise NetworkSetupError(f"`{' '.join(args)}` failed: {detail or result.returncode}")

@@ -46,8 +46,12 @@ private func timestamp() -> String {
 /// that would drop every earlier launch.
 enum Recorder {
     static func append(_ record: [String: Any], to name: String) -> String? {
-        guard let directory = FileManager.default.urls(for: .documentDirectory,
-                                                       in: .userDomainMask).first else {
+        guard
+            let directory = FileManager.default.urls(
+                for: .documentDirectory,
+                in: .userDomainMask
+            ).first
+        else {
             return "no Documents directory in this container"
         }
         let url = directory.appendingPathComponent(name)
