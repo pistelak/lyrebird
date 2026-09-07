@@ -5,14 +5,14 @@ description = "Transparent MITM mock proxy for iOS-simulator development (mitmpr
 requires-python = ">=3.12"   # mitmproxy 12.2.3 requires >=3.12
 license = "MIT"
 
-# Dependencies live in requirements.txt / requirements-dev.txt, which is what CI and
-# ../bin/lyrebird actually install — duplicating the pins here would only let them drift.
+# Direct dependencies live in requirements.in / requirements-dev.in. `make lock` generates
+# the hashed requirements.txt / requirements-dev.txt consumed by pip and CI.
 #
 # Lyrebird is deliberately NOT pip-installable. Modules are flat and run by path, because
 # mitmproxy's `-s addon.py` loader puts that file's *directory* on sys.path, and that is what
 # lets the addon `import config` inside the mitmdump child. A package layout would break it.
 #
-#   python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
+#   python3 -m venv .venv && .venv/bin/pip install --require-hashes -r requirements-dev.txt
 #   ../bin/lyrebird up
 #
 # So this file exists for the tool configuration below.
@@ -36,6 +36,8 @@ filterwarnings = [
     "ignore::DeprecationWarning:ldap3.*",
     "ignore::DeprecationWarning:pyasn1.*",
     "ignore::DeprecationWarning:pyparsing.*",
+    "ignore::pyparsing.PyparsingDeprecationWarning:mitmproxy\\.(flowfilter|command_lexer)$",
+    "error::pytest.PytestUnraisableExceptionWarning",
 ]
 
 [tool.ruff]

@@ -413,7 +413,7 @@ def fixture_app(simulator: str) -> Iterator[Path]:
     earlier run's records in place, where the first check would read them as this run's.
     """
     if shutil.which("xcodegen") is None:
-        pytest.skip("xcodegen is not installed (`brew install xcodegen`)")
+        pytest.skip("xcodegen is not installed (run `make setup-app`, then `make acceptance`)")
 
     generated = _run(
         ["xcodegen", "generate", "--project", str(FIXTURE_APP_DIR), "--spec", str(FIXTURE_APP_DIR / "project.yml")]

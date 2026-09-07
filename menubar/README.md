@@ -10,12 +10,13 @@ The Xcode project is generated from `project.yml` via
 [XcodeGen](https://github.com/yonaskolb/XcodeGen), so it isn't committed:
 
 ```bash
-brew install xcodegen        # once
-xcodegen generate            # writes Lyrebird.xcodeproj
-xcodebuild -project Lyrebird.xcodeproj -scheme Lyrebird -configuration Debug build
+# From the repository root:
+make setup-app
+make check-app              # formatting/lint, build, unit tests, fixture build
 ```
 
-Or open the generated `Lyrebird.xcodeproj` in Xcode.
+Or open the generated `menubar/Lyrebird.xcodeproj` in Xcode.
+See [CONTRIBUTING.md](../CONTRIBUTING.md) for pinned tools and formatter setup.
 
 ### Release versioning
 

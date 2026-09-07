@@ -21,7 +21,7 @@ if [[ ! -x "$ENGINE/.venv/bin/python" ]]; then
 lyrebird: no virtualenv at $ENGINE/.venv
 
   cd "$ENGINE"
-  python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+  python3 -m venv .venv && .venv/bin/pip install --require-hashes -r requirements.txt
 EOF
   exit 1
 fi

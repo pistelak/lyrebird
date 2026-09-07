@@ -4,6 +4,7 @@ The live command asks the running proxy for its rules. `validate` and `explain-m
 answer the same questions from a session file instead, under their own mark below.
 """
 
+import io
 import json
 
 import api
@@ -81,13 +82,9 @@ def test_control_surfaces_the_apis_detail_not_just_its_slug(profile, runner, mon
     how a supported matcher field ends up looking unsupported."""
     import urllib.error
 
-    class _Body:
-        @staticmethod
-        def read():
-            return json.dumps({"error": "invalid_payload", "detail": "match: unknown field 'kind'"}).encode()
-
     def raise_http(*_args, **_kwargs):
-        raise urllib.error.HTTPError("http://x", 400, "Bad Request", {}, _Body())  # type: ignore[arg-type]
+        body = io.BytesIO(json.dumps({"error": "invalid_payload", "detail": "match: unknown field 'kind'"}).encode())
+        raise urllib.error.HTTPError("http://example.test", 400, "Bad Request", {}, body)
 
     monkeypatch.setattr(urllib.request, "urlopen", raise_http)
     result = runner.invoke(cli.cli, ["override", "add", '{"mode":"replace"}'])

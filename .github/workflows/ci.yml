@@ -21,31 +21,18 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
-      - name: Install
-        working-directory: engine
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements-dev.txt
-      - name: Lint
-        working-directory: engine
-        run: python -m ruff check .
-      - name: Types
-        working-directory: engine
-        run: python -m mypy
-      - name: Test
-        working-directory: engine
-        run: python -m pytest tests/ -q
+          python-version-file: .tool-versions
+      - name: Install locked development environment
+        run: make setup-engine
+      - name: Check engine and shell scripts
+        run: make check-shell check-engine
 
-      # The tests import the package directly; nothing above ever runs `bin/lyrebird`, which is how
-      # a launcher that could not resolve its own path through a PATH symlink shipped. So build the
-      # documented install — a real `engine/.venv`, the launcher reached by a symlink from outside
-      # the checkout — and drive it from a directory that has nothing to do with the repository.
-      - name: Install the engine venv (the documented install)
+      # Keep the launcher smoke check on a runtime-only environment as a user installs it.
+      - name: Install the runtime-only engine venv
         working-directory: engine
         run: |
-          python3 -m venv .venv
-          .venv/bin/pip install --quiet -r requirements.txt
+          python3 -m venv --clear .venv
+          .venv/bin/pip install --require-hashes -r requirements.txt
 
       - name: Launcher runs from outside the checkout, through a symlink
         shell: bash
@@ -103,16 +90,15 @@ jobs:
           echo "BUILD=$BUILD" >> "$GITHUB_ENV"
           echo "building $MARKETING ($BUILD)"
 
-      - run: brew install xcodegen
-      - name: Generate project
-        working-directory: menubar
-        run: xcodegen generate
-      - name: Build and test
-        working-directory: menubar
-        run: |
-          xcodebuild -project Lyrebird.xcodeproj -scheme Lyrebird \
-            -configuration Debug -derivedDataPath .build \
-            -destination 'platform=macOS' build test
+      - name: Cache pinned Swift tools
+        uses: actions/cache@v4
+        with:
+          path: .build/tools/bin
+          key: swift-tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/tool-versions.env', 'scripts/setup-tools.sh', 'scripts/swift-format.resolved') }}
+      - name: Install pinned Swift tools
+        run: make setup-app
+      - name: Check Swift, build and test
+        run: make check-app
 
       # A verifier that passes everything would let a hard-coded version through unnoticed, so
       # prove it rejects each way the stamp can be wrong before trusting it below.

@@ -1,3 +1,24 @@
+# Developing Lyrebird
+
+For changes to this repository, read [CONTRIBUTING.md](CONTRIBUTING.md) first.
+
+- `engine/`: flat Python runtime modules, with tests in `engine/tests/`.
+- `menubar/`: SwiftUI macOS app and unit tests; `project.yml` generates the Xcode project.
+- `acceptance/`: synthetic iOS fixture; real interception checks are opt-in.
+- `make setup` installs dependencies; `make doctor` checks the toolchain.
+- `make format` formats sources; `make check` runs the ordinary local/CI checks.
+- `make check-engine`, `make check-app`, and `make test-engine TEST_ARGS="-k reset"`
+  support focused work. Python tests need permission to bind local sockets.
+- `make acceptance` changes real simulator/network state; read its contribution instructions
+  and the operator contract below before running it.
+
+Use generic project names, reserved example domains, portable paths and synthetic payloads in
+all tracked content. Never copy unrelated project names, internal paths, real profiles or private
+publication-check rules into this repository. Any private hooks a maintainer keeps locally
+must remain untouched.
+
+---
+
 # Operating Lyrebird from an agent
 
 Lyrebird's contract for coding agents; assumes a shell and JSON.

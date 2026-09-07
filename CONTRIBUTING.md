@@ -2,29 +2,97 @@
 
 ## Setup
 
+Use Python 3.12 (the patch version is in `.tool-versions`) and Xcode 16 or newer, with
+Command Line Tools selected via `xcode-select`. Source builds of the formatter require
+Swift 6 or newer, which setup checks before downloading and compiling. From the repository root:
+
 ```bash
-cd engine
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt -r requirements-dev.txt
-.venv/bin/python -m pytest tests/ -q
+make setup
+make doctor
+make check
 ```
 
-For the menu-bar app: `brew install xcodegen && cd menubar && xcodegen generate`.
+`make setup-engine` recreates `engine/.venv` from the hashed development lock, removing
+packages no longer required. Keep unrelated Python work in a separate environment.
+`make setup-app` installs XcodeGen and swift-format into `.build/tools/bin`, using versions
+from `scripts/tool-versions.env`. It verifies and extracts the complete
+XcodeGen release archive, including its settings bundle. An installed swift-format is reused
+only if its version matches; otherwise setup builds its verified source archive using the
+dependency revisions in `scripts/swift-format.resolved`. The first formatter build needs
+network access and takes a few minutes.
+No global tools or git hooks are installed or replaced.
+
+The pinned tools are XcodeGen 2.46.0 and swift-format 602.0.0. Xcode itself is supplied by the
+machine; `make doctor` reports its version. The workflow uses the `macos-15` runner image,
+so the Xcode build environment is not completely locked. Use the same selected Xcode for
+local builds and investigate compiler-version differences when reproducing CI failures.
 
 ## Before opening a pull request
 
-From the repository root. Each line is a subshell, so neither depends on the other's directory:
-
 ```bash
-(cd engine && .venv/bin/python -m ruff check . && .venv/bin/python -m mypy && .venv/bin/python -m pytest tests/ -q)
-(cd menubar && xcodegen generate && xcodebuild -project Lyrebird.xcodeproj -scheme Lyrebird build)
+make format         # Ruff (including safe lint fixes) and swift-format
+make check          # shell syntax, Python checks, Swift checks, app tests and fixture build
 ```
 
-CI runs both.
+CI calls the same `make check-engine`, `make check-shell`, and `make check-app` targets.
+Release stamping and launcher smoke checks also run in CI. For a shorter development loop:
+
+```bash
+make check-engine
+make test-engine TEST_ARGS="-k reset"
+make check-app
+```
+
+`make help` lists the main targets. Checks do not install dependencies or change network
+settings. Tests bind local sockets, so an agent sandbox must allow that. Build output stays in
+ignored `.build` directories. `make acceptance` is separate and never part of `make check`.
+
+## Formatting and editor setup
+
+Ruff owns Python formatting and import ordering; swift-format owns Swift formatting and lint.
+Their checked-in configurations and `.editorconfig` set four-space source indentation and a
+120-column formatter width. Makefile recipes use tabs. Point your editor's Python interpreter
+at `engine/.venv/bin/python` and Swift formatter at `.build/tools/bin/swift-format`; enable
+format-on-save if desired. Generated projects, virtualenvs and build output are outside the
+formatter targets.
+
+Only use Python `# fmt: off` / `# fmt: on` around a statement when table alignment carries
+meaning. Swift's `OnlyOneTrailingClosureArgument` rule is disabled to retain idiomatic SwiftUI
+calls with an `onDismiss` closure and trailing view content. Other enabled Swift lint rules
+fail the check via `--strict`. Keep the complete rule map: swift-format replaces that map
+instead of merging it with defaults. Negative naming and indentation probes in `make lint-app`
+verify that both style rules and whitespace checks remain enforced.
+
+## Updating dependencies
+
+Edit `engine/requirements.in` or `engine/requirements-dev.in`, then run:
+
+```bash
+make lock
+make setup-engine
+make check-engine
+```
+
+The pinned uv resolver generates universal Python 3.12 requirements with transitive versions
+and artifact hashes. The development lock is constrained by the runtime lock so both install
+the same runtime versions. `make check-locks` verifies freshness stamps offline, so editing
+inputs without relocking or manually changing generated contents fails the check unless someone
+deliberately re-stamps them. Stamps catch accidental drift; they do not verify a dependency
+resolver's work. Existing
+resolutions are retained when possible; to upgrade a
+transitive dependency deliberately, use `uv pip compile --upgrade-package NAME` with the same
+flags as `make lock`, then regenerate both locks and run the checks. Do not edit generated
+`.txt` files by hand or add private index URLs or local filesystem dependencies.
+
+Normal installs still use pip; Lyrebird retains its flat modules and is not a Python package.
+Update Swift tool versions and archive SHA-256 values together in `scripts/tool-versions.env`
+(and refresh `scripts/swift-format.resolved` for formatter dependency changes),
+then run `make setup-app`, `make format-app`, and `make check-app`. Review formatter upgrades
+as separate mechanical changes.
 
 ## Acceptance checks
 
-The two lines above are fast and hermetic: they replace the simulator, the network and the proxy
+The ordinary checks are hermetic: they replace the simulator, the network and the proxy
 with doubles. They check the orchestration — what is called, in what order, with what result — but
 nothing in them can prove that CA trust, the relaunch, PAC routing or teardown work against a real
 simulator and a real network service, because each of those lives in the part they replace. The
@@ -32,12 +100,11 @@ acceptance checks are where those are exercised, by driving a real app in a real
 a real proxy:
 
 ```bash
-(cd engine && LYREBIRD_ACCEPTANCE_SIMULATOR=<udid-or-name> \
-   .venv/bin/python -m pytest -m acceptance tests/acceptance -q)
+LYREBIRD_ACCEPTANCE_SIMULATOR=<udid-or-name> make acceptance
 ```
 
-**Prerequisites.** Xcode with a simulator runtime, `xcodegen` (`brew install xcodegen`), and the
-engine venv from *Setup*. Exactly one simulator may be booted while they run: the harness passes
+**Prerequisites.** Xcode with a simulator runtime and the tools and engine venv from *Setup*.
+Exactly one simulator may be booted while they run: the harness passes
 `up --simulator` so the CA and the relaunch are bound to the device it means, but it still installs
 the app and reads its container itself, and a second booted device makes "which one" a question
 nothing here can answer. Boot one yourself, or name one in `LYREBIRD_ACCEPTANCE_SIMULATOR` (udid or
@@ -68,8 +135,8 @@ stays `DIRECT`.
 
 **The profile.** Made by the run, not committed: `lyrebird init` writes the bundled example
 profile into a temporary directory and the harness points its `simBundleId` at the fixture app.
-Nothing profile-shaped lives in the repository outside `engine/examples`, and the pre-push privacy
-scanner enforces that.
+Keep generated profiles outside the repository; only the synthetic examples in `engine/examples`
+belong in version control.
 
 **Cleanup.** It runs `down` however the run ended — a failing check, a Ctrl-C, or a `kill`, all of
 which take the same path: SIGTERM and SIGHUP are turned into the `KeyboardInterrupt` pytest already
@@ -126,8 +193,8 @@ PAC, or CA trust.
 
 Scale the landing to the change:
 
-- **Directly on `main`:** docs, comments, and small fixes — with both check
-  lines above green, and after the independent review below for anything
+- **Directly on `main`:** docs, comments, and small fixes — with `make check`
+  green, and after the independent review below for anything
   beyond a trivial fix.
 - **Via a branch and pull request:** anything security-relevant (host scoping,
   path containment, the control-API guard, CA handling), changes to command
@@ -219,6 +286,19 @@ real, name what you skip.
 `example.org`, `example.net`, `*.test`, `*.invalid`, `localhost` — and `com.example.*` bundle
 identifiers. A fixture naming a host somebody actually runs is a fixture that breaks when that
 host changes, and it points strangers at a server they have no business knowing about.
+
+**Use generic names and portable paths.** Examples, tests, comments, screenshots and shared logs
+must not identify unrelated projects, customers, internal services or developer workspaces.
+Use names such as `Store`, `orders-outage` and `com.example.Store`, paths such as
+`/path/to/profile` or a temporary directory, and synthetic payloads. Do not copy real response
+bodies and merely rename their host: identifiers and nested fields can still disclose their origin.
+Public dependency links and this repository's own identity are fine.
+
+**Optional private checks stay private.** A maintainer may keep publication checks outside the
+tracked tree. A fresh clone does not inherit local hooks. Provision any such checks from your
+own trusted private source; do not copy their project-specific rules into this repository.
+Before sharing a diff, review new names, paths, fixtures and logs against the generic-example
+rules above. `make setup` deliberately leaves existing hooks alone.
 
 **Never commit a profile.** Profiles hold the hosts you intercept and the payloads you saved, so
 they live outside this repository. A session file can contain a real response body in full; see
