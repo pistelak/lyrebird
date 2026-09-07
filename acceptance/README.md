@@ -14,7 +14,7 @@ acceptance/
   FixtureApp/                     the app (xcodegen; project.yml is the source of truth)
     project.yml
     FixtureApp/FixtureApp.swift
-  fixture-sessions/               copied into the temporary profile's sessions/ before `up`
+  fixture-scenarios/              copied into the temporary profile's scenarios/ before `up`
     fixture-decoy.json            the scenario that must NOT answer once another is selected
     fixture-replaced.json         one replaced HTTPS response, status 503
     fixture-sequence.json         two steps, one per launch
@@ -71,7 +71,7 @@ The harness does all of the above for you, into a freshly reinstalled container.
 
 ## The profile
 
-There isn't one here, deliberately. Nothing profile-shaped — a `profile.json`, or a `sessions/`
+There isn't one here, deliberately. Nothing profile-shaped — a `profile.json`, or a `scenarios/`
 directory — lives in this repository outside `engine/examples`, because committed profiles can disclose the hosts you intercept and the payloads you saved.
 Use generic names and synthetic data throughout the fixture.
 
@@ -79,11 +79,11 @@ So the harness makes its own. `lyrebird init` writes the bundled example profile
 directory, the harness asserts that it intercepts `api.example.com` — the fixture app's URL is
 compiled in, so a bundled profile that stopped intercepting it would make every check fail as "the
 app never reached the proxy" — and sets `simBundleId` to the fixture's bundle id, which is exactly
-what `init`'s own output tells a new user to do. The three sessions below are copied in beside it.
+what `init`'s own output tells a new user to do. The three scenarios below are copied in beside it.
 Naming the bundle id is what lets `up` relaunch the app itself, which is the ordering the checks
 are about.
 
-The three sessions answer the same request, and differ so that answering with the wrong one is
+The three scenarios answer the same request, and differ so that answering with the wrong one is
 visible rather than plausible:
 
 - **fixture-decoy** — 200, marker `LYREBIRD-FIXTURE-DECOY`. Activated first, so that
