@@ -22,6 +22,10 @@ dependency revisions in `scripts/swift-format.resolved`. The first formatter bui
 network access and takes a few minutes.
 No global tools or git hooks are installed or replaced.
 
+CI uses the latest Python 3.12 patch available from `actions/setup-python`; security-only
+patch releases in `.tool-versions` may not have GitHub-hosted macOS binaries. The runtime and
+development dependency locks are the same locally and in CI, but the interpreter patch can differ.
+
 The pinned tools are XcodeGen 2.46.0 and swift-format 602.0.0. Xcode itself is supplied by the
 machine; `make doctor` reports its version. The workflow uses the `macos-15` runner image,
 so the Xcode build environment is not completely locked. Use the same selected Xcode for
