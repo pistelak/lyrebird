@@ -347,9 +347,18 @@ def test_watchdog_restores_under_the_lock_up_takes_and_looks_again_once_it_holds
     restore happens under `up`'s lock, and health is checked again once the lock is held."""
     config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
     config.write_runtime({"proxyPid": 99, "service": "Wi-Fi", "previousPac": {"url": "", "enabled": False}})
-    health = iter([None])  # dead at the first look; live by the time the lock is held
+    looks = []
     locked = []
     restored = []
+
+    def health():
+        """Dead at the first look; by the time the lock is held, `up` has started a replacement
+        and recorded it — which is what makes the record's proxy the live one again."""
+        looks.append(1)
+        if len(looks) == 1:
+            return None
+        config.write_runtime({**config.read_runtime(), "proxyPid": 2})
+        return {"pid": 2}
 
     class Stop(Exception):
         pass
@@ -360,7 +369,7 @@ def test_watchdog_restores_under_the_lock_up_takes_and_looks_again_once_it_holds
     def sleep(seconds):
         raise Stop  # the first poll delay: by then it must be watching again, not restoring
 
-    monkeypatch.setattr(api, "_health", lambda: next(health, {"pid": 2}))
+    monkeypatch.setattr(api, "_health", health)
     monkeypatch.setattr(fcntl, "flock", flock)
     monkeypatch.setattr(netproxy, "pac_status", lambda service: netproxy.PacStatus(netproxy.pac_url(), True, True))
     monkeypatch.setattr(netproxy, "restore_pac", lambda *a: restored.append(a))
@@ -372,6 +381,131 @@ def test_watchdog_restores_under_the_lock_up_takes_and_looks_again_once_it_holds
     assert locked and set(locked) == {fcntl.LOCK_EX}, "the restore must wait for any `up` in progress"
     assert restored == [], "the replacement owns the network now"
     assert config.runtime_file().exists(), "the replacement's runtime file must survive"
+
+
+def test_watchdog_retires_when_another_proxy_holds_its_control_port(profile, runner, monkeypatch):
+    """Issue #59. Health answers "a proxy is up on this port", which is not "my proxy is up": the
+    port outlives the proxy that opened it. A watchdog whose proxy died while a later `up` took
+    the port never reached the restore that holds its only `return`, so it ran for as long as the
+    stranger did — and stayed eligible to repair a PAC for a proxy that was not the one running."""
+    config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
+    config.write_runtime({"proxyPid": 99, "service": "Wi-Fi", "previousPac": {"url": "", "enabled": False}})
+    touched = []
+    monkeypatch.setattr(api, "_health", lambda: {"pid": 2})  # a stranger, on the same port
+    monkeypatch.setattr(netproxy, "pac_status", lambda service: netproxy.PacStatus("", False, False))
+    monkeypatch.setattr(netproxy, "set_pac", lambda service: touched.append(service))
+    monkeypatch.setattr(netproxy, "restore_pac", lambda *a: touched.append(a))
+    monkeypatch.setattr(time, "sleep", lambda seconds: pytest.fail("it kept polling a stranger's proxy"))
+
+    assert runner.invoke(cli.cli, ["_watchdog", "Wi-Fi"]).exit_code == 0
+    assert touched == [], "the live proxy owns the network now"
+    assert config.runtime_file().exists(), "the record is the only description of what to put back"
+
+
+def test_watchdog_retires_when_the_record_names_a_live_successor(profile, runner, monkeypatch):
+    """`up` replaces a watchdog that watches another service, and records the new one. Two
+    processes repairing one service is a state nothing here was designed for, so the one the
+    record no longer names stands down."""
+    config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
+    config.write_runtime(
+        {"proxyPid": 99, "service": "Wi-Fi", "watchdogPid": 4242, "previousPac": {"url": "", "enabled": False}}
+    )
+    touched = []
+    monkeypatch.setattr(supervisor, "_pid_is_ours", lambda pid, marker: True)
+    monkeypatch.setattr(api, "_health", lambda: {"pid": 99})
+    monkeypatch.setattr(netproxy, "pac_status", lambda service: netproxy.PacStatus("", False, False))
+    monkeypatch.setattr(netproxy, "set_pac", lambda service: touched.append(service))
+    monkeypatch.setattr(time, "sleep", lambda seconds: pytest.fail("a superseded watchdog kept polling"))
+
+    assert runner.invoke(cli.cli, ["_watchdog", "Wi-Fi"]).exit_code == 0
+    assert touched == [], "the recorded watchdog owns this service"
+
+
+def test_watchdog_retires_once_down_has_removed_the_record(profile, runner, monkeypatch):
+    """With no record there is nothing to protect and nothing to put back — and the port may
+    simply belong to another state root's proxy, which is not this watchdog's to serve."""
+    config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
+    touched = []
+    monkeypatch.setattr(api, "_health", lambda: {"pid": 99})
+    monkeypatch.setattr(netproxy, "set_pac", lambda service: touched.append(service))
+    monkeypatch.setattr(time, "sleep", lambda seconds: pytest.fail("it kept polling with no record"))
+
+    assert runner.invoke(cli.cli, ["_watchdog", "Wi-Fi"]).exit_code == 0
+    assert touched == []
+
+
+def test_watchdog_follows_the_record_when_up_adopts_a_different_proxy(profile, runner, monkeypatch):
+    """`up` reuses a running watchdog across proxies, so identity has to come from the record it
+    reads each poll rather than from the pid it started with. Bound to the pid it was spawned for,
+    a reused watchdog would retire the moment `up` adopted another one and leave nothing
+    watching."""
+    config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
+    config.write_runtime({"proxyPid": 99, "service": "Wi-Fi", "previousPac": {"url": "", "enabled": False}})
+    repaired = []
+    live = {"pid": 99}
+
+    def sleep(seconds):
+        if live["pid"] == 100:
+            raise _Stop
+        # Between polls, and so between this watchdog's turns holding the lock: `up` adopted a
+        # different proxy and rewrote the record, keeping this watchdog rather than spawning one.
+        config.write_runtime({**config.read_runtime(), "proxyPid": 100})
+        live["pid"] = 100
+
+    monkeypatch.setattr(api, "_health", lambda: dict(live))
+    monkeypatch.setattr(netproxy, "pac_status", lambda service: netproxy.PacStatus(netproxy.pac_url(), False, True))
+    monkeypatch.setattr(netproxy, "set_pac", lambda service: repaired.append(service))
+    monkeypatch.setattr(time, "sleep", sleep)
+
+    result = runner.invoke(cli.cli, ["_watchdog", "Wi-Fi"])
+
+    assert isinstance(result.exception, _Stop), result.output
+    assert repaired == ["Wi-Fi", "Wi-Fi"], "it stopped serving the record when the proxy changed"
+
+
+def test_watchdog_does_not_retire_when_up_replaces_the_proxy_while_it_waits_for_the_lock(profile, runner, monkeypatch):
+    """`up` can start a replacement and adopt this very watchdog in the gap between its look at
+    health and the lock it takes to decide on it. Comparing the older look against the newer record
+    then retires the one watchdog the new proxy has, and leaves its PAC with nothing watching it —
+    the shape this whole change exists to remove, arrived at from the other side."""
+    config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
+    config.write_runtime(
+        {"proxyPid": 99, "service": "Wi-Fi", "watchdogPid": os.getpid(), "previousPac": {"url": "", "enabled": False}}
+    )
+    live = {"pid": 99}
+    repaired = []
+
+    def took_the_lock(handle, operation):
+        # `up` got there first: a new proxy, this watchdog kept, the record already rewritten.
+        config.write_runtime({**config.read_runtime(), "proxyPid": 100})
+        live["pid"] = 100
+
+    monkeypatch.setattr(fcntl, "flock", took_the_lock)
+    monkeypatch.setattr(api, "_health", lambda: dict(live))
+    monkeypatch.setattr(netproxy, "pac_status", lambda service: netproxy.PacStatus(netproxy.pac_url(), False, True))
+    monkeypatch.setattr(netproxy, "set_pac", lambda service: repaired.append(service))
+    monkeypatch.setattr(time, "sleep", lambda seconds: (_ for _ in ()).throw(_Stop()))
+
+    result = runner.invoke(cli.cli, ["_watchdog", "Wi-Fi"])
+
+    assert isinstance(result.exception, _Stop), result.output
+    assert repaired == ["Wi-Fi"], "it retired on a stale look and left the new proxy unwatched"
+
+
+def test_watchdog_keeps_serving_a_record_that_names_no_live_watchdog(profile, runner, monkeypatch):
+    """`up` holds this lock from before it spawns until after it records the pid, so a watchdog
+    that got the lock cannot be looking at a half-written record — an unnamed one means an `up`
+    that failed partway. There is no successor to hand over to, and standing down would leave the
+    PAC with nobody watching it."""
+    repaired = _watch_one_poll(
+        monkeypatch, recorded_service="Wi-Fi", pac=netproxy.PacStatus(netproxy.pac_url(), False, True)
+    )
+    monkeypatch.setattr(supervisor, "_pid_is_ours", lambda pid, marker: True)  # would retire, if one were named
+
+    result = runner.invoke(cli.cli, ["_watchdog", "Wi-Fi"])
+
+    assert isinstance(result.exception, _Stop)
+    assert repaired == ["Wi-Fi"]
 
 
 class _Stop(Exception):

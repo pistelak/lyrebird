@@ -810,8 +810,47 @@ def watchdog(service: str) -> None:
             if _restore_after_death(service):
                 return
             continue  # a replacement proxy is live: go back to watching it
+        if _should_retire():
+            return
         _repair_pac(service)
         time.sleep(2)
+
+
+def _should_retire() -> bool:
+    """Whether the proxy answering on our control port is still the one this watchdog serves.
+
+    Health alone answers "is a proxy up on this port", which is not the question: the port outlives
+    the proxy that opened it, so a watchdog whose proxy died while a later `up` took the port kept
+    seeing health, never reached the restore that holds the loop's only `return`, and repaired a PAC
+    for a proxy that was not the one running. Ports are reused exactly as pids are, which
+    `_pid_is_ours` already refuses to trust. Pinned by
+    `test_watchdog_retires_when_another_proxy_holds_its_control_port`.
+
+    Health is read here rather than passed in, because the caller's look happened before this lock:
+    `up` can start a replacement and adopt this very watchdog in that gap, and comparing the older
+    look against the newer record retires the one watchdog the new proxy has — see
+    `test_watchdog_does_not_retire_when_up_replaces_the_proxy_while_it_waits_for_the_lock`. Both
+    observations have to come from inside one critical section to mean anything together.
+
+    Retiring leaves the record alone. It is the only description of what to put back, and health
+    proves a listener rather than a successor: records are keyed by state root *and* port, so a
+    replacement under another state root answers without inheriting this record's service or
+    `previousPac`. A PAC stranded that way is for `down`, or the recovery in TROUBLESHOOTING.md.
+    """
+    with open(config.lock_file(), "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        runtime = config.read_runtime()
+        if not runtime:
+            return True  # `down` has been, or this port's record belongs to another state root
+        recorded = runtime.get("watchdogPid")
+        if recorded is not None and recorded != os.getpid() and _pid_is_ours(recorded, "_watchdog"):
+            return True  # a live successor owns the record; two of us repairing one service is nobody's design
+        health = api._health()
+        if health is None:
+            return False  # it died while we waited: the next look takes the restore path, not this one
+        # A record naming no live watchdog is one no `up` has claimed — it failed partway, or the
+        # watchdog it named has since gone. Either way there is no successor to hand over to.
+        return health.get("pid") != runtime.get("proxyPid")
 
 
 def _repair_pac(service: str) -> None:
