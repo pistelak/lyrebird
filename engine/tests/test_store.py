@@ -2,6 +2,7 @@
 
 import errno
 import json
+import shlex
 
 import pytest
 
@@ -1055,6 +1056,20 @@ def test_a_profile_with_both_directories_loads_from_scenarios(profile):
 
     assert "kept" in subject.scenarios
     assert "stale" not in subject.scenarios
+
+
+def test_the_legacy_remedy_is_a_command_a_shell_can_run(profile):
+    """The message exists to hand over one line to paste. Interpolated bare, a profile under
+    `/path/to/My Profile` produced `mv /path/to/My Profile/sessions …` — four arguments to `mv`,
+    so the remedy for the refusal was the one part of it that did not work."""
+    spaced = profile.parent / "My Profile"
+    (spaced / "sessions").mkdir(parents=True)
+
+    with pytest.raises(store.LegacyProfileLayout) as raised:
+        store.refuse_legacy_layout(spaced)
+
+    remedy = str(raised.value).rsplit("rename it:  ", 1)[1]
+    assert shlex.split(remedy) == ["mv", str(spaced / "sessions"), str(spaced / "scenarios")]
 
 
 def test_scenario_files_refuses_a_legacy_sessions_layout(profile):

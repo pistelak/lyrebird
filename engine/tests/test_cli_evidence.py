@@ -254,7 +254,7 @@ def test_assert_answered_says_so_when_the_control_api_is_unreachable(profile, ru
 
 def test_assert_answered_refuses_a_proxy_that_cannot_report_counts(profile, runner, monkeypatch):
     """An engine too old to report counts must not be read as a rule that answered nothing — that
-    turns a restart into a debugging scenario."""
+    turns a restart into a debugging session."""
     monkeypatch.setattr(api, "_health", lambda: {"activeScenario": "default", "sequences": []})
     result = runner.invoke(cli.cli, ["assert-answered", "ovr_a"])
     assert result.exit_code == 1

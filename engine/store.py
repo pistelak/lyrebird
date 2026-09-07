@@ -21,6 +21,7 @@ import copy
 import json
 import re
 import secrets
+import shlex
 from collections import deque
 from datetime import UTC, datetime
 from pathlib import Path
@@ -53,9 +54,13 @@ def refuse_legacy_layout(profile_dir: Path) -> None:
     """
     legacy, current = profile_dir / "sessions", profile_dir / "scenarios"
     if legacy.is_dir() and not current.exists():
+        # `shlex.join`, not an f-string: a profile under a path with a space in it produced a
+        # remedy the shell reads as four arguments, so the one line this message exists to hand
+        # over was the one thing that did not work — see
+        # test_the_legacy_remedy_is_a_command_a_shell_can_run.
         raise LegacyProfileLayout(
             f"{profile_dir} keeps its scenarios in {legacy} — Lyrebird reads {current} now.\n"
-            f"  rename it:  mv {legacy} {current}"
+            f"  rename it:  {shlex.join(['mv', str(legacy), str(current)])}"
         )
 
 
