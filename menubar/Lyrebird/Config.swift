@@ -45,6 +45,6 @@ enum Config {
         string(profilePathKey, default: "")
     }
 
-    /// The menu re-reads health, sessions and recent traffic at this interval.
+    /// The menu re-reads health, scenarios and recent traffic at this interval.
     static let pollSeconds = 2.0
 }

@@ -15,7 +15,7 @@ struct SettingsView: View {
                 "Profile directory", text: $profilePath,
                 placeholder: "~/lyrebird-profiles/my-app")
             Text(
-                "The profile holds the hosts to intercept, your saved sessions, and the "
+                "The profile holds the hosts to intercept, your saved scenarios, and the "
                     + "simulator bundle id. Leave blank to use the engine's default profile."
             )
             .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)

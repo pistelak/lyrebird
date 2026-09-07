@@ -26,7 +26,7 @@ struct MockClient: Sendable {
     }
 
     /// Why a write did not happen. Reads stay best-effort (see below), but a write that returns
-    /// normally after a 404 tells the menu the session was activated when it was not.
+    /// normally after a 404 tells the menu the scenario was activated when it was not.
     enum ClientError: LocalizedError {
         /// The request never got an HTTP answer — proxy down, wrong port, connection refused.
         case transport(String)
@@ -102,12 +102,12 @@ struct MockClient: Sendable {
         return .up(health)
     }
 
-    func sessions() async -> SessionList? { await get("/__mock__/sessions", as: SessionList.self) }
+    func scenarios() async -> ScenarioList? { await get("/__mock__/scenarios", as: ScenarioList.self) }
 
     func recent() async -> [RecentEntry] { await get("/__mock__/recent", as: [RecentEntry].self) ?? [] }
 
     func activate(_ name: String) async throws {
-        guard var request = request(for: "/__mock__/sessions/active", method: "PUT") else {
+        guard var request = request(for: "/__mock__/scenarios/active", method: "PUT") else {
             throw ClientError.transport("could not build a control-API URL from '\(base)'")
         }
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")

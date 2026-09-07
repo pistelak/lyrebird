@@ -2,7 +2,7 @@ import Foundation
 
 /// Only the fields the menu actually renders. Unknown JSON keys are ignored by the decoder.
 struct Health: Codable, Sendable {
-    var activeSession: String?
+    var activeScenario: String?
     var overrideCount: Int?
     var proxyUp: Bool?
     var intercepting: Bool?
@@ -15,7 +15,7 @@ struct Health: Codable, Sendable {
     var profileFingerprint: String?
 }
 
-struct SessionSummary: Codable, Sendable, Identifiable {
+struct ScenarioSummary: Codable, Sendable, Identifiable {
     var name: String
     var overrideCount: Int
     var verified: Bool
@@ -23,9 +23,9 @@ struct SessionSummary: Codable, Sendable, Identifiable {
     var id: String { name }
 }
 
-struct SessionList: Codable, Sendable {
+struct ScenarioList: Codable, Sendable {
     var active: String
-    var sessions: [SessionSummary]
+    var scenarios: [ScenarioSummary]
 }
 
 struct RecentEntry: Codable, Sendable {

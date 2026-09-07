@@ -105,9 +105,9 @@ enum Stub {
         let body: String
         switch path {
         case "/__mock__/health":
-            body = #"{"activeSession":"baseline","proxyUp":true,"intercepting":true}"#
-        case "/__mock__/sessions":
-            body = #"{"active":"baseline","sessions":[]}"#
+            body = #"{"activeScenario":"baseline","proxyUp":true,"intercepting":true}"#
+        case "/__mock__/scenarios":
+            body = #"{"active":"baseline","scenarios":[]}"#
         default:
             body = "[]"
         }

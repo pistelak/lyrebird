@@ -18,7 +18,7 @@ struct MenuContentView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             Divider()
-            sessionsSection
+            scenariosSection
             Divider()
             recentSection
             Divider()
@@ -67,31 +67,31 @@ struct MenuContentView: View {
         }
     }
 
-    private var sessionsSection: some View {
+    private var scenariosSection: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("SESSIONS").font(.caption2).foregroundStyle(.secondary)
-            if let list = model.sessions {
-                ForEach(list.sessions) { session in
+            Text("SCENARIOS").font(.caption2).foregroundStyle(.secondary)
+            if let list = model.scenarios {
+                ForEach(list.scenarios) { scenario in
                     Button {
-                        Task { await model.activate(session.name) }
+                        Task { await model.activate(scenario.name) }
                     } label: {
                         HStack(spacing: 6) {
                             Image(
-                                systemName: session.name == list.active
+                                systemName: scenario.name == list.active
                                     ? "largecircle.fill.circle" : "circle")
-                            Text(session.name)
-                            if session.verified {
+                            Text(scenario.name)
+                            if scenario.verified {
                                 Image(systemName: "checkmark.seal.fill").foregroundStyle(.green)
                             }
                             Spacer()
-                            Text("\(session.overrideCount)").foregroundStyle(.secondary)
+                            Text("\(scenario.overrideCount)").foregroundStyle(.secondary)
                         }
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                 }
             } else {
-                Text(model.sessionsPlaceholder).font(.caption).foregroundStyle(.secondary)
+                Text(model.scenariosPlaceholder).font(.caption).foregroundStyle(.secondary)
             }
         }
     }

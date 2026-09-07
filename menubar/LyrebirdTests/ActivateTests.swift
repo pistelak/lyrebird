@@ -2,8 +2,8 @@ import XCTest
 
 @testable import Lyrebird
 
-/// Activating a session is the one menu action that used to return the same way whether the
-/// engine accepted it or refused it: the client discarded the result of the PUT, so a session
+/// Activating a scenario is the one menu action that used to return the same way whether the
+/// engine accepted it or refused it: the client discarded the result of the PUT, so a scenario
 /// deleted between the last refresh and the click moved nothing and explained nothing. These pin
 /// each way the write can fail to a message the menu can show.
 ///
@@ -64,20 +64,20 @@ final class ActivateTests: XCTestCase {
 
         let request = try XCTUnwrap(StubURLProtocol.requests.first)
         XCTAssertEqual(request.httpMethod, "PUT")
-        XCTAssertEqual(request.url?.path, "/__mock__/sessions/active")
+        XCTAssertEqual(request.url?.path, "/__mock__/scenarios/active")
         XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/json")
         let body = try JSONSerialization.jsonObject(with: StubURLProtocol.body(of: request)) as? [String: String]
         XCTAssertEqual(body, ["name": "orders-outage"])
     }
 
-    func testASessionThatNoLongerExistsSurfacesTheServersSlugInsteadOfReturningQuietly() async {
+    func testAScenarioThatNoLongerExistsSurfacesTheServersSlugInsteadOfReturningQuietly() async {
         StubURLProtocol.install { request in
-            (Stub.response(request, 404), Data(#"{"error":"unknown_session","name":"orders-outage"}"#.utf8))
+            (Stub.response(request, 404), Data(#"{"error":"unknown_scenario","name":"orders-outage"}"#.utf8))
         }
 
         let message = await messageFromFailedActivate(makeClient(), expecting: 404)
 
-        XCTAssertEqual(message, "unknown_session")
+        XCTAssertEqual(message, "unknown_scenario")
     }
 
     func testADetailBeatsTheErrorSlugSoTheMessageSaysWhatToDoAboutIt() async {
@@ -145,12 +145,13 @@ final class ActivateTests: XCTestCase {
 
     // MARK: - Model
 
-    func testAFailedActivateNamesTheSessionAndTheServersExplanationInLastError() async {
+    func testAFailedActivateNamesTheScenarioAndTheServersExplanationInLastError() async {
         StubURLProtocol.install { request in
             guard request.httpMethod == "PUT" else { return Stub.read(request) }
             return (
                 Stub.response(request, 404),
-                Data(#"{"error":"unknown_session","detail":"no session named 'orders-outage' — it was deleted"}"#.utf8)
+                Data(
+                    #"{"error":"unknown_scenario","detail":"no scenario named 'orders-outage' — it was deleted"}"#.utf8)
             )
         }
         let model = AppModel(client: makeClient(), autoStart: false, expectedFingerprint: "a1b2c3")
@@ -160,7 +161,7 @@ final class ActivateTests: XCTestCase {
         let lastError = model.lastError ?? ""
         XCTAssertTrue(
             lastError.contains("orders-outage"),
-            "the menu lists several sessions; the message must say which one: \(lastError)")
+            "the menu lists several scenarios; the message must say which one: \(lastError)")
         // The detail, not the slug: the slug says what kind of thing went wrong, the detail says
         // what to do about it, and the model must pass the more useful half through.
         XCTAssertTrue(lastError.contains("it was deleted"), lastError)
@@ -169,7 +170,7 @@ final class ActivateTests: XCTestCase {
     func testASucceedingActivateClearsTheErrorLeftByTheOneBefore() async {
         StubURLProtocol.install { request in
             guard request.httpMethod == "PUT" else { return Stub.read(request) }
-            return (Stub.response(request, 404), Data(#"{"error":"unknown_session"}"#.utf8))
+            return (Stub.response(request, 404), Data(#"{"error":"unknown_scenario"}"#.utf8))
         }
         let model = AppModel(client: makeClient(), autoStart: false, expectedFingerprint: "a1b2c3")
         await model.activate("orders-outage")
@@ -187,7 +188,7 @@ final class ActivateTests: XCTestCase {
     func testAFailedActivateStillReleasesBusyAndRefreshesTheStaleList() async {
         StubURLProtocol.install { request in
             guard request.httpMethod == "PUT" else { return Stub.read(request) }
-            return (Stub.response(request, 404), Data(#"{"error":"unknown_session"}"#.utf8))
+            return (Stub.response(request, 404), Data(#"{"error":"unknown_scenario"}"#.utf8))
         }
         let model = AppModel(client: makeClient(), autoStart: false, expectedFingerprint: "a1b2c3")
 
@@ -195,7 +196,7 @@ final class ActivateTests: XCTestCase {
 
         XCTAssertFalse(model.busy, "a failure that leaves busy set locks every other menu action")
         let paths = StubURLProtocol.requests.map { ($0.httpMethod ?? "") + " " + ($0.url?.path ?? "") }
-        let put = paths.firstIndex(of: "PUT /__mock__/sessions/active")
+        let put = paths.firstIndex(of: "PUT /__mock__/scenarios/active")
         let health = paths.firstIndex(of: "GET /__mock__/health")
         XCTAssertNotNil(put)
         XCTAssertNotNil(health, "the list that produced the 404 was never re-read: \(paths)")
