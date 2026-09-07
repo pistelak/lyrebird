@@ -53,6 +53,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 import pytest
+import simstate
 
 REPO = Path(__file__).resolve().parents[3]
 LYREBIRD = REPO / "bin" / "lyrebird"
@@ -391,8 +392,11 @@ def simulator() -> Iterator[str]:
                 stopped = _try_run(["xcrun", "simctl", "shutdown", udid], timeout=BOOT_TIMEOUT)
             if stopped is None or stopped.returncode != 0:
                 pytest.fail(
-                    f"this run booted {device['name']} ({udid}) and could not shut it "
-                    f"down again: {stopped.stderr if stopped else 'simctl did not run'}"
+                    simstate.cleanup_failure(
+                        f"this run booted {device['name']} ({udid}) and could not shut it down again",
+                        stopped,
+                        udid,
+                    )
                 )
 
 
@@ -471,8 +475,7 @@ def fixture_app(simulator: str) -> Iterator[Path]:
             removed = _try_run(["xcrun", "simctl", "uninstall", simulator, BUNDLE_ID])
         if removed is None or removed.returncode != 0:
             pytest.fail(
-                f"could not uninstall {BUNDLE_ID} from {simulator}: "
-                f"{removed.stderr if removed else 'simctl did not run'}"
+                simstate.cleanup_failure(f"could not uninstall {BUNDLE_ID} from {simulator}", removed, simulator)
             )
 
 
