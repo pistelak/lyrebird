@@ -28,7 +28,7 @@
 import SwiftUI
 
 /// The one request this app makes. The host is `api.example.com` (RFC 2606) because that is what
-/// the acceptance profile intercepts; the path is the acceptance sessions' matcher.
+/// the acceptance profile intercepts; the path is the acceptance scenarios' matcher.
 private let fixtureURL = URL(string: "https://api.example.com/api/v1/fixture")!
 
 /// How often a launch retries before recording a failure. Only transport errors are retried — a

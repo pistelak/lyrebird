@@ -114,7 +114,7 @@ def test_pac_advertises_the_proxy_host_not_the_control_host(hosts):
 
 # MARK: - Default locations
 #
-# Profiles are configuration and belong in ~/.config, as do the sessions you save into
+# Profiles are configuration and belong in ~/.config, as do the scenarios you save into
 # one. Nothing the tool writes for its own purposes does, and the two places it writes differ in
 # what may destroy them: state and the CA must survive, the log is for a person to read.
 
@@ -207,14 +207,14 @@ def test_all_three_matchers_agree_on_case(hosts):
 
 def test_the_same_profile_gets_one_fingerprint_however_it_is_named(monkeypatch, tmp_path):
     """State is keyed by a hash of the profile path, so two spellings of one directory would mean
-    two active-session pointers and two logs for the same profile."""
+    two active-scenario pointers and two logs for the same profile."""
     real = tmp_path / "real"
     real.mkdir()
     link = tmp_path / "link"
     link.symlink_to(real)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(link))
     monkeypatch.setenv("LYREBIRD_STATE_DIR", str(tmp_path / "state"))
-    # conftest sets LYREBIRD_PROFILE for the whole session, which would make the "implicit" call
+    # conftest sets LYREBIRD_PROFILE for the whole scenario, which would make the "implicit" call
     # below take the explicit branch and quietly test nothing.
     monkeypatch.delenv("LYREBIRD_PROFILE", raising=False)
 

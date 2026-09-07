@@ -305,7 +305,7 @@ Before sharing a diff, review new names, paths, fixtures and logs against the ge
 rules above. `make setup` deliberately leaves existing hooks alone.
 
 **Never commit a profile.** Profiles hold the hosts you intercept and the payloads you saved, so
-they live outside this repository. A session file can contain a real response body in full; see
+they live outside this repository. A scenario file can contain a real response body in full; see
 [SECURITY.md](SECURITY.md) for what that means before you attach one to an issue.
 
 **`rules.py` stays pure.** No proxy or IO imports — it is the one module that can be unit-tested
@@ -319,7 +319,7 @@ every matching request. Anything that becomes a filesystem path goes through
 **A function named for an outcome must fail when it does not achieve it.** This is the bug this
 codebase attracts most, by a wide margin. Shapes it has taken: `up` exiting 0 when nothing was
 being intercepted, `trust-ca` returning 0 after failing to trust anything, `down` printing
-"stopped" with the proxy still running, a session silently created empty when the thing it was
+"stopped" with the proxy still running, a scenario silently created empty when the thing it was
 told to clone did not exist, an empty host list falling back to a built-in default, and a dropped
 patch that looked identical to "no rule matched".
 

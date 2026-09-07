@@ -43,7 +43,7 @@ def _banner(health: dict | None, service: str | None, intercepting: bool) -> Non
     if intercepting:
         click.echo(
             f"{BOLD}{RED}🔴 INTERCEPT ACTIVE{R}  "
-            f"session {BOLD}{health['activeSession']}{R} · "
+            f"scenario {BOLD}{health['activeScenario']}{R} · "
             f"{health['overrideCount']} override(s) · proxy :{health['proxyPort']} · PAC on {service}"
         )
     else:

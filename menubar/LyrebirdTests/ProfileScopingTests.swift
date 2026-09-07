@@ -5,7 +5,7 @@ import XCTest
 /// One proxy holds the control port, so with two profiles around the menu used to report on
 /// whichever proxy answered: it sent no scoping header, dropped the fingerprint the engine offers,
 /// and turned every failed read into "Stopped". A profile-A proxy therefore appeared in a menu
-/// configured for profile B as "Intercepting · <A's session>", and clicking a session switched A's.
+/// configured for profile B as "Intercepting · <A's scenario>", and clicking a scenario switched A's.
 /// These pin the three readings apart — ours, someone else's, and one that could not be read at all.
 ///
 /// One class on purpose, like `ActivateTests`: `StubURLProtocol`'s handler is process-wide.
@@ -53,7 +53,7 @@ final class ProfileScopingTests: XCTestCase {
         let client = makeClient()
 
         _ = await client.health()
-        _ = await client.sessions()
+        _ = await client.scenarios()
         _ = await client.recent()
         try await client.activate("baseline")
 
@@ -181,7 +181,7 @@ final class ProfileScopingTests: XCTestCase {
         XCTAssertTrue(
             model.statusLine.contains(Fixture.theirs),
             "the line must name the proxy that answered: \(model.statusLine)")
-        XCTAssertNil(model.sessions, "another profile's sessions are not this profile's to show")
+        XCTAssertNil(model.scenarios, "another profile's scenarios are not this profile's to show")
         XCTAssertTrue(model.recent.isEmpty, "nor its traffic")
         XCTAssertNil(model.simBundleId, "relaunching another profile's app is not a thing to offer")
         XCTAssertTrue(model.stopsRatherThanStarts, "the remedy is to stop the proxy holding the port")
@@ -202,7 +202,7 @@ final class ProfileScopingTests: XCTestCase {
 
         XCTAssertEqual(model.status, .intercepting)
         XCTAssertEqual(model.simBundleId, "com.example.Store")
-        XCTAssertNotNil(model.sessions)
+        XCTAssertNotNil(model.scenarios)
     }
 
     func testAnEngineTooOldToReportItsProfileIsAcceptedTheWayTheCLIAcceptsIt() async {
@@ -302,7 +302,7 @@ final class ProfileScopingTests: XCTestCase {
             discover: { fingerprint.value })
         await model.refresh()
         XCTAssertEqual(model.status, .intercepting)
-        XCTAssertNotNil(model.sessions)
+        XCTAssertNotNil(model.scenarios)
 
         fingerprint.value = Fixture.theirs  // Settings now points at another profile
         await model.settingsChanged()
@@ -310,7 +310,7 @@ final class ProfileScopingTests: XCTestCase {
         XCTAssertEqual(
             model.status, .foreignProfile(running: Fixture.ours),
             "the proxy did not move; the profile the menu means did")
-        XCTAssertNil(model.sessions, "the old profile's session list outlived the profile")
+        XCTAssertNil(model.scenarios, "the old profile's scenario list outlived the profile")
         XCTAssertTrue(model.recent.isEmpty)
     }
 
@@ -335,7 +335,7 @@ final class ProfileScopingTests: XCTestCase {
         await refresh.value
 
         XCTAssertNil(model.healthRead, "a reading taken under the previous profile was kept")
-        XCTAssertNil(model.sessions)
+        XCTAssertNil(model.scenarios)
         XCTAssertTrue(model.recent.isEmpty)
     }
 
@@ -355,7 +355,7 @@ final class ProfileScopingTests: XCTestCase {
             StubURLProtocol.requests.isEmpty,
             "the call went out scoped to the profile that is no longer configured")
         XCTAssertNil(model.healthRead)
-        XCTAssertNil(model.sessions)
+        XCTAssertNil(model.scenarios)
         XCTAssertTrue(model.recent.isEmpty)
     }
 
@@ -478,7 +478,7 @@ private enum Fixture {
     static func health(fingerprint: String?, intercepting: Bool = true, extra: String = "") -> Data {
         let profile = fingerprint.map { #""profileFingerprint":"\#($0)","# } ?? ""
         return Data(
-            (#"{"activeSession":"baseline","overrideCount":2,"proxyUp":true,"#
+            (#"{"activeScenario":"baseline","overrideCount":2,"proxyUp":true,"#
                 + #""intercepting":\#(intercepting),\#(profile)"# + #""simBundleId":"com.example.Store"\#(extra)}"#)
                 .utf8)
     }

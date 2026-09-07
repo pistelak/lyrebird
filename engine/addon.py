@@ -1,4 +1,4 @@
-"""mitmproxy addon: applies the active session's overrides on the wire and hosts the control server.
+"""mitmproxy addon: applies the active scenario's overrides on the wire and hosts the control server.
 
 Loaded via `mitmdump -s addon.py`. Only the hosts configured in the active profile are intercepted
 (mitmproxy `allow_hosts`); everything else is blind-tunnelled. Server-sent-event streams always
@@ -82,7 +82,7 @@ class Lyrebird:
 
         await control.start(self.store, self._meta)
         _log.info(
-            "control http://%s:%s | proxy :%s | session '%s' (%d overrides)",
+            "control http://%s:%s | proxy :%s | scenario '%s' (%d overrides)",
             config.CONTROL_HOST,
             config.CONTROL_PORT,
             config.PROXY_PORT,
@@ -189,7 +189,7 @@ class Lyrebird:
             # it — which is why sequences need no generation or staleness tracking. A per-step delay
             # would break this, because you would have to pick the step first.
             await asyncio.sleep(delay_ms / 1000)
-            # The rules can move while we sleep: replaced, removed, or the whole session switched.
+            # The rules can move while we sleep: replaced, removed, or the whole scenario switched.
             # Re-select so the answer comes from what is live when it is produced — the same instant
             # the cursor is read. Holding the rule we captured before the sleep would serve the old
             # definition and then advance the new one, so the replacement's first step never runs.
@@ -216,7 +216,7 @@ class Lyrebird:
         """Produce the answer, and record that this rule gave it.
 
         Crediting happens here rather than at `_record`, because this is the only place that knows
-        an answer was actually produced. `_record` runs a hook later, by which time a session switch
+        an answer was actually produced. `_record` runs a hook later, by which time a scenario switch
         or an `override add` may have replaced the rule this id names — and a flow that dies before
         its response hook never reaches `_record` at all, though the override certainly answered it.
         """
@@ -246,7 +246,7 @@ class Lyrebird:
             flow.metadata["mock_patch"] = resolved
             # Not credited yet: a patch has answered nothing until it merges into a real upstream
             # response, which `response()` decides. The *slot* is captured now rather than looked up
-            # then, so a patch that lands after the session was switched credits the rule that was
+            # then, so a patch that lands after the scenario was switched credits the rule that was
             # actually consulted — see `store.credit`.
             flow.metadata["mock_answer_slot"] = self.store.answer_slot(resolved["id"])
 
@@ -350,7 +350,7 @@ class Lyrebird:
 
     @staticmethod
     def _headers_with_default_content_type(headers: dict | None, json_body: bool) -> dict:
-        """Merge case-insensitively: a session that spells the header `Content-Type` must not end
+        """Merge case-insensitively: a scenario that spells the header `Content-Type` must not end
         up emitting both that and a lowercase `content-type` on the wire."""
         result = dict(headers or {})
         if json_body and not any(key.lower() == "content-type" for key in result):

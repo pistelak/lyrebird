@@ -60,7 +60,7 @@ async def _guard(request: web.Request, handler: Handler) -> web.StreamResponse:
         return web.json_response({"error": "cross_origin_denied"}, status=403)
 
     # One proxy holds the control port, so a CLI invoked with `--profile B` while profile A is
-    # running would otherwise switch A's session, add rules to A and reset A's counters — every
+    # running would otherwise switch A's scenario, add rules to A and reset A's counters — every
     # call reporting success for work done somewhere the operator was not looking. The header is a
     # scoping declaration, not a credential: it is absent from older CLIs and from curl, and those
     # stay unchecked. Fingerprints only — the profile path belongs to whoever wrote it.
@@ -131,30 +131,30 @@ def make_app(store: Store, meta_provider: MetaProvider) -> web.Application:
     @routes.get("/__mock__/health")
     async def health(_request: web.Request) -> web.StreamResponse:
         # Awaited *before* the store is read, not inline below. The provider observes the network
-        # off this loop, so it suspends — and a session switch landing in that gap would pair
-        # counters from the session before it with meta from after, a snapshot describing no
+        # off this loop, so it suspends — and a scenario switch landing in that gap would pair
+        # counters from the scenario before it with meta from after, a snapshot describing no
         # moment that ever existed. Everything after this line is synchronous.
         meta = await meta_provider()
         return web.json_response(
             {
                 "ok": True,
-                "activeSession": store.active_name,
+                "activeScenario": store.active_name,
                 "overrideCount": len(store.active_overrides()),
-                "sessions": list(store.sessions.keys()),
-                # What did *not* load, so a caller can tell "this session is here" from "this session
-                # is here whole". A session whose invalid overrides were dropped, and a malformed
-                # default.json replaced by an empty in-memory default, both appear in `sessions`
-                # looking exactly like a session that loaded — which is how `up --use NAME` would
+                "scenarios": list(store.scenarios.keys()),
+                # What did *not* load, so a caller can tell "this scenario is here" from "this scenario
+                # is here whole". A scenario whose invalid overrides were dropped, and a malformed
+                # default.json replaced by an empty in-memory default, both appear in `scenarios`
+                # looking exactly like a scenario that loaded — which is how `up --use NAME` would
                 # relaunch the app against a scenario that had quietly lost half its rules.
                 #
                 # Two fields for one set of facts, because they answer different questions.
                 # `loadProblems` is the flat list a person reads, one entry per problem. `up --use`
-                # asks a narrower one — did *this* session load whole — and cannot answer it from
+                # asks a narrower one — did *this* scenario load whole — and cannot answer it from
                 # those strings: a file named `orders-outage.json: backup.json` produces a line that
                 # reads exactly like a problem with `orders-outage`. So the same problems are also
-                # sent keyed by the session they belong to.
+                # sent keyed by the scenario they belong to.
                 "loadProblems": store.load_problems,
-                "sessionsNotWhole": store.sessions_not_whole,
+                "scenariosNotWhole": store.scenarios_not_whole,
                 "sequences": store.sequence_states(),
                 # Named for what it holds, not for the objects it describes: `overrides` would read as
                 # the rules themselves, which is what GET /overrides returns.
@@ -167,7 +167,7 @@ def make_app(store: Store, meta_provider: MetaProvider) -> web.Application:
     async def recent(_request: web.Request) -> web.StreamResponse:
         return web.json_response(store.recent_list())
 
-    # MARK: - Overrides (act on the active session)
+    # MARK: - Overrides (act on the active scenario)
 
     @routes.get("/__mock__/overrides")
     async def overrides_list(_request: web.Request) -> web.StreamResponse:
@@ -180,16 +180,16 @@ def make_app(store: Store, meta_provider: MetaProvider) -> web.Application:
 
     @routes.delete("/__mock__/overrides")
     async def overrides_clear(_request: web.Request) -> web.StreamResponse:
-        """Deletes every override in the active session and rewrites its file."""
+        """Deletes every override in the active scenario and rewrites its file."""
         cleared = len(store.active_overrides())
         store.clear_overrides()
-        return web.json_response({"cleared": cleared, "session": store.active_name})
+        return web.json_response({"cleared": cleared, "scenario": store.active_name})
 
     # MARK: - Run state
 
     @routes.post("/__mock__/reset")
     async def runtime_reset(request: web.Request) -> web.StreamResponse:
-        """Start a fresh run in the active session: rewind sequence cursors and clear answer counts.
+        """Start a fresh run in the active scenario: rewind sequence cursors and clear answer counts.
 
         No body resets every rule; {"id": ...} resets one.
         """
@@ -205,27 +205,27 @@ def make_app(store: Store, meta_provider: MetaProvider) -> web.Application:
             return web.json_response({"error": "unknown_override", "id": override_id}, status=404)
         return web.json_response(result)
 
-    # MARK: - Sessions
+    # MARK: - Scenarios
 
-    @routes.get("/__mock__/sessions")
-    async def sessions_list(_request: web.Request) -> web.StreamResponse:
-        return web.json_response(store.list_sessions())
+    @routes.get("/__mock__/scenarios")
+    async def scenarios_list(_request: web.Request) -> web.StreamResponse:
+        return web.json_response(store.list_scenarios())
 
-    @routes.post("/__mock__/sessions")
-    async def sessions_create(request: web.Request) -> web.StreamResponse:
+    @routes.post("/__mock__/scenarios")
+    async def scenarios_create(request: web.Request) -> web.StreamResponse:
         body = await _safe_json(request)
         if not body.get("name"):
             return web.json_response({"error": "name_required"}, status=400)
         try:
-            store.create_session(body["name"], body.get("cloneFrom"))
+            store.create_scenario(body["name"], body.get("cloneFrom"))
         except KeyError as error:
-            return web.json_response({"error": "unknown_session", "cloneFrom": str(error)}, status=404)
+            return web.json_response({"error": "unknown_scenario", "cloneFrom": str(error)}, status=404)
         except FileExistsError:
-            return web.json_response({"error": "session_exists", "name": body["name"]}, status=409)
+            return web.json_response({"error": "scenario_exists", "name": body["name"]}, status=409)
         return web.json_response({"created": body["name"]})
 
-    @routes.put("/__mock__/sessions/active")
-    async def sessions_activate(request: web.Request) -> web.StreamResponse:
+    @routes.put("/__mock__/scenarios/active")
+    async def scenarios_activate(request: web.Request) -> web.StreamResponse:
         body = await _safe_json(request)
         name = body.get("name")
         if not isinstance(name, str) or not name:
@@ -233,17 +233,17 @@ def make_app(store: Store, meta_provider: MetaProvider) -> web.Application:
         previous = store.set_active(name)
         if previous is None:
             # `detail` as well as the slug: the CLI prints `detail` when there is one, and
-            # "unknown_session" on its own names the category without naming the mistake.
+            # "unknown_scenario" on its own names the category without naming the mistake.
             return web.json_response(
-                {"error": "unknown_session", "name": name, "detail": f"no session named '{name}' in this profile"},
+                {"error": "unknown_scenario", "name": name, "detail": f"no scenario named '{name}' in this profile"},
                 status=404,
             )
         return web.json_response({"active": store.active_name, "previous": previous})
 
-    @routes.delete("/__mock__/sessions/{name}")
-    async def sessions_delete(request: web.Request) -> web.StreamResponse:
+    @routes.delete("/__mock__/scenarios/{name}")
+    async def scenarios_delete(request: web.Request) -> web.StreamResponse:
         name = request.match_info["name"]
-        if not store.delete_session(name):
+        if not store.delete_scenario(name):
             return web.json_response({"error": "cannot_delete", "name": name}, status=400)
         return web.json_response({"deleted": name})
 

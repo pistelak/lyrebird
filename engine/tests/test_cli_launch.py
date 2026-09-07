@@ -1,7 +1,7 @@
 """Selecting the scenario before the app is launched.
 
-An app makes its first requests *while it launches*, so a session selected after the relaunch is
-a session the launch never saw — and an app that caches its launch response goes on showing the
+An app makes its first requests *while it launches*, so a scenario selected after the relaunch is
+a scenario the launch never saw — and an app that caches its launch response goes on showing the
 old scenario however green a later `lyrebird use` looked. These tests therefore do not assert on
 call order for its own sake: the fake `_relaunch` records what the app's launch request was
 answered with, and that answer is the evidence.
@@ -12,13 +12,14 @@ import pytest
 import api
 import cli
 import config
+import supervisor
 from cli_doubles import _PHONE, _answers_with_a_conflict, _fake_proxy, _up_with_a_proxy
 
 
 @pytest.mark.parametrize("adopt", [False, True], ids=["fresh start", "adopting a running proxy"])
-def test_up_selects_the_session_before_it_relaunches_the_app(profile, runner, monkeypatch, adopt):
+def test_up_selects_the_scenario_before_it_relaunches_the_app(profile, runner, monkeypatch, adopt):
     """The bug: `up` relaunched the app and only the documented `use` afterwards selected the
-    scenario, so the launch was answered by whatever session happened to be active — and an app
+    scenario, so the launch was answered by whatever scenario happened to be active — and an app
     that cached that response kept the wrong state on screen for the rest of the run."""
     state = _fake_proxy(monkeypatch)
     _up_with_a_proxy(profile, monkeypatch, state, adopt=adopt)
@@ -26,15 +27,15 @@ def test_up_selects_the_session_before_it_relaunches_the_app(profile, runner, mo
     result = runner.invoke(cli.cli, ["up", "--use", "orders-outage"])
 
     assert result.exit_code == 0, result.output
-    assert state["launched"] == [{"session": "orders-outage", "status": 500, "step": 1}], (
-        "the app's launch request was answered by a session the caller did not ask for"
+    assert state["launched"] == [{"scenario": "orders-outage", "status": 500, "step": 1}], (
+        "the app's launch request was answered by a scenario the caller did not ask for"
     )
     assert state["events"] == [("activate", "orders-outage"), ("relaunch", "com.example.Store")]
     assert state["devices"] == [_PHONE["udid"]], "the launch goes to the resolved device, by UDID"
 
 
-def test_up_rewinds_the_session_it_selects_so_the_launch_starts_at_step_one(profile, runner, monkeypatch):
-    """`--use` on the session that is already active is not a no-op: activation rewinds its
+def test_up_rewinds_the_scenario_it_selects_so_the_launch_starts_at_step_one(profile, runner, monkeypatch):
+    """`--use` on the scenario that is already active is not a no-op: activation rewinds its
     sequences, and without it the relaunch resumes mid-scenario at whatever step the last run
     left behind."""
     state = _fake_proxy(monkeypatch, active="orders-outage", steps={"orders-outage": 3})
@@ -43,11 +44,11 @@ def test_up_rewinds_the_session_it_selects_so_the_launch_starts_at_step_one(prof
     result = runner.invoke(cli.cli, ["up", "--use", "orders-outage"])
 
     assert result.exit_code == 0, result.output
-    assert state["launched"] == [{"session": "orders-outage", "status": 500, "step": 1}]
+    assert state["launched"] == [{"scenario": "orders-outage", "status": 500, "step": 1}]
 
 
-def test_up_does_not_relaunch_under_a_fallback_when_the_session_is_unknown(profile, runner, monkeypatch):
-    """Relaunching anyway would run the whole suite against the previous session and report every
+def test_up_does_not_relaunch_under_a_fallback_when_the_scenario_is_unknown(profile, runner, monkeypatch):
+    """Relaunching anyway would run the whole suite against the previous scenario and report every
     step of `up` as a success."""
     state = _fake_proxy(monkeypatch)
     _up_with_a_proxy(profile, monkeypatch, state)
@@ -55,15 +56,15 @@ def test_up_does_not_relaunch_under_a_fallback_when_the_session_is_unknown(profi
     result = runner.invoke(cli.cli, ["up", "--use", "nope"])
 
     assert result.exit_code == 1
-    assert state["launched"] == [], "the app was launched against the session already active"
-    assert "no session named 'nope'" in result.output
-    assert "default, orders-outage" in result.output, "say which sessions there are"
+    assert state["launched"] == [], "the app was launched against the scenario already active"
+    assert "no scenario named 'nope'" in result.output
+    assert "default, orders-outage" in result.output, "say which scenarios there are"
     assert "NOT relaunched" in result.output
     assert "lyrebird down" in result.output
 
 
-def test_up_does_not_relaunch_a_session_whose_overrides_were_dropped(profile, runner, monkeypatch):
-    """The session is in `sessions` and activates happily, but the rules the scenario is made of
+def test_up_does_not_relaunch_a_scenario_whose_overrides_were_dropped(profile, runner, monkeypatch):
+    """The scenario is in `scenarios` and activates happily, but the rules the scenario is made of
     did not survive the load — so the launch would meet a scenario that is not the one on disk."""
     problem = "orders-outage.json: override[1]: unknown field 'statsu'"
     state = _fake_proxy(monkeypatch, load_problems=[problem], not_whole={"orders-outage": [problem]})
@@ -77,9 +78,9 @@ def test_up_does_not_relaunch_a_session_whose_overrides_were_dropped(profile, ru
     assert "unknown field 'statsu'" in result.output
 
 
-def test_up_does_not_relaunch_when_the_named_session_was_replaced_by_an_empty_default(profile, runner, monkeypatch):
+def test_up_does_not_relaunch_when_the_named_scenario_was_replaced_by_an_empty_default(profile, runner, monkeypatch):
     """A malformed `default.json` is skipped and an empty in-memory `default` stands in for it.
-    The session list cannot tell those two apart, so only the load problem can."""
+    The scenario list cannot tell those two apart, so only the load problem can."""
     problem = "skipped default.json: Expecting value: line 1 column 1"
     state = _fake_proxy(monkeypatch, load_problems=[problem], not_whole={"default": [problem]})
     _up_with_a_proxy(profile, monkeypatch, state)
@@ -88,7 +89,7 @@ def test_up_does_not_relaunch_when_the_named_session_was_replaced_by_an_empty_de
 
     assert result.exit_code == 1
     assert state["launched"] == [] and state["events"] == []
-    assert "session 'default' did not load whole" in result.output
+    assert "scenario 'default' did not load whole" in result.output
 
 
 @pytest.mark.parametrize(
@@ -96,16 +97,16 @@ def test_up_does_not_relaunch_when_the_named_session_was_replaced_by_an_empty_de
     [
         "skipped other.json: Expecting value: line 1 column 1",
         # The store reports the *file* name, and a file may be named `orders-outage.json: backup.json`
-        # — a name it rejects, so no session is reported against it at all. The string it leaves in
+        # — a name it rejects, so no scenario is reported against it at all. The string it leaves in
         # `loadProblems` nonetheless begins exactly like a problem with `orders-outage`, which is why
-        # the decision is taken from `sessionsNotWhole` and not from these strings.
-        "skipped orders-outage.json: backup.json: invalid session name "
+        # the decision is taken from `scenariosNotWhole` and not from these strings.
+        "skipped orders-outage.json: backup.json: invalid scenario name "
         "'orders-outage.json: backup' — use letters, digits, dot, dash or underscore",
     ],
-    ids=["another session", "a file whose name begins with this session's"],
+    ids=["another scenario", "a file whose name begins with this scenario's"],
 )
-def test_up_ignores_a_load_problem_belonging_to_no_session_of_this_name(profile, runner, monkeypatch, problem):
-    """Only the named session's own failure decides. A broken file nobody asked for is not a
+def test_up_ignores_a_load_problem_belonging_to_no_scenario_of_this_name(profile, runner, monkeypatch, problem):
+    """Only the named scenario's own failure decides. A broken file nobody asked for is not a
     reason to refuse to start the scenario they did — and `loadProblems` alone cannot tell the
     two apart."""
     state = _fake_proxy(monkeypatch, load_problems=[problem])
@@ -114,12 +115,12 @@ def test_up_ignores_a_load_problem_belonging_to_no_session_of_this_name(profile,
     result = runner.invoke(cli.cli, ["up", "--use", "orders-outage"])
 
     assert result.exit_code == 0, result.output
-    assert state["launched"] == [{"session": "orders-outage", "status": 500, "step": 1}]
+    assert state["launched"] == [{"scenario": "orders-outage", "status": 500, "step": 1}]
 
 
 def test_up_does_not_relaunch_when_the_proxy_cannot_say_what_loaded(profile, runner, monkeypatch):
-    """Adopting a proxy started before `loadProblems` existed. Silence is not "the session loaded
-    whole": reading it as an empty list relaunches the app against a session nothing checked, and
+    """Adopting a proxy started before `loadProblems` existed. Silence is not "the scenario loaded
+    whole": reading it as an empty list relaunches the app against a scenario nothing checked, and
     prints exactly what a checked one prints."""
     state = _fake_proxy(monkeypatch, not_whole=None)
     _up_with_a_proxy(profile, monkeypatch, state, adopt=True)
@@ -135,7 +136,7 @@ def test_up_does_not_relaunch_when_the_proxy_cannot_say_what_loaded(profile, run
 @pytest.mark.parametrize("bundle_id", ["com.example.Store", None], ids=["simBundleId set", "unset"])
 def test_up_does_not_relaunch_when_the_activation_call_fails(profile, runner, monkeypatch, bundle_id):
     """The proxy stopped answering between the PAC install and the switch. Launching now would put
-    the app in front of exactly the session the caller was trying to replace — and asking for the
+    the app in front of exactly the scenario the caller was trying to replace — and asking for the
     launch by hand is that same wrong launch, typed by a person. The final look still runs: the
     proxy is up and the PAC is installed, and an operator not told so walks away believing the
     network was left alone."""
@@ -188,7 +189,7 @@ def test_up_no_relaunch_launches_nothing_and_says_who_owns_it(profile, runner, m
     assert "RELAUNCH THE APP NOW" not in result.output
 
 
-def test_up_use_with_no_relaunch_still_selects_the_session(profile, runner, monkeypatch):
+def test_up_use_with_no_relaunch_still_selects_the_scenario(profile, runner, monkeypatch):
     """The caller launches the app itself, and needs the scenario live before it does."""
     state = _fake_proxy(monkeypatch)
     _up_with_a_proxy(profile, monkeypatch, state)
@@ -200,8 +201,8 @@ def test_up_use_with_no_relaunch_still_selects_the_session(profile, runner, monk
     assert state["active"] == "orders-outage"
 
 
-def test_up_leaves_the_active_session_alone_when_no_use_is_given(profile, runner, monkeypatch):
-    """`up` is not a session switch. Selecting one unasked would rewind a scenario the operator
+def test_up_leaves_the_active_scenario_alone_when_no_use_is_given(profile, runner, monkeypatch):
+    """`up` is not a scenario switch. Selecting one unasked would rewind a scenario the operator
     set up by hand before running it."""
     state = _fake_proxy(monkeypatch, active="orders-outage")
     _up_with_a_proxy(profile, monkeypatch, state)
@@ -227,3 +228,24 @@ def test_up_refuses_a_contradictory_launch_request_before_it_starts_anything(pro
 
     assert result.exit_code == 2, result.output
     assert "no profile" not in result.output, "the usage error must come before any side effect"
+
+
+def test_up_prints_the_startup_refusal_the_proxy_died_of(profile, runner, monkeypatch):
+    """There is no `up`-side check for a profile still keeping its scenarios in `sessions/`: the
+    store is built when the addon is imported, so mitmproxy exits at startup and the refusal is in
+    its log. This is the path that has to carry it to the terminal — without it the operator sees a
+    proxy that "exited on startup" and nothing about the one-line `mv` that fixes it.
+    """
+    state = _fake_proxy(monkeypatch)
+    _up_with_a_proxy(profile, monkeypatch, state)
+    monkeypatch.setattr(api, "_health", lambda: None)
+    monkeypatch.setattr(supervisor, "_pid_alive", lambda pid: False)
+    remedy = f"mv {profile / 'sessions'} {profile / 'scenarios'}"
+    config.LOG_FILE.write_text(f"store.LegacyProfileLayout: ...\n  rename it:  {remedy}\n", encoding="utf-8")
+
+    result = runner.invoke(cli.cli, ["up", "--use", "orders-outage"])
+
+    assert result.exit_code == 1
+    assert "exited on startup" in result.output
+    assert remedy in result.output
+    assert state["launched"] == [] and state["events"] == []

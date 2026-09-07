@@ -26,8 +26,8 @@ Lyrebird's contract for coding agents; assumes a shell and JSON.
 ## First run
 
 Use your own profile. On a shared one, follow
-[the scratch-session procedure](#working-on-a-scenario-without-disturbing-anyone) first, and name
-that session in the loop.
+[the scratch-scenario procedure](#working-on-a-scenario-without-disturbing-anyone) first, and name
+that scenario in the loop.
 
 ```bash
 lyrebird --profile PATH validate NAME   # offline: non-zero unless that scenario loads whole
@@ -58,7 +58,7 @@ Do not:
 
 - **Point it at production.** Development and simulators only.
 - **Leave interception on.** Run `down`.
-- **Commit a profile** into this repository, or any public one. Sessions can hold real payloads.
+- **Commit a profile** into this repository, or any public one. Scenarios can hold real payloads.
 - **Assume no output means success.** Check exit codes; they are meaningful.
 
 The rest:
@@ -162,11 +162,11 @@ entry in `recent` and can never come from a rule that merely matched and lost.
 
 **Keep the run id and pass it.** `reset` issues a fresh run id per rule, and every answer the rule
 then gathers is reported under that id. A second reset, a rule replaced under the same id
-(`override add`), or a session switch ends that run and starts another — and the rule id is
+(`override add`), or a scenario switch ends that run and starts another — and the rule id is
 identical on the other side, so without `--run` a count belonging to the new run reads exactly like
 the one your test earned. `--run` refuses that substitution instead of reporting it as success. The
 run is re-checked on every poll, so a boundary destroyed while `--timeout` is waiting — the rule
-vanishing with a session switch, say — fails the assertion there rather than being waited out.
+vanishing with a scenario switch, say — fails the assertion there rather than being waited out.
 
 With `--run`, 1 means the assertion was made and failed; 3 means it could not be made at all:
 
@@ -174,18 +174,19 @@ With `--run`, 1 means the assertion was made and failed; 3 means it could not be
 |---|---|
 | 0 | The rule answered, in the run you required |
 | 1 | The rule is in that run and answered nothing — including a rule that is inactive and can never answer |
-| 3 | The run you named is not the rule's current run, the rule is not in the active session at all, or nothing could be read about it: the proxy is unreachable, too old to report runs, or running another profile. **Not** "the mock did not apply" |
+| 3 | The run you named is not the rule's current run, the rule is not in the active scenario at all, or nothing could be read about it: the proxy is unreachable, too old to report runs, or running another profile. **Not** "the mock did not apply" |
 
 Exit 3 is the one a harness handles separately: nothing was learned about your run, so re-draw the
 boundary and run the action again (or, for the version-skew cases, `lyrebird down && lyrebird up`)
 rather than going to debug the rule. A `runId` of `null` — the rule has no run at all, its state
-dropped by a session switch or a replacement — is exit 3 too, never a count of zero. So is another
+dropped by a scenario switch or a replacement — is exit 3 too, never a count of zero. So is another
 profile's proxy taking the port mid-test: its counters describe someone else's rules, and the
 fingerprint is compared on every poll, so the wait ends there instead of running to its timeout.
 
 Without `--run` the command keeps its older, weaker meaning: "has this rule answered in whichever
-run the proxy is in when I look", and every failure is exit 1. That is fine for a one-shot check by
-hand. It is not enough for a suite that resets more than once, replaces rules, or switches sessions.
+run the proxy is in when I look", and every failure is exit 1. That is fine for a one-shot check
+by hand. It is not enough for a suite that resets more than once, replaces rules, or switches
+scenarios.
 
 [engine/README.md — Proving a rule was in play](engine/README.md#proving-a-rule-was-in-play)
 describes what the proxy reports underneath: the `answers[]` entries, the three `runId` states, and
@@ -204,10 +205,10 @@ lyrebird --profile PATH status --json
   "profileMismatch": false,
   "profileFingerprint": "3f0a1c4d9b22",
   "runningProfileFingerprint": "3f0a1c4d9b22",
-  "activeSession": "orders-outage",
+  "activeScenario": "orders-outage",
   "overrideCount": 1,
   "answers": [ { "id": "ovr_9a99bd", "active": true, "count": 3, "runId": "5c1f9d0a7b3e4d62" } ],
-  "sessions": ["default", "orders-outage"],
+  "scenarios": ["default", "orders-outage"],
   "simBundleId": "com.example.Store",
   "profile": "/path/to/profile",
   "service": "Wi-Fi",
@@ -223,8 +224,8 @@ write either way round.
 The control port can be held by a proxy started for a *different* profile. That proxy is
 intercepting, but not for you, so `status` exits non-zero and says so: `profileMismatch` is `true`
 with `intercepting` `false`, the two fingerprints name which proxy answered and which profile you
-asked about, and everything that describes a profile's state (`activeSession`, `overrideCount`,
-`sessions`, `sequences`, `answers`, `simBundleId`) is `null` — it is the other profile's, not
+asked about, and everything that describes a profile's state (`activeScenario`, `overrideCount`,
+`scenarios`, `sequences`, `answers`, `simBundleId`) is `null` — it is the other profile's, not
 yours. The fix is `lyrebird down`, or a different `--profile` / `LYREBIRD_CONTROL_PORT`; `up` will
 refuse until then. A proxy too old to report `profileFingerprint` is taken at face value, exactly
 as `up` takes it.
@@ -247,8 +248,8 @@ rely on that as the normal path.
 
 Two options, and the second is usually the right one for an agent.
 
-**Edit a session file.** Sessions are JSON in `<profile>/sessions/`. `id` and `active` are optional
-— `id` is derived from the rule when omitted — so the minimum is:
+**Edit a scenario file.** Scenarios are JSON in `<profile>/scenarios/`. `id` and `active` are
+optional — `id` is derived from the rule when omitted — so the minimum is:
 
 ```json
 {
@@ -260,17 +261,17 @@ Two options, and the second is usually the right one for an agent.
 }
 ```
 
-Files are picked up when the proxy starts, so a session file written while Lyrebird is running
+Files are picked up when the proxy starts, so a scenario file written while Lyrebird is running
 is not there yet: `lyrebird --profile PATH down && lyrebird --profile PATH up --use orders-outage`.
 
 **Check the file before you start anything.** A file the proxy cannot read whole does not stop it
 starting: it keeps the rules it can, reports the rest to its log, and runs. So a scenario can be
 live and quietly missing the one rule your test depends on — `up --use NAME` is the one command
-that refuses, and only for the session you name it. `validate` is where that surfaces first, and
+that refuses, and only for the scenario you name it. `validate` is where that surfaces first, and
 it needs no proxy, changes no network settings and writes nothing:
 
 ```bash
-lyrebird --profile PATH validate                  # every file in <profile>/sessions/
+lyrebird --profile PATH validate                  # every file in <profile>/scenarios/
 lyrebird --profile PATH validate orders-outage    # just this one
 ```
 
@@ -278,13 +279,13 @@ lyrebird --profile PATH validate orders-outage    # just this one
 ✓ orders-outage            1 rule(s)
 ✗ partial                  1 rule(s) kept, 2 dropped
     partial.json: override[1]: match: unknown field 'paths' — a matcher may only carry method, path, query, bodyContains
-    partial.json: override[2]: duplicate id 'ovr_ok' — ids must be unique within a session; this rule was skipped
+    partial.json: override[2]: duplicate id 'ovr_ok' — ids must be unique within a scenario; this rule was skipped
 ✗ broken                   not loaded at all
     skipped broken.json: Expecting property name enclosed in double quotes: line 1 column 2 (char 1)
 ```
 
-**Exit 0 only when every session named loads whole.** It refuses a name that does not exist rather
-than reporting an empty session for it, and it refuses to exit 0 having found no files at all —
+**Exit 0 only when every scenario named loads whole.** It refuses a name that does not exist rather
+than reporting an empty scenario for it, and it refuses to exit 0 having found no files at all —
 the usual cause of that is the wrong `--profile`.
 
 `--json` is the machine-readable form:
@@ -293,11 +294,11 @@ the usual cause of that is the wrong `--profile`.
 {
   "ok": false,
   "problems": [],
-  "sessions": [
-    { "name": "partial", "file": "/path/to/profile/sessions/partial.json",
+  "scenarios": [
+    { "name": "partial", "file": "/path/to/profile/scenarios/partial.json",
       "loaded": true, "ok": false, "overrideCount": 1,
       "problems": ["partial.json: override[1]: match: unknown field 'paths' — …"] },
-    { "name": "broken", "file": "/path/to/profile/sessions/broken.json",
+    { "name": "broken", "file": "/path/to/profile/scenarios/broken.json",
       "loaded": false, "ok": false, "overrideCount": null,
       "problems": ["skipped broken.json: Expecting property name enclosed in double quotes: …"] }
   ]
@@ -306,12 +307,12 @@ the usual cause of that is the wrong `--profile`.
 
 `loaded` false means the file was refused entirely — malformed JSON, not an object, or a
 `schemaVersion` this engine does not read — and `overrideCount` is then `null`, not `0`: a refused
-file has no rule count, and zero would read as a session that loaded and happens to be empty.
-`ok` false with `loaded` true is the dangerous one: that session *will* run, without the rules in
+file has no rule count, and zero would read as a scenario that loaded and happens to be empty.
+`ok` false with `loaded` true is the dangerous one: that scenario *will* run, without the rules in
 `problems`.
 
 The top-level `problems` is about the *request* rather than a file — a name that names nothing, a
-name that could not be one, a profile with no sessions in it — and `sessions` is then empty. Every
+name that could not be one, a profile with no scenarios in it — and `scenarios` is then empty. Every
 failure comes back in this shape, so `--json` output never has to be parsed as prose.
 
 **Check a rule before you launch anything.** `explain-match` answers, in a second, what otherwise
@@ -334,15 +335,15 @@ is not there, so a rule broad enough to appear in it is a rule quietly mocking i
 That also splits the two things "nothing matched" runs together. If `explain-match` selects your
 rule and it still never fires, the rule is fine and the app did not make the request.
 
-`--session NAME` asks the same question of a saved file instead of the running proxy — same
+`--scenario NAME` asks the same question of a saved file instead of the running proxy — same
 ranking, same reasons, no proxy needed:
 
 ```bash
-lyrebird --profile PATH explain-match --session orders-outage GET '/api/v1/orders/42'
+lyrebird --profile PATH explain-match --scenario orders-outage GET '/api/v1/orders/42'
 ```
 
 Its output and `--json` shape are the live command's, plus a `problems` list — present only with
-`--session`, because only then is there a file whose load problems were read. It exits non-zero
+`--scenario`, because only then is there a file whose load problems were read. It exits non-zero
 when the file did not load whole even if a rule was selected. The proxy drops those rules too, so
 the winner it names is the one that would be picked; what is *not* true is that the ranking covers
 the rules you wrote — yours may be missing rather than out-ranked, which is usually the thing you
@@ -383,7 +384,7 @@ A rule can hold a list of steps instead of one response — for "delete a row, r
 "the first attempt fails and the retry succeeds". Two things about driving them.
 
 **Reset immediately before you trigger the action, not at startup.** Cursors are in memory and
-already reset when you `use` a session, but anything the app did in between — a launch fetch, a
+already reset when you `use` a scenario, but anything the app did in between — a launch fetch, a
 prefetch — may have moved them.
 
 ```bash
@@ -392,7 +393,7 @@ lyrebird --profile PATH reset ovr_items_list
 lyrebird --profile PATH sequence wait ovr_items_list --step 2 --timeout 30
 ```
 
-`reset` with no id rewinds every rule in the active session. It is the same boundary
+`reset` with no id rewinds every rule in the active scenario. It is the same boundary
 `assert-answered` reads, so one reset serves both.
 
 **`wait-ready --match` cannot verify a sequence.** It returns on the *first* override to match and
@@ -405,7 +406,7 @@ without ever serving it **fails immediately**, which is the usual symptom of the
 request you did not expect.
 
 `status --json` carries `sequences[]` for the rules that have one and `answers[]` for every rule in
-the active session — [Sequences](engine/README.md#sequences) and
+the active scenario — [Sequences](engine/README.md#sequences) and
 [Proving a rule was in play](engine/README.md#proving-a-rule-was-in-play) list what is in each. The
 `runId` in both is the token `reset` returned for that rule, but only `assert-answered --run` takes
 one back from you: `sequence wait` baselines itself on whichever run is current when it starts.
@@ -417,7 +418,7 @@ thing to act on. If you pipe this into `jq '.answers[]'`, handle the null rather
 zero answers; `lyrebird down && lyrebird up` clears the version-skew case.
 
 The same distinction one level down: inside an entry, `"runId": null` means the rule has no run at
-all — never reset, never near a request, or its run state dropped by a session switch or a
+all — never reset, never near a request, or its run state dropped by a scenario switch or a
 replacement. It is not a count of zero, and reading it as one is how a test comes to believe in a
 boundary it never drew. `recent` shows which request took which step, and which request advanced
 what, so a scenario that went wrong can be read back rather than guessed at.
@@ -427,17 +428,17 @@ If a rule advances when you did not expect it to, the fix is usually a narrower 
 
 ## Working on a scenario without disturbing anyone
 
-A profile is shared state. If it belongs to a person or a team, do not edit their sessions.
+A profile is shared state. If it belongs to a person or a team, do not edit their scenarios.
 
 ```bash
-lyrebird status --json                                  # note activeSession before you touch anything
-lyrebird session new agent-scratch --clone-from orders-outage   # creates and activates
+lyrebird status --json                                  # note activeScenario before you touch anything
+lyrebird scenario new agent-scratch --clone-from orders-outage   # creates and activates
 # …work…
 lyrebird use orders-outage                              # put back what you found
-lyrebird session rm agent-scratch
+lyrebird scenario rm agent-scratch
 ```
 
-`--clone-from` fails if the source does not exist rather than quietly giving you an empty session,
+`--clone-from` fails if the source does not exist rather than quietly giving you an empty scenario,
 so a typo surfaces immediately instead of as a scenario that mysteriously does nothing.
 
 `assert-answered` refuses an id it cannot find rather than reporting zero answers for it, for the
@@ -446,14 +447,14 @@ same reason: a typo and a rule that never fired need completely different fixes.
 ## The destructive operations
 
 `lyrebird override clear --force` (and `DELETE /__mock__/overrides`) deletes every override in the
-**active session** and rewrites the file on disk. There is no undo.
+**active scenario** and rewrites the file on disk. There is no undo.
 
-It is not the only thing that writes: `session rm` deletes a file, and `override add` replaces a
+It is not the only thing that writes: `scenario rm` deletes a file, and `override add` replaces a
 rule with the same id. But it is the only one that discards everything at once, which is why it
 is the only one behind a flag — `clear` is easy to reach for while meaning "clear the traffic
-list", which is not what it does. Creating a session that already exists is refused rather than
+list", which is not what it does. Creating a scenario that already exists is refused rather than
 silently replacing it. If the profile is under version control that is your safety net; if not,
-take a copy before touching someone else's sessions.
+take a copy before touching someone else's scenarios.
 
 ## When it does not work
 

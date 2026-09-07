@@ -56,7 +56,7 @@ def test_connection_strategy_is_lazy(hosts):
     ],
 )
 def test_content_type_is_merged_case_insensitively(headers, expected):
-    """A session spelling the header `Content-Type` used to emit both that and a lowercase
+    """A scenario spelling the header `Content-Type` used to emit both that and a lowercase
     `content-type` on the wire."""
     assert addon.Lyrebird._headers_with_default_content_type(headers, json_body=True) == expected
 
@@ -434,10 +434,10 @@ def test_removing_a_rule_during_its_delay_stops_it_answering(hosts, profile):
     assert flow.response is None, "a rule that no longer exists must not answer"
 
 
-def test_switching_sessions_during_a_delay_uses_the_new_session(hosts, profile):
+def test_switching_scenarios_during_a_delay_uses_the_new_scenario(hosts, profile):
     subject = addon.Lyrebird()
     subject.store.add_override(_replaceable([201, 202]))
-    subject.store.create_session("empty")
+    subject.store.create_scenario("empty")
     flow = _mid_flight(subject, lambda: subject.store.set_active("empty"))
     assert flow.response is None
 
@@ -580,8 +580,8 @@ def test_a_replacement_installed_during_a_delay_is_the_rule_credited(hosts, prof
     assert _answers(subject) == {"s": 1}, "credited once, to the definition that actually answered"
 
 
-def test_a_patch_landing_after_a_session_switch_credits_nobody(hosts, profile):
-    """The whole reason the slot is captured rather than looked up by id: session B has its own
+def test_a_patch_landing_after_a_scenario_switch_credits_nobody(hosts, profile):
+    """The whole reason the slot is captured rather than looked up by id: scenario B has its own
     rule under the same id, and it never saw this request."""
     subject = addon.Lyrebird()
     subject.store.add_override(
@@ -590,7 +590,7 @@ def test_a_patch_landing_after_a_session_switch_credits_nobody(hosts, profile):
     flow = _flow()
     run_request(subject, flow)
 
-    subject.store.create_session("other")
+    subject.store.create_scenario("other")
     subject.store.set_active("other")
     subject.store.add_override(
         {"id": "shared", "mode": "patch", "match": {"path": "/api/v1/orders/*"}, "patch": {"a": 1}}
@@ -598,7 +598,7 @@ def test_a_patch_landing_after_a_session_switch_credits_nobody(hosts, profile):
 
     flow.response = tutils.tresp(headers=((b"content-type", b"application/json"),), content=b'{"b": 2}')
     subject.response(flow)
-    assert _answers(subject) == {"shared": 0}, "session B's rule never answered this request"
+    assert _answers(subject) == {"shared": 0}, "scenario B's rule never answered this request"
 
 
 def test_a_patch_landing_after_its_rule_is_replaced_credits_nobody(hosts, profile):

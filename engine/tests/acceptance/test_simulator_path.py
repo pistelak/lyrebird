@@ -72,7 +72,7 @@ def launch_traffic_is_answered_by_the_scenario_up_selected(harness):
 
     The decoy is activated first and answers the same request with a different marker and a
     different status, so the launch that follows `up --use fixture-replaced` getting the replaced
-    body cannot be luck: it is the session `up` selected, not the one that was active a moment
+    body cannot be luck: it is the scenario `up` selected, not the one that was active a moment
     before. (That `up` *runs* the selection before the launch rather than merely fast enough is
     pinned deterministically in engine/tests/test_cli.py; what this adds is that the app really is
     answered by it.)
@@ -97,7 +97,7 @@ def launch_traffic_is_answered_by_the_scenario_up_selected(harness):
     assert replaced["status"] == 503, replaced
     assert REPLACED in _body(replaced), replaced
     assert DECOY not in _body(replaced), (
-        "the app was answered by the session that was active before `--use` — the scenario `up` "
+        "the app was answered by the scenario that was active before `--use` — the scenario `up` "
         "selected is not the one the launch met"
     )
     assert len(harness.launches()) == launches + 1, "up did not relaunch the app"
@@ -107,7 +107,7 @@ def launch_traffic_is_answered_by_the_scenario_up_selected(harness):
 
     state = harness.status()
     assert state["intercepting"] is True, state
-    assert state["activeSession"] == "fixture-replaced", state
+    assert state["activeScenario"] == "fixture-replaced", state
     # `up --simulator` bound the CA and the relaunch to the device this run means, and recorded it.
     # Everything above is evidence read out of *that* simulator, so a run that had silently acted
     # on another booted device would be reading one app and asserting about another.
@@ -171,12 +171,12 @@ def up_refuses_an_unknown_scenario_and_launches_nothing(harness):
     )
     assert len(harness.results()) == results
 
-    # Still up, still intercepting, still the session the caller had — nothing was torn down and
+    # Still up, still intercepting, still the scenario the caller had — nothing was torn down and
     # nothing was switched underneath them.
     state = harness.status()
     assert state["proxyUp"] is True, state
     assert state["intercepting"] is True, state
-    assert state["activeSession"] == "fixture-sequence", state
+    assert state["activeScenario"] == "fixture-sequence", state
 
 
 def down_restores_the_proxy_settings_that_were_there_before(harness):

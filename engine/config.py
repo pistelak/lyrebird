@@ -3,7 +3,7 @@
 There are two seams, deliberately kept apart:
 
 * the **profile** (``--profile`` / ``LYREBIRD_PROFILE``) — your data, and safe to keep in version
-  control: which hosts to intercept and saved sessions.
+  control: which hosts to intercept and saved scenarios.
 * **tool-owned files**, which macOS wants in two different places and which differ in what may
   destroy them: durable state and the CA in ``~/Library/Application Support/Lyrebird``, and the
   proxy log in ``~/Library/Logs/Lyrebird``. Setting ``LYREBIRD_STATE_DIR`` collapses both
@@ -75,7 +75,7 @@ def _default_profile() -> Path:
 def _default_state_root() -> Path:
     """What must survive: `~/Library/Application Support/Lyrebird`.
 
-    Deliberately NOT `~/.config`: none of this is configuration. It is the active-session pointer,
+    Deliberately NOT `~/.config`: none of this is configuration. It is the active-scenario pointer,
     the per-port recovery files, and the CA private key — which is better somewhere Finder hides,
     and all of which it would be wrong to lose. Time Machine includes this directory, which is the
     reason the log lives elsewhere: `tmutil isexcluded` reports Logs as excluded, so a log kept
@@ -95,7 +95,7 @@ def _default_log_root() -> Path:
 
 PROFILE_DIR: Path
 PROFILE_FILE: Path
-SESSIONS_DIR: Path
+SCENARIOS_DIR: Path
 STATE_ROOT: Path
 LOG_ROOT: Path
 STATE_FILE: Path
@@ -110,16 +110,16 @@ def configure(profile: str | None = None) -> None:
     # Module-level rebinding is the point: every module reads these as `config.X`, and the CLI
     # re-resolves them once at startup before anything else imports them. Threading a settings
     # object through the addon, store, control server and CLI would buy nothing here.
-    global PROFILE_DIR, PROFILE_FILE, SESSIONS_DIR
+    global PROFILE_DIR, PROFILE_FILE, SCENARIOS_DIR
     global STATE_ROOT, LOG_ROOT, STATE_FILE, LOG_FILE, PROFILE_FINGERPRINT
 
     raw = profile or os.environ.get("LYREBIRD_PROFILE")
     # Resolved either way. Only the explicit path used to be, so if `~/.config` is a symlink — or
     # XDG_CONFIG_HOME is — the same physical profile got two fingerprints depending on whether you
-    # named it or let it default, and therefore two active-session pointers and two logs.
+    # named it or let it default, and therefore two active-scenario pointers and two logs.
     PROFILE_DIR = (Path(raw).expanduser() if raw else _default_profile()).resolve()
     PROFILE_FILE = PROFILE_DIR / "profile.json"
-    SESSIONS_DIR = PROFILE_DIR / "sessions"
+    SCENARIOS_DIR = PROFILE_DIR / "scenarios"
 
     state_env = os.environ.get("LYREBIRD_STATE_DIR")
     if state_env:

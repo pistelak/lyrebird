@@ -2,6 +2,7 @@
 
 import errno
 import json
+import shlex
 
 import pytest
 
@@ -30,79 +31,79 @@ def test_reasonable_names_are_accepted(name):
     assert store.safe_component(name) == name
 
 
-# MARK: - Sessions
+# MARK: - Scenarios
 
 
-def test_deleting_the_active_session_switches_to_default(profile):
+def test_deleting_the_active_scenario_switches_to_default(profile):
     subject = make_store(profile)
-    subject.create_session("scratch")
+    subject.create_scenario("scratch")
     subject.set_active("scratch")
-    assert subject.delete_session("scratch") is True
+    assert subject.delete_scenario("scratch") is True
     assert subject.active_name == "default"
 
 
-def test_default_session_cannot_be_deleted(profile):
+def test_default_scenario_cannot_be_deleted(profile):
     subject = make_store(profile)
-    assert subject.delete_session("default") is False
+    assert subject.delete_scenario("default") is False
 
 
-def test_a_malformed_session_file_does_not_block_startup(profile):
+def test_a_malformed_scenario_file_does_not_block_startup(profile):
     """One bad file used to raise AttributeError and stop the proxy from starting at all."""
-    (profile / "sessions" / "bad.json").write_text("[]")
-    (profile / "sessions" / "good.json").write_text(json.dumps({"name": "good", "overrides": []}))
+    (profile / "scenarios" / "bad.json").write_text("[]")
+    (profile / "scenarios" / "good.json").write_text(json.dumps({"name": "good", "overrides": []}))
     subject = make_store(profile)
-    assert "good" in subject.sessions
+    assert "good" in subject.scenarios
     assert any("bad.json" in problem for problem in subject.load_problems)
 
 
 def test_unparseable_json_does_not_block_startup(profile):
-    (profile / "sessions" / "broken.json").write_text("{not json")
+    (profile / "scenarios" / "broken.json").write_text("{not json")
     subject = make_store(profile)
     assert subject.active_name == "default"
     assert any("broken.json" in problem for problem in subject.load_problems)
 
 
-def test_startup_does_not_rewrite_existing_session_files(profile):
+def test_startup_does_not_rewrite_existing_scenario_files(profile):
     """A profile kept in git must not go dirty just because the proxy started."""
-    path = profile / "sessions" / "kept.json"
+    path = profile / "scenarios" / "kept.json"
     original = json.dumps({"name": "kept", "overrides": []})  # deliberately not indent=2
     path.write_text(original)
     make_store(profile)
     assert path.read_text() == original
 
 
-def test_binary_junk_in_the_sessions_directory_does_not_block_startup(profile):
+def test_binary_junk_in_the_scenarios_directory_does_not_block_startup(profile):
     """Regression: `read_text` raises UnicodeDecodeError, which is a ValueError but neither an
     OSError nor a JSONDecodeError — so a file of binary junk escaped every arm of the loader and
     took the proxy down at startup, from the one directory operators are told to hand-edit."""
-    (profile / "sessions" / "junk.json").write_bytes(b"\xff\xfe\x00binary")
+    (profile / "scenarios" / "junk.json").write_bytes(b"\xff\xfe\x00binary")
     subject = make_store(profile)
     assert subject.active_name == "default"
     assert any("junk.json" in problem for problem in subject.load_problems)
 
 
 def test_an_unsupported_schema_version_is_skipped_and_named(profile):
-    (profile / "sessions" / "future.json").write_text(
+    (profile / "scenarios" / "future.json").write_text(
         json.dumps({"schemaVersion": 2, "name": "future", "overrides": []})
     )
     subject = make_store(profile)
-    assert "future" not in subject.sessions, "a session this engine cannot read must not load"
+    assert "future" not in subject.scenarios, "a scenario this engine cannot read must not load"
     assert any("future.json" in problem and "schemaVersion" in problem for problem in subject.load_problems)
 
 
-# MARK: - The shared session loader
+# MARK: - The shared scenario loader
 #
-# `load_session_file` is what startup loads with, so an offline inspection command reports what the
+# `load_scenario_file` is what startup loads with, so an offline inspection command reports what the
 # proxy would do rather than a second opinion about it. These tests pin that it is the same answer.
 
 
 def _write(profile, name, payload):
-    path = profile / "sessions" / f"{name}.json"
+    path = profile / "scenarios" / f"{name}.json"
     path.write_text(payload if isinstance(payload, str) else json.dumps(payload))
     return path
 
 
-def test_load_session_file_keeps_the_good_rules_and_names_the_dropped_ones(profile):
+def test_load_scenario_file_keeps_the_good_rules_and_names_the_dropped_ones(profile):
     path = _write(
         profile,
         "partial",
@@ -115,38 +116,38 @@ def test_load_session_file_keeps_the_good_rules_and_names_the_dropped_ones(profi
             ],
         },
     )
-    session, problems = store.load_session_file(path)
-    assert [o["id"] for o in session["overrides"]] == ["keep"]
+    scenario, problems = store.load_scenario_file(path)
+    assert [o["id"] for o in scenario["overrides"]] == ["keep"]
     assert any("override[1]" in p and "paths" in p for p in problems), "name the rule and the field"
     assert any("override[2]" in p and "duplicate id" in p for p in problems)
     assert all(p.startswith("partial.json:") for p in problems), "every problem names its file"
 
 
-def test_load_session_file_reports_nothing_kept_as_a_none_session(profile):
-    """None and an empty session are different answers: one says the scenario is not loaded, the
+def test_load_scenario_file_reports_nothing_kept_as_a_none_scenario(profile):
+    """None and an empty scenario are different answers: one says the scenario is not loaded, the
     other says it loaded and has no rules in it."""
-    session, problems = store.load_session_file(_write(profile, "broken", "{not json"))
-    assert session is None
+    scenario, problems = store.load_scenario_file(_write(profile, "broken", "{not json"))
+    assert scenario is None
     assert problems and problems[0].startswith("skipped broken.json:")
 
 
-def test_load_session_file_refuses_a_file_whose_name_could_escape_the_profile(profile):
-    """The stem becomes a session name, and a session name becomes a path component."""
-    path = profile / "sessions" / "..json"
+def test_load_scenario_file_refuses_a_file_whose_name_could_escape_the_profile(profile):
+    """The stem becomes a scenario name, and a scenario name becomes a path component."""
+    path = profile / "scenarios" / "..json"
     path.write_text("{}")
-    session, problems = store.load_session_file(path)
-    assert session is None
-    assert "invalid session name" in problems[0]
+    scenario, problems = store.load_scenario_file(path)
+    assert scenario is None
+    assert "invalid scenario name" in problems[0]
 
 
-def test_load_session_file_creates_nothing(profile):
+def test_load_scenario_file_creates_nothing(profile):
     """An offline inspection must leave the profile exactly as it found it — no directories, no
-    synthesised `default`, no active-session pointer."""
+    synthesised `default`, no active-scenario pointer."""
     path = _write(profile, "s", {"name": "s", "overrides": []})
-    before = sorted(p.name for p in (profile / "sessions").iterdir())
-    store.load_session_file(path)
-    store.load_session_file(profile / "sessions" / "absent.json")
-    assert sorted(p.name for p in (profile / "sessions").iterdir()) == before
+    before = sorted(p.name for p in (profile / "scenarios").iterdir())
+    store.load_scenario_file(path)
+    store.load_scenario_file(profile / "scenarios" / "absent.json")
+    assert sorted(p.name for p in (profile / "scenarios").iterdir()) == before
     assert not config.STATE_FILE.exists()
 
 
@@ -159,60 +160,60 @@ def test_startup_reports_exactly_what_the_shared_loader_reports(profile):
         _write(profile, "partial", {"name": "partial", "overrides": [{"mode": "nonsense"}]}),
         _write(profile, "future", {"schemaVersion": 7, "name": "future", "overrides": []}),
     ]
-    offline = [problem for file in sorted(files) for problem in store.load_session_file(file)[1]]
+    offline = [problem for file in sorted(files) for problem in store.load_scenario_file(file)[1]]
     assert make_store(profile).load_problems == offline
 
 
-def test_session_path_refuses_a_name_that_would_escape_the_sessions_directory(profile):
+def test_scenario_path_refuses_a_name_that_would_escape_the_scenarios_directory(profile):
     with pytest.raises(store.UnsafeName):
-        store.session_path("../../etc/passwd")
+        store.scenario_path("../../etc/passwd")
 
 
-def test_a_session_file_symlinked_out_of_the_profile_is_not_loaded(profile, tmp_path):
-    """Startup reaches its files through a glob, so nothing used to check them: a session symlinked
-    out of the profile loaded into the proxy while `session_path` refused that same session by
+def test_a_scenario_file_symlinked_out_of_the_profile_is_not_loaded(profile, tmp_path):
+    """Startup reaches its files through a glob, so nothing used to check them: a scenario symlinked
+    out of the profile loaded into the proxy while `scenario_path` refused that same scenario by
     name — one file, two verdicts, and the permissive one was the one that ran."""
     outside = tmp_path / "outside.json"
     outside.write_text(json.dumps({"name": "outside", "overrides": []}))
-    link = profile / "sessions" / "sneaky.json"
+    link = profile / "scenarios" / "sneaky.json"
     link.symlink_to(outside)
 
-    session, problems = store.load_session_file(link)
-    assert session is None
+    scenario, problems = store.load_scenario_file(link)
+    assert scenario is None
     assert "escapes" in problems[0]
-    assert "sneaky" not in make_store(profile).sessions, "and startup refuses it for the same reason"
+    assert "sneaky" not in make_store(profile).scenarios, "and startup refuses it for the same reason"
 
 
 def test_the_loader_holds_a_file_to_the_same_containment_as_writing_it(profile, tmp_path):
-    """The rule is `session_path`'s, exactly: resolve inside `sessions/`. A link that leaves it,
-    even into the same profile, was already unwritable — `override add` on such a session raises
-    `UnsafeName` from `_write_session` — so loading it left a session the proxy would serve and
+    """The rule is `scenario_path`'s, exactly: resolve inside `scenarios/`. A link that leaves it,
+    even into the same profile, was already unwritable — `override add` on such a scenario raises
+    `UnsafeName` from `_write_scenario` — so loading it left a scenario the proxy would serve and
     could never save."""
     elsewhere = profile / "shared.json"
     elsewhere.write_text(json.dumps({"name": "shared", "overrides": []}))
-    link = profile / "sessions" / "kept.json"
+    link = profile / "scenarios" / "kept.json"
     link.symlink_to(elsewhere)
     with pytest.raises(store.UnsafeName):
-        store.session_path("kept")
-    session, problems = store.load_session_file(link)
-    assert session is None and "escapes" in problems[0]
+        store.scenario_path("kept")
+    scenario, problems = store.load_scenario_file(link)
+    assert scenario is None and "escapes" in problems[0]
 
 
-def test_a_session_file_that_points_at_itself_does_not_stop_the_proxy_starting(profile):
+def test_a_scenario_file_that_points_at_itself_does_not_stop_the_proxy_starting(profile):
     """`Path.resolve()` raises `RuntimeError("Symlink loop from …")`, which is not an OSError. The
     containment check runs before the read, so an uncaught one is a single self-referencing file in
     a hand-edited directory stopping the proxy from starting at all — where before the check
     existed, `read_text` raised OSError and the file was simply skipped."""
-    loop = profile / "sessions" / "loop.json"
+    loop = profile / "scenarios" / "loop.json"
     loop.symlink_to(loop)
-    (profile / "sessions" / "good.json").write_text(json.dumps({"name": "good", "overrides": []}))
+    (profile / "scenarios" / "good.json").write_text(json.dumps({"name": "good", "overrides": []}))
 
-    session, problems = store.load_session_file(loop)
-    assert session is None
+    scenario, problems = store.load_scenario_file(loop)
+    assert scenario is None
     assert "cannot resolve path" in problems[0] and "loop.json" in problems[0]
 
     subject = make_store(profile)
-    assert "good" in subject.sessions, "one unresolvable file must not cost the others"
+    assert "good" in subject.scenarios, "one unresolvable file must not cost the others"
     assert any("loop.json" in problem for problem in subject.load_problems)
 
 
@@ -231,16 +232,16 @@ def test_a_rule_whose_delay_is_not_a_finite_number_is_a_reported_problem(profile
             ],
         },
     )
-    session, problems = store.load_session_file(path)
-    assert [o["id"] for o in session["overrides"]] == ["ovr_ok"], "the good rule still loads"
+    scenario, problems = store.load_scenario_file(path)
+    assert [o["id"] for o in scenario["overrides"]] == ["ovr_ok"], "the good rule still loads"
     assert any("override[0]" in p and "finite" in p for p in problems)
 
 
 # MARK: - Overrides
 
 
-def test_add_override_tolerates_a_session_whose_overrides_lack_ids(profile):
-    (profile / "sessions" / "hand.json").write_text(
+def test_add_override_tolerates_a_scenario_whose_overrides_lack_ids(profile):
+    (profile / "scenarios" / "hand.json").write_text(
         json.dumps({"name": "hand", "overrides": [{"match": {"path": "/a"}, "mode": "replace"}]})
     )
     subject = make_store(profile)
@@ -249,8 +250,8 @@ def test_add_override_tolerates_a_session_whose_overrides_lack_ids(profile):
     assert added["id"].startswith("ovr_")
 
 
-def test_add_override_tolerates_a_session_with_no_overrides_key(profile):
-    (profile / "sessions" / "bare.json").write_text(json.dumps({"name": "bare"}))
+def test_add_override_tolerates_a_scenario_with_no_overrides_key(profile):
+    (profile / "scenarios" / "bare.json").write_text(json.dumps({"name": "bare"}))
     subject = make_store(profile)
     subject.set_active("bare")
     assert subject.add_override({"match": {"path": "/b"}, "mode": "replace"})["id"]
@@ -262,24 +263,24 @@ def test_add_override_rejects_an_invalid_rule(profile):
         subject.add_override({"mode": "replace", "delayMs": "1s"})
 
 
-def test_persisted_sessions_are_private(profile):
+def test_persisted_scenarios_are_private(profile):
     subject = make_store(profile)
-    subject.create_session("scratch")
-    mode = (profile / "sessions" / "scratch.json").stat().st_mode
+    subject.create_scenario("scratch")
+    mode = (profile / "scenarios" / "scratch.json").stat().st_mode
     assert mode & 0o077 == 0
 
 
-def test_containment_rejects_a_symlinked_sessions_directory(profile, tmp_path):
-    """Proving a path sits under sessions/ is not enough if sessions/ is itself a symlink out."""
+def test_containment_rejects_a_symlinked_scenarios_directory(profile, tmp_path):
+    """Proving a path sits under scenarios/ is not enough if scenarios/ is itself a symlink out."""
     outside = tmp_path / "outside"
     outside.mkdir()
-    sessions = profile / "sessions"
-    for child in sessions.iterdir():
+    scenarios = profile / "scenarios"
+    for child in scenarios.iterdir():
         child.unlink()
-    sessions.rmdir()
-    sessions.symlink_to(outside, target_is_directory=True)
+    scenarios.rmdir()
+    scenarios.symlink_to(outside, target_is_directory=True)
     with pytest.raises(store.UnsafeName):
-        store._contained(config.SESSIONS_DIR, "escaped.json")
+        store._contained(config.SCENARIOS_DIR, "escaped.json")
 
 
 def test_override_id_cannot_be_nulled_by_the_payload(profile):
@@ -303,15 +304,15 @@ def test_override_id_cannot_be_nulled_by_the_payload(profile):
 
 
 def test_create_refuses_a_name_that_is_already_taken(profile):
-    """Silently replacing a session someone else may be using is a delete without a `delete`."""
+    """Silently replacing a scenario someone else may be using is a delete without a `delete`."""
     subject = make_store(profile)
-    subject.create_session("taken")
+    subject.create_scenario("taken")
     subject.set_active("taken")
     kept = subject.add_override({"id": "keep", "mode": "replace", "match": {"path": "/a"}})
     with pytest.raises(FileExistsError):
-        subject.create_session("taken")
-    assert [o["id"] for o in subject.sessions["taken"]["overrides"]] == [kept["id"]], (
-        "the refused create must not have touched the existing session"
+        subject.create_scenario("taken")
+    assert [o["id"] for o in subject.scenarios["taken"]["overrides"]] == [kept["id"]], (
+        "the refused create must not have touched the existing scenario"
     )
 
 
@@ -323,35 +324,35 @@ def test_create_refuses_a_name_that_is_already_taken(profile):
         pytest.param("[]", id="string"),
     ],
 )
-def test_a_session_whose_overrides_are_not_a_list_is_reported_not_emptied(profile, overrides):
-    """`normalise_session` substitutes [] for a malformed `overrides`, so the file loads — and the
+def test_a_scenario_whose_overrides_are_not_a_list_is_reported_not_emptied(profile, overrides):
+    """`normalise_scenario` substitutes [] for a malformed `overrides`, so the file loads — and the
     problem has to be on the record, or a scenario with every rule lost reads as one with none."""
-    (profile / "sessions" / "broken.json").write_text(
+    (profile / "scenarios" / "broken.json").write_text(
         json.dumps({"name": "broken", "overrides": overrides}), encoding="utf-8"
     )
-    session, problems = store.load_session_file(profile / "sessions" / "broken.json")
-    assert session is not None and session["overrides"] == []
+    scenario, problems = store.load_scenario_file(profile / "scenarios" / "broken.json")
+    assert scenario is not None and scenario["overrides"] == []
     assert problems == ["broken.json: overrides must be a list"]
 
 
-def test_a_created_session_does_not_inherit_the_problems_of_the_file_it_replaces(profile):
-    """`sessions_not_whole` says what is wrong with the session under a name *now*. A file that
-    would not load leaves no session, so creating one under that name is a recovery — and a stale
+def test_a_created_scenario_does_not_inherit_the_problems_of_the_file_it_replaces(profile):
+    """`scenarios_not_whole` says what is wrong with the scenario under a name *now*. A file that
+    would not load leaves no scenario, so creating one under that name is a recovery — and a stale
     entry makes `up --use NAME` refuse to launch against rules that are all present."""
-    (profile / "sessions" / "orders-outage.json").write_text("{ not json", encoding="utf-8")
+    (profile / "scenarios" / "orders-outage.json").write_text("{ not json", encoding="utf-8")
     subject = make_store(profile)
-    assert "orders-outage" in subject.sessions_not_whole
+    assert "orders-outage" in subject.scenarios_not_whole
 
-    subject.create_session("orders-outage")
+    subject.create_scenario("orders-outage")
 
-    assert subject.sessions_not_whole == {}
+    assert subject.scenarios_not_whole == {}
     assert subject.load_problems, "the record of what startup found is not rewritten"
 
 
-def test_a_recreated_session_does_not_inherit_the_problems_of_the_one_deleted(profile):
-    """The other order: delete the half-loaded session, then make a new one under its name. The
-    entry has to go with the session, not linger for whatever takes the name next."""
-    (profile / "sessions" / "orders-outage.json").write_text(
+def test_a_recreated_scenario_does_not_inherit_the_problems_of_the_one_deleted(profile):
+    """The other order: delete the half-loaded scenario, then make a new one under its name. The
+    entry has to go with the scenario, not linger for whatever takes the name next."""
+    (profile / "scenarios" / "orders-outage.json").write_text(
         json.dumps(
             {
                 "name": "orders-outage",
@@ -364,47 +365,47 @@ def test_a_recreated_session_does_not_inherit_the_problems_of_the_one_deleted(pr
         encoding="utf-8",
     )
     subject = make_store(profile)
-    assert "orders-outage" in subject.sessions, "it loaded, without one of its rules"
-    assert "orders-outage" in subject.sessions_not_whole
+    assert "orders-outage" in subject.scenarios, "it loaded, without one of its rules"
+    assert "orders-outage" in subject.scenarios_not_whole
 
-    assert subject.delete_session("orders-outage")
-    assert subject.sessions_not_whole == {}
-    subject.create_session("orders-outage")
-    assert subject.sessions_not_whole == {}
+    assert subject.delete_scenario("orders-outage")
+    assert subject.scenarios_not_whole == {}
+    subject.create_scenario("orders-outage")
+    assert subject.scenarios_not_whole == {}
 
 
-def test_cloning_an_unknown_session_is_an_error(profile):
-    """Handing back an empty session instead is a false success the caller cannot see."""
+def test_cloning_an_unknown_scenario_is_an_error(profile):
+    """Handing back an empty scenario instead is a false success the caller cannot see."""
     subject = make_store(profile)
     with pytest.raises(KeyError):
-        subject.create_session("copy", clone_from="does-not-exist")
-    assert "copy" not in subject.sessions
+        subject.create_scenario("copy", clone_from="does-not-exist")
+    assert "copy" not in subject.scenarios
 
 
 def test_cloning_copies_the_overrides(profile):
     subject = make_store(profile)
     subject.add_override({"mode": "replace", "match": {"path": "/a"}})
-    subject.create_session("copy", clone_from="default")
-    assert len(subject.sessions["copy"]["overrides"]) == 1
-    assert subject.sessions["copy"]["name"] == "copy"
+    subject.create_scenario("copy", clone_from="default")
+    assert len(subject.scenarios["copy"]["overrides"]) == 1
+    assert subject.scenarios["copy"]["name"] == "copy"
 
 
 def test_starting_does_not_write_into_the_profile(profile):
     """A profile kept in git must not go dirty just because the proxy started. The in-memory
-    `default` session used to be persisted, which created a file on first load."""
+    `default` scenario used to be persisted, which created a file on first load."""
     (profile / "profile.json").write_text('{"hosts": []}', encoding="utf-8")
     config.reload_profile()
-    before = sorted(p.name for p in (profile / "sessions").iterdir())
+    before = sorted(p.name for p in (profile / "scenarios").iterdir())
     subject = store.Store()
-    after = sorted(p.name for p in (profile / "sessions").iterdir())
+    after = sorted(p.name for p in (profile / "scenarios").iterdir())
     assert before == after, "startup wrote a file into the profile"
     assert subject.active_name == "default"
-    assert "default" in subject.sessions, "default must still exist in memory"
+    assert "default" in subject.scenarios, "default must still exist in memory"
 
 
 # MARK: - Sequence cursors
 #
-# The cursor is runtime state living on the session under a leading underscore, so the invariants
+# The cursor is runtime state living on the scenario under a leading underscore, so the invariants
 # worth pinning are: it moves when it should, it does NOT move when it should not, and it never
 # escapes into a profile someone keeps in git.
 
@@ -529,13 +530,13 @@ def test_resolve_override_does_not_move_the_cursor(profile):
 # MARK: - Runtime never escapes
 
 
-def test_sequence_cursors_never_reach_the_session_file(profile):
+def test_sequence_cursors_never_reach_the_scenario_file(profile):
     subject = store.Store()
     subject.add_override(dict(SEQ))
     _advanced_once(subject)
     subject.add_override({"id": "other", "mode": "replace", "status": 200})  # forces another write
 
-    raw = (profile / "sessions" / "default.json").read_text(encoding="utf-8")
+    raw = (profile / "scenarios" / "default.json").read_text(encoding="utf-8")
     assert "_ruleRuntime" not in raw
     assert "runId" not in raw
 
@@ -544,29 +545,29 @@ def test_a_clone_starts_its_sequences_fresh(profile):
     subject = store.Store()
     subject.add_override(dict(SEQ))
     _advanced_once(subject)
-    subject.create_session("copy", clone_from="default")
-    assert "_ruleRuntime" not in subject.sessions["copy"]
+    subject.create_scenario("copy", clone_from="default")
+    assert "_ruleRuntime" not in subject.scenarios["copy"]
 
 
-def test_switching_sessions_restarts_the_scenario(profile):
+def test_switching_scenarios_restarts_the_scenario(profile):
     subject = store.Store()
     subject.add_override(dict(SEQ))
     _advanced_once(subject)
-    subject.create_session("other")
+    subject.create_scenario("other")
     subject.set_active("other")
     subject.set_active("default")
     assert subject.sequence_states()[0]["nextStep"] == 1, "a scenario always begins at its first step"
 
 
-def test_deleting_the_active_session_resets_the_destination(profile):
-    """`delete_session` falls back to `default` without going through `set_active`, so cursor
+def test_deleting_the_active_scenario_resets_the_destination(profile):
+    """`delete_scenario` falls back to `default` without going through `set_active`, so cursor
     cleanup hung off `set_active` alone would let a scenario resume mid-run."""
     subject = store.Store()
     subject.add_override(dict(SEQ))
     _advanced_once(subject)
-    subject.create_session("work")
+    subject.create_scenario("work")
     subject.set_active("work")
-    subject.delete_session("work")
+    subject.delete_scenario("work")
 
     assert subject.active_name == "default"
     assert subject.sequence_states()[0]["nextStep"] == 1
@@ -615,9 +616,9 @@ def test_reset_covers_plain_rules_not_just_sequenced_ones(profile):
     assert list((subject.reset_runtime() or {})["reset"]) == ["plain"]
 
 
-def test_resetting_a_session_with_no_rules_reports_nothing_to_do(profile):
+def test_resetting_a_scenario_with_no_rules_reports_nothing_to_do(profile):
     subject = store.Store()
-    assert subject.reset_runtime() == {"session": "default", "reset": {}}
+    assert subject.reset_runtime() == {"scenario": "default", "reset": {}}
 
 
 def test_a_served_overrun_is_reported_even_when_the_cursor_cannot_move(profile):
@@ -709,24 +710,24 @@ def test_reset_always_issues_a_different_run_id(profile, monkeypatch):
 # was in play when it was not — the exact defect the assertion exists to catch.
 
 
-def test_a_captured_slot_credits_nobody_after_the_session_is_switched(profile):
+def test_a_captured_slot_credits_nobody_after_the_scenario_is_switched(profile):
     """A patch is selected in the request hook and only answers a round trip later, in the response
     hook. Looking the rule up by id at that point would credit whatever rule the *now* active
-    session happens to file under that id — a different rule, in a different scenario."""
+    scenario happens to file under that id — a different rule, in a different scenario."""
     subject = store.Store()
     subject.add_override({"id": "shared", "mode": "patch", "patch": {}})
     slot = subject.answer_slot("shared")
 
-    subject.create_session("other")
+    subject.create_scenario("other")
     subject.set_active("other")
     subject.add_override({"id": "shared", "mode": "patch", "patch": {}})
 
-    store.credit(slot)  # the in-flight patch from the previous session lands now
+    store.credit(slot)  # the in-flight patch from the previous scenario lands now
     assert subject.answer_states() == [{"id": "shared", "active": True, "count": 0, "runId": None}]
 
 
 def test_a_captured_slot_credits_nobody_after_the_rule_is_replaced(profile):
-    """Same shape, one session: `override add` on an existing id installs a different rule, and the
+    """Same shape, one scenario: `override add` on an existing id installs a different rule, and the
     in-flight answer belongs to the definition that was consulted, not the one that replaced it."""
     subject = store.Store()
     subject.add_override({"id": "r", "mode": "patch", "patch": {}})
@@ -756,14 +757,14 @@ def test_reading_answer_states_does_not_mint_run_state(profile):
     subject = store.Store()
     subject.add_override({"id": "untouched", "mode": "replace", "status": 200})
     subject.answer_states()
-    assert store._runtime(subject.active_session()) == {}
+    assert store._runtime(subject.active_scenario()) == {}
 
 
-def test_switching_session_clears_answer_counts(profile):
+def test_switching_scenario_clears_answer_counts(profile):
     subject = store.Store()
     subject.add_override({"id": "a", "mode": "replace", "status": 200})
     store.credit(subject.answer_slot("a"))
-    subject.create_session("scratch")
+    subject.create_scenario("scratch")
     subject.set_active("scratch")
     subject.set_active("default")
     assert subject.answer_states() == [{"id": "a", "active": True, "count": 0, "runId": None}]
@@ -831,13 +832,13 @@ def test_a_rule_replaced_under_the_same_id_answers_in_a_different_run(profile):
     assert state["runId"] != issued, "but not in the run the caller was told about"
 
 
-def test_a_session_switch_answers_in_a_different_run_under_the_same_id(profile):
-    """Two sessions can file a rule under one id. Reading a count from the second while holding the
+def test_a_scenario_switch_answers_in_a_different_run_under_the_same_id(profile):
+    """Two scenarios can file a rule under one id. Reading a count from the second while holding the
     first's run token is the substitution this field exists to make visible."""
     subject = store.Store()
     subject.add_override({"id": "shared", "mode": "replace", "status": 200})
     issued = subject.reset_runtime("shared")["reset"]["shared"]
-    subject.create_session("other")
+    subject.create_scenario("other")
     subject.set_active("other")
     subject.add_override({"id": "shared", "mode": "replace", "status": 200})
     store.credit(subject.answer_slot("shared"))
@@ -887,14 +888,14 @@ def _refuse_writes(monkeypatch):
 def test_a_rule_whose_write_fails_is_not_added(profile, monkeypatch):
     subject = store.Store()
     subject.add_override({"id": "kept", "mode": "replace", "status": 200})
-    before = (profile / "sessions" / "default.json").read_bytes()
+    before = (profile / "scenarios" / "default.json").read_bytes()
 
     _refuse_writes(monkeypatch)
     with pytest.raises(OSError):
         subject.add_override({"id": "new", "mode": "replace", "status": 500})
 
     assert [o["id"] for o in subject.active_overrides()] == ["kept"]
-    assert (profile / "sessions" / "default.json").read_bytes() == before
+    assert (profile / "scenarios" / "default.json").read_bytes() == before
 
 
 def test_a_replacement_whose_write_fails_leaves_the_old_rule_live_with_its_cursor(profile, monkeypatch):
@@ -903,7 +904,7 @@ def test_a_replacement_whose_write_fails_leaves_the_old_rule_live_with_its_curso
     subject = store.Store()
     subject.add_override(dict(SEQ))
     _advanced_once(subject)
-    before = (profile / "sessions" / "default.json").read_bytes()
+    before = (profile / "scenarios" / "default.json").read_bytes()
 
     _refuse_writes(monkeypatch)
     with pytest.raises(OSError):
@@ -912,7 +913,7 @@ def test_a_replacement_whose_write_fails_leaves_the_old_rule_live_with_its_curso
     state = subject.sequence_states()[0]
     assert state["stepCount"] == 2, "the two-step rule must still be the live one"
     assert state["nextStep"] == 2, "its cursor must survive a replacement that did not happen"
-    assert (profile / "sessions" / "default.json").read_bytes() == before
+    assert (profile / "scenarios" / "default.json").read_bytes() == before
 
 
 def test_a_replacement_whose_write_fails_leaves_a_captured_slot_crediting_the_live_rule(profile, monkeypatch):
@@ -941,7 +942,7 @@ def test_overrides_stay_live_when_the_clear_cannot_be_written(profile, monkeypat
     subject = store.Store()
     subject.add_override(dict(SEQ))
     _advanced_once(subject)
-    before = (profile / "sessions" / "default.json").read_bytes()
+    before = (profile / "scenarios" / "default.json").read_bytes()
 
     _refuse_writes(monkeypatch)
     with pytest.raises(OSError):
@@ -949,26 +950,26 @@ def test_overrides_stay_live_when_the_clear_cannot_be_written(profile, monkeypat
 
     assert [o["id"] for o in subject.active_overrides()] == ["seq"]
     assert subject.sequence_states()[0]["nextStep"] == 2
-    assert (profile / "sessions" / "default.json").read_bytes() == before
+    assert (profile / "scenarios" / "default.json").read_bytes() == before
 
 
 @pytest.mark.parametrize("clone_from", [None, "default"], ids=["empty", "clone"])
-def test_a_session_whose_write_fails_does_not_exist(profile, monkeypatch, clone_from):
+def test_a_scenario_whose_write_fails_does_not_exist(profile, monkeypatch, clone_from):
     subject = store.Store()
 
     _refuse_writes(monkeypatch)
     with pytest.raises(OSError):
-        subject.create_session("scratch", clone_from)
+        subject.create_scenario("scratch", clone_from)
 
-    assert "scratch" not in subject.sessions
-    assert not (profile / "sessions" / "scratch.json").exists()
+    assert "scratch" not in subject.scenarios
+    assert not (profile / "scenarios" / "scratch.json").exists()
 
 
 def test_a_switch_whose_pointer_write_fails_does_not_happen(profile, monkeypatch):
     """`_activate` rewinds the destination's cursors. Doing that for a switch the state file never
     recorded would restart a scenario that the next proxy start puts back where it was."""
     subject = store.Store()
-    subject.create_session("other")
+    subject.create_scenario("other")
     subject.set_active("other")
     subject.add_override(dict(SEQ))
     _advanced_once(subject)
@@ -980,30 +981,100 @@ def test_a_switch_whose_pointer_write_fails_does_not_happen(profile, monkeypatch
         subject.set_active("other")
 
     assert subject.active_name == "default"
-    assert store._runtime(subject.sessions["other"])["seq"]["cursor"] == 1, (
+    assert store._runtime(subject.scenarios["other"])["seq"]["cursor"] == 1, (
         "the destination's cursors were rewound for a switch that did not happen"
     )
     assert config.STATE_FILE.read_bytes() == before
 
 
-def test_deleting_the_active_session_raises_when_the_pointer_cannot_be_written(profile, monkeypatch):
+def test_deleting_the_active_scenario_raises_when_the_pointer_cannot_be_written(profile, monkeypatch):
     """The fallback to `default` is a pointer write like any other. Failing it must raise rather
     than return False: False is the answer for a delete refused by policy, and an operator who
     reads it as that will never look at the disk."""
     subject = store.Store()
-    subject.create_session("work")
+    subject.create_scenario("work")
     subject.set_active("work")
     subject.add_override(dict(SEQ))
     _advanced_once(subject)
-    before_session = (profile / "sessions" / "work.json").read_bytes()
+    before_scenario = (profile / "scenarios" / "work.json").read_bytes()
     before_state = config.STATE_FILE.read_bytes()
 
     _refuse_writes(monkeypatch)
     with pytest.raises(OSError):
-        subject.delete_session("work")
+        subject.delete_scenario("work")
 
     assert subject.active_name == "work"
-    assert "work" in subject.sessions
+    assert "work" in subject.scenarios
     assert subject.sequence_states()[0]["nextStep"] == 2
-    assert (profile / "sessions" / "work.json").read_bytes() == before_session
+    assert (profile / "scenarios" / "work.json").read_bytes() == before_scenario
     assert config.STATE_FILE.read_bytes() == before_state
+
+
+# MARK: - The profile layout from before the rename
+
+
+def make_legacy_profile(profile, *, with_scenarios=False):
+    """A profile written before `sessions/` became `scenarios/`, with `config` pointed at it.
+
+    Built beside the `profile` fixture's directory rather than inside it, because the fixture
+    creates `scenarios/` and the whole point of this layout is that it has none. The fixture's
+    teardown puts `config` back.
+    """
+    legacy = profile.parent / "legacy"
+    (legacy / "sessions").mkdir(parents=True)
+    if with_scenarios:
+        (legacy / "scenarios").mkdir()
+    (legacy / "profile.json").write_text('{"hosts": []}')
+    config.configure(str(legacy))
+    config.reload_profile()
+    return legacy
+
+
+def test_store_refuses_a_legacy_sessions_layout(profile):
+    """`sessions/` was renamed to `scenarios/` before the first release, and `Store._load` creates
+    the directory it reads when it is missing. So an unrenamed profile would have started the proxy
+    on an empty `scenarios/` it had just made: every saved scenario absent, only the synthesised
+    `default` in the list, and nothing anywhere saying why. The refusal names both paths and the
+    `mv` that fixes it."""
+    legacy = make_legacy_profile(profile)
+
+    with pytest.raises(store.LegacyProfileLayout) as raised:
+        store.Store()
+
+    assert f"mv {legacy / 'sessions'} {legacy / 'scenarios'}" in str(raised.value)
+    assert not (legacy / "scenarios").exists(), "the refusal must not leave the empty directory behind"
+
+
+def test_a_profile_with_both_directories_loads_from_scenarios(profile):
+    """Only the *absence* of `scenarios/` is the old layout. Once it is there it is the one that is
+    read, and a `sessions/` left behind is somebody's backup — not a second place to look."""
+    legacy = make_legacy_profile(profile, with_scenarios=True)
+    (legacy / "scenarios" / "kept.json").write_text(json.dumps({"name": "kept", "overrides": []}))
+    (legacy / "sessions" / "stale.json").write_text(json.dumps({"name": "stale", "overrides": []}))
+
+    subject = store.Store()
+
+    assert "kept" in subject.scenarios
+    assert "stale" not in subject.scenarios
+
+
+def test_the_legacy_remedy_is_a_command_a_shell_can_run(profile):
+    """The message exists to hand over one line to paste. Interpolated bare, a profile under
+    `/path/to/My Profile` produced `mv /path/to/My Profile/sessions …` — four arguments to `mv`,
+    so the remedy for the refusal was the one part of it that did not work."""
+    spaced = profile.parent / "My Profile"
+    (spaced / "sessions").mkdir(parents=True)
+
+    with pytest.raises(store.LegacyProfileLayout) as raised:
+        store.refuse_legacy_layout(spaced)
+
+    remedy = str(raised.value).rsplit("rename it:  ", 1)[1]
+    assert shlex.split(remedy) == ["mv", str(spaced / "sessions"), str(spaced / "scenarios")]
+
+
+def test_scenario_files_refuses_a_legacy_sessions_layout(profile):
+    """The offline commands list a profile's files through this, so without the refusal here they
+    would report "no scenario files" for a profile that has every one of them."""
+    make_legacy_profile(profile)
+    with pytest.raises(store.LegacyProfileLayout):
+        store.scenario_files()

@@ -15,7 +15,7 @@ from cli_doubles import _BASE_SEQ, _answers_over, _health_payload, _polling
 
 
 def _health_over(*states):
-    """Sequence state under the poll. `None` for a state means the rule is gone from the session."""
+    """Sequence state under the poll. `None` for a state means the rule is gone from the scenario."""
     return _polling(states, lambda state: _health_payload(sequences=[] if state is None else [{**_BASE_SEQ, **state}]))
 
 
@@ -24,7 +24,7 @@ def _health_with(**state):
 
 
 def test_reset_names_what_it_rewound(profile, runner, monkeypatch):
-    monkeypatch.setattr(api, "_control", lambda *a, **k: {"session": "default", "reset": {"ovr_a": "abc123"}})
+    monkeypatch.setattr(api, "_control", lambda *a, **k: {"scenario": "default", "reset": {"ovr_a": "abc123"}})
     result = runner.invoke(cli.cli, ["reset"])
     assert result.exit_code == 0
     assert "ovr_a" in result.output
@@ -34,23 +34,23 @@ def test_reset_names_what_it_rewound(profile, runner, monkeypatch):
 def test_reset_json_hands_back_the_run_id_to_assert_with(profile, runner, monkeypatch):
     """The boundary has to be retainable by a script, not just readable by a person: an id that
     only exists inside a coloured line is an id no test harness can pass to the assertion."""
-    monkeypatch.setattr(api, "_control", lambda *a, **k: {"session": "default", "reset": {"ovr_a": "abc123"}})
+    monkeypatch.setattr(api, "_control", lambda *a, **k: {"scenario": "default", "reset": {"ovr_a": "abc123"}})
     result = runner.invoke(cli.cli, ["reset", "ovr_a", "--json"])
     assert result.exit_code == 0
-    assert json.loads(result.output) == {"session": "default", "reset": {"ovr_a": "abc123"}}
+    assert json.loads(result.output) == {"scenario": "default", "reset": {"ovr_a": "abc123"}}
 
 
 def test_reset_json_reports_an_empty_reset_as_an_empty_map(profile, runner, monkeypatch):
     """`--json` decides how this is printed and nothing else — same exit, same meaning, and an
     empty map is a real answer rather than the absence of one."""
-    monkeypatch.setattr(api, "_control", lambda *a, **k: {"session": "default", "reset": {}})
+    monkeypatch.setattr(api, "_control", lambda *a, **k: {"scenario": "default", "reset": {}})
     result = runner.invoke(cli.cli, ["reset", "--json"])
     assert result.exit_code == 0
-    assert json.loads(result.output) == {"session": "default", "reset": {}}
+    assert json.loads(result.output) == {"scenario": "default", "reset": {}}
 
 
 def test_reset_says_so_when_there_is_nothing_to_rewind(profile, runner, monkeypatch):
-    monkeypatch.setattr(api, "_control", lambda *a, **k: {"session": "default", "reset": {}})
+    monkeypatch.setattr(api, "_control", lambda *a, **k: {"scenario": "default", "reset": {}})
     result = runner.invoke(cli.cli, ["reset"])
     assert result.exit_code == 0
     assert "nothing to reset" in result.output
@@ -255,7 +255,7 @@ def test_assert_answered_says_so_when_the_control_api_is_unreachable(profile, ru
 def test_assert_answered_refuses_a_proxy_that_cannot_report_counts(profile, runner, monkeypatch):
     """An engine too old to report counts must not be read as a rule that answered nothing — that
     turns a restart into a debugging session."""
-    monkeypatch.setattr(api, "_health", lambda: {"activeSession": "default", "sequences": []})
+    monkeypatch.setattr(api, "_health", lambda: {"activeScenario": "default", "sequences": []})
     result = runner.invoke(cli.cli, ["assert-answered", "ovr_a"])
     assert result.exit_code == 1
     assert "does not report answer counts" in result.output
@@ -312,7 +312,7 @@ def test_assert_answered_rejects_a_negative_timeout(profile, runner):
 # MARK: - Binding the assertion to the run the caller started
 #
 # A count answers "has this rule answered in *some* run". The run a test set up ends whenever
-# anything resets the rule, replaces it under the same id, or switches session — and the rule id
+# anything resets the rule, replaces it under the same id, or switches scenario — and the rule id
 # looks identical on the other side of that. Every test here is a way the command could report a
 # stranger's evidence as the test's own, which is worse than reporting none: it is a green pass.
 
@@ -353,7 +353,7 @@ def test_assert_answered_refuses_a_run_that_ended_while_it_waited(profile, runne
 
 
 def test_assert_answered_tells_a_missing_run_from_a_run_with_no_answers(profile, runner, monkeypatch):
-    """`runId: null` says the rule has no run at all — its state was dropped by a session switch or
+    """`runId: null` says the rule has no run at all — its state was dropped by a scenario switch or
     a replacement. That is not "the run you named happened and nothing answered", and the two need
     different fixes, so they must not share an exit code."""
     monkeypatch.setattr(api, "_health", _answers_over({"count": 0, "runId": None}))
@@ -396,7 +396,7 @@ def test_assert_answered_rejects_an_empty_run(profile, runner):
 
 
 def test_assert_answered_refuses_a_rule_that_vanishes_while_it_waits(profile, runner, monkeypatch):
-    """A session switched mid-wait to one that does not carry this id destroys the boundary rather
+    """A scenario switched mid-wait to one that does not carry this id destroys the boundary rather
     than answering the question about it. Reported as 1 it would read as "the mock did not apply",
     which is a claim this command was in no position to make."""
     monkeypatch.setattr(api, "_health", _answers_over({"count": 0, "runId": "run1"}, None))
@@ -421,7 +421,7 @@ def test_assert_answered_cannot_prove_a_run_against_a_proxy_that_counts_but_cann
     """Version skew in the other field. An engine that cannot count at all certainly cannot say
     which run its counts are in, so under --run both refusals have to arrive as the same code — a
     harness branching on 3 must not have to learn which flavour of skew it hit."""
-    monkeypatch.setattr(api, "_health", lambda: {"activeSession": "default", "sequences": []})
+    monkeypatch.setattr(api, "_health", lambda: {"activeScenario": "default", "sequences": []})
     result = runner.invoke(cli.cli, ["assert-answered", "ovr_a", "--run", "run1"])
     assert result.exit_code == 3
     assert "does not report answer counts" in result.output

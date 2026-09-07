@@ -41,7 +41,7 @@ from collections.abc import Mapping, Sequence
 from functools import lru_cache
 from typing import Any, TypeGuard
 
-SCHEMA_VERSION = 1  # the session-file format this engine reads; see `normalise_session`
+SCHEMA_VERSION = 1  # the scenario-file format this engine reads; see `normalise_scenario`
 MAX_WILDCARDS = 10  # a bounded number of wildcards keeps the generated regex cheap to evaluate
 MAX_SEQUENCE_STEPS = 50  # bounded for the same reason: a pasted file must not cost unbounded memory
 VALID_MODES = ("replace", "patch")
@@ -67,12 +67,12 @@ MATCHER_FIELD_HELP = {
 MATCHER_FIELDS = tuple(MATCHER_FIELD_HELP)
 
 # The top-level vocabulary, for the same three consumers and the same reason. `notes` is the one
-# field the engine never reads: JSON has no comments and sessions are written by hand, so an author
+# field the engine never reads: JSON has no comments and scenarios are written by hand, so an author
 # needs somewhere to say why a rule exists. Everything outside this table is a typo — including
 # `nots` — and a typo'd field is not a harmless extra: `statsu` leaves the rule answering with a
 # default status, which is a different response from the one its author wrote.
 OVERRIDE_FIELD_HELP = {
-    "id": "Stable name for the rule. Generated when omitted; derived from the rule's content for session files.",
+    "id": "Stable name for the rule. Generated when omitted; derived from the rule's content for scenario files.",
     "active": "false switches the rule off without deleting it. Default true.",
     "match": "Which requests this rule answers (see the matcher fields).",
     "mode": "'replace' answers locally; 'patch' merges into the real response.",
@@ -100,7 +100,7 @@ def glob_to_regex(glob: str) -> re.Pattern:
     """`*` is the only special character; everything else is literal.
 
     Wildcard count is capped at validation time (see MAX_WILDCARDS) rather than here, so that
-    matching semantics stay exactly as they were for already-saved sessions.
+    matching semantics stay exactly as they were for already-saved scenarios.
 
     Cached because this runs once per rule per request and dominated that cost: the `re.sub` and
     the f-string run before `re.compile` can reach its own internal cache. Keys are glob strings
@@ -153,7 +153,7 @@ def explain_matcher(
 
     Truthiness rather than `is not None` throughout, deliberately: validation checks these fields'
     types but not their emptiness, so `""` and `{}` are already treated as "no constraint" on the
-    wire, and a saved session may contain them.
+    wire, and a saved scenario may contain them.
     """
     want_method = matcher.get("method")
     if want_method and want_method.upper() != method.upper():
@@ -512,7 +512,7 @@ def validate_override(override: Any) -> dict:
         # and `int()` then raises OverflowError (not even a ValueError) from inside validation.
         # That is not a rule this file refuses, it is validation itself falling over — the caller
         # gets a traceback instead of the field name, and the loader's `except ValidationError`
-        # never sees it, so one such rule took a whole session's diagnostics with it.
+        # never sees it, so one such rule took a whole scenario's diagnostics with it.
         if isinstance(delay, float) and not math.isfinite(delay):
             raise ValidationError("delayMs must be a finite number")
         if delay < 0:
@@ -541,27 +541,27 @@ def derived_id(override: Mapping[str, Any]) -> str:
     return f"ovr_{hashlib.sha256(shape.encode('utf-8')).hexdigest()[:6]}"
 
 
-def normalise_session(session: Any, name: str) -> dict:
-    """Coerce a session read from disk into a shape the store can rely on.
+def normalise_scenario(scenario: Any, name: str) -> dict:
+    """Coerce a scenario read from disk into a shape the store can rely on.
 
     Two failure grades, deliberately different: an invalid *override* is dropped into `_problems`
-    rather than taking the whole session (or the proxy) down, and the caller reports it; a session
+    rather than taking the whole scenario (or the proxy) down, and the caller reports it; a scenario
     that is not an object, or is stamped with a `schemaVersion` this engine does not read, raises —
     there is no part of it that can be trusted, so keeping any of it would be a guess.
     """
-    if not is_plain_object(session):
-        raise ValidationError("session must be a JSON object")
+    if not is_plain_object(scenario):
+        raise ValidationError("scenario must be a JSON object")
 
     # Underscore keys are ours: `_problems` below, and the sequence cursors the store hangs off the
-    # session. `_persistable` strips them on the way out, so nothing we wrote can contain one — but
+    # scenario. `_persistable` strips them on the way out, so nothing we wrote can contain one — but
     # a hand-edited or imported file can, and `_ruleRuntime` reaching the store means either a
     # crash inside a proxy hook or a scenario that quietly starts on step 2.
-    result = {key: value for key, value in session.items() if not key.startswith("_")}
+    result = {key: value for key, value in scenario.items() if not key.startswith("_")}
     result["name"] = name
     result.setdefault("schemaVersion", 1)
     # Refused whole, not per-rule. A file written for a format this engine does not know is a file
     # it would read with the wrong rules — silently, and only in the ways the format changed. The
-    # refusal turns that into a session the loader *names* as skipped, which is the difference
+    # refusal turns that into a scenario the loader *names* as skipped, which is the difference
     # between "your scenario is not loaded" and "your scenario loaded and behaves oddly".
     # `isinstance(True, int)` is True, so bools are excluded explicitly: `"schemaVersion": true`
     # is a typo, not version 1.
@@ -576,9 +576,9 @@ def normalise_session(session: Any, name: str) -> dict:
     overrides, problems, seen_ids = [], [], set()
     raw_overrides = result.get("overrides")
     if not isinstance(raw_overrides, list):
-        # An absent key is a legitimately empty session. A present one that is not a list is a
+        # An absent key is a legitimately empty scenario. A present one that is not a list is a
         # file whose rules cannot be kept — substituting [] without saying so would load an empty
-        # session and report nothing, so a scenario with every rule lost reads as one with none.
+        # scenario and report nothing, so a scenario with every rule lost reads as one with none.
         if "overrides" in result:
             problems.append("overrides must be a list")
         raw_overrides = []
@@ -589,7 +589,7 @@ def normalise_session(session: Any, name: str) -> dict:
             problems.append(f"override[{index}]: {error}")
             continue
         # An id is only needed to address the rule later (replace or reset it, or show what matched). Writing
-        # a session by hand is the documented workflow, so derive one rather than dropping the rule
+        # a scenario by hand is the documented workflow, so derive one rather than dropping the rule
         # for omitting something the author had no reason to invent. Derived from the content, so
         # it stays the same across restarts without rewriting the file.
         # Not `setdefault`: an explicit `"id": null` leaves the key present and the value None, so
@@ -599,12 +599,12 @@ def normalise_session(session: Any, name: str) -> dict:
             validated["id"] = derived_id(validated)
         # Ids address a rule: `add_override` replaces by id, and sequence state is keyed by it. Two
         # rules sharing an id would share a cursor and could not be replaced independently — so the
-        # duplicate is reported and dropped rather than loaded into a session where it would
+        # duplicate is reported and dropped rather than loaded into a scenario where it would
         # misbehave quietly.
         if validated["id"] in seen_ids:
             problems.append(
                 f"override[{index}]: duplicate id {validated['id']!r} — ids must be unique within a "
-                f"session; this rule was skipped"
+                f"scenario; this rule was skipped"
             )
             continue
         seen_ids.add(validated["id"])

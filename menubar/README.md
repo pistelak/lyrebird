@@ -47,7 +47,7 @@ conventional route.
 
 Menu-bar glyph: filled bird with a green dot while intercepting, orange when the proxy is up but
 not intercepting, and an outlined bird with no dot when stopped.
-Click for a session picker, Start/Stop (`lyrebird up|down`), a Relaunch-app button, recent traffic,
+Click for a scenario picker, Start/Stop (`lyrebird up|down`), a Relaunch-app button, recent traffic,
 and settings. Dock-less agent (`LSUIElement`).
 
 ## Configuration
@@ -63,7 +63,7 @@ Settings sheet closes — and never computes it: the fingerprint is the engine's
 `sha256(profile dir)[:12]`, and with the profile left blank the app cannot even see which directory
 the engine picked. It travels as `X-Lyrebird-Profile`, the header the control API compares against
 the running profile. A proxy running someone else's profile is then shown as exactly that, with
-that profile's fingerprint and no session list, traffic or Relaunch button borrowed from it; a
+that profile's fingerprint and no scenario list, traffic or Relaunch button borrowed from it; a
 proxy that answers something unreadable is shown as unreadable rather than as stopped. If the
 fingerprint cannot be established at all — a wrong launcher path, usually — the menu says the
 profile is unknown and sends nothing: an unscoped request is answered by whichever profile holds

@@ -30,7 +30,7 @@ bin/lyrebird use orders-outage
 
 The next matching `GET /api/v1/orders/…` gets the 500 — `use` changes what comes *after* it,
 and relaunches nothing. To have the app's *launch* requests meet a scenario, start the run
-with `bin/lyrebird up --use orders-outage`. Switch sessions to switch scenarios.
+with `bin/lyrebird up --use orders-outage`. One scenario is active at a time.
 
 There are two ways to answer a request:
 
@@ -115,7 +115,7 @@ working demo — `api.example.com` doesn't serve any of the example routes:
 
 - set `hosts` to the exact hostname your app calls
 - set `simBundleId` to your app's bundle identifier
-- point one of the files in `sessions/` at a request your app actually makes
+- point one of the files in `scenarios/` at a request your app actually makes
 
 ```bash
 bin/lyrebird up --use orders-outage   # CA, host-scoped PAC, the scenario, then your app
@@ -127,7 +127,7 @@ bin/lyrebird down                     # puts your proxy settings back
 `up` relaunches your app if `simBundleId` is set, and `--use` selects the scenario *before* that
 launch — which is why they are one command: `URLSession` holds on to the proxy configuration it
 saw at launch, and the app's first requests go out while it starts, so a scenario chosen
-afterwards is one the launch never saw. `up --use` refuses to launch anything if the session does
+afterwards is one the launch never saw. `up --use` refuses to launch anything if the scenario does
 not exist or did not load whole, and exits non-zero with the proxy left running for you to
 `down`. If `simBundleId` isn't set, relaunch the app yourself; if something else owns the launch —
 a UI-test runner — pass `--no-relaunch` and start it once `up` has exited 0.
@@ -152,18 +152,18 @@ cost the most time.
 
 ## Profiles
 
-Your hosts and sessions live in a **profile** directory, outside this repo. The default is
+Your hosts and scenarios live in a **profile** directory, outside this repo. The default is
 `~/.config/lyrebird`; use another with `bin/lyrebird --profile /path/to/profile up`.
 
 Because a profile is plain JSON, you can keep it in its own repository and review scenarios the way
 you review code. Saving a scenario writes to it — that is what it is for. Everything *operational*
-stays out, in the macOS directory that matches how long it should live: the active-session pointer
+stays out, in the macOS directory that matches how long it should live: the active-scenario pointer
 and the CA under `~/Library/Application Support/Lyrebird/`, the proxy log under
 `~/Library/Logs/Lyrebird/`. So a profile in git changes when you change a scenario, never merely
 because the proxy ran.
 
-Where a profile sits has two consequences worth knowing before you move one: saving a session
-requires its file to resolve inside the profile, and the remembered active session is keyed by the
+Where a profile sits has two consequences worth knowing before you move one: saving a scenario
+requires its file to resolve inside the profile, and the remembered active scenario is keyed by the
 profile's resolved path. [engine/README.md](engine/README.md#profiles) has both.
 
 ## Where it fits
@@ -206,7 +206,7 @@ the CA.
 ## More
 
 `bin/lyrebird` has `init`, `up`, `down`, `status`, `use`, `recent`, `validate`, `explain-match`,
-`reset`, `assert-answered`, `wait-ready`, `sequence`, `override`, `session`, `relaunch`,
+`reset`, `assert-answered`, `wait-ready`, `sequence`, `override`, `scenario`, `relaunch`,
 `trust-ca`, `untrust-ca` and `logs`. `bin/lb` is a shorter alias for it.
 
 - [Engine guide](engine/README.md) — the full rule schema, matching order, control API, ports, tests

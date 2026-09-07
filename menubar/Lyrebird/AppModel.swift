@@ -23,7 +23,7 @@ final class AppModel {
     }
 
     var healthRead: MockClient.HealthRead?
-    var sessions: SessionList?
+    var scenarios: ScenarioList?
     var recent: [RecentEntry] = []
     var busy = false
     /// Last CLI failure, surfaced in the menu — a shell-out that fails silently is worse than useless.
@@ -132,7 +132,7 @@ final class AppModel {
             profileProblem = error.localizedDescription
             lastError = "could not determine the profile: \(error.localizedDescription)"
             healthRead = nil
-            sessions = nil
+            scenarios = nil
             recent = []
         }
     }
@@ -142,7 +142,7 @@ final class AppModel {
     func settingsChanged() async {
         configGeneration &+= 1
         healthRead = nil
-        sessions = nil
+        scenarios = nil
         recent = []
         expectedFingerprint = nil
         fingerprintSettings = nil
@@ -167,15 +167,15 @@ final class AppModel {
         let client = self.client
 
         let read = await client.health()
-        var sessions: SessionList?
+        var scenarios: ScenarioList?
         var recent: [RecentEntry] = []
-        // The session list and the recent traffic belong to whichever profile answered, so they
-        // are read only when that is ours. Showing another profile's sessions under this
+        // The scenario list and the recent traffic belong to whichever profile answered, so they
+        // are read only when that is ours. Showing another profile's scenarios under this
         // profile's name is the same mistake as showing its health.
         if case .up(let health) = read, health.proxyUp == true,
             health.profileFingerprint == nil || health.profileFingerprint == expected
         {
-            sessions = await client.sessions()
+            scenarios = await client.scenarios()
             recent = await client.recent()
         }
 
@@ -183,7 +183,7 @@ final class AppModel {
             settings == Self.currentSettings
         else { return }
         self.healthRead = read
-        self.sessions = sessions
+        self.scenarios = scenarios
         self.recent = recent
     }
 
@@ -210,7 +210,7 @@ final class AppModel {
     var statusLine: String {
         switch status {
         case .intercepting:
-            return "Intercepting · \(health?.activeSession ?? "?") · \(health?.overrideCount ?? 0) override(s)"
+            return "Intercepting · \(health?.activeScenario ?? "?") · \(health?.overrideCount ?? 0) override(s)"
         case .pacDisabled:
             return "Proxy up, not intercepting — press Start"
         case .down:
@@ -224,9 +224,9 @@ final class AppModel {
         }
     }
 
-    /// What the SESSIONS section says when there is no list to show — the reason differs, and
+    /// What the SCENARIOS section says when there is no list to show — the reason differs, and
     /// "proxy not running" is untrue for three of these.
-    var sessionsPlaceholder: String {
+    var scenariosPlaceholder: String {
         switch status {
         case .foreignProfile: return "another profile's proxy"
         case .unreadable: return "the proxy could not be read"
@@ -283,7 +283,7 @@ final class AppModel {
             try await client.activate(name)
             lastError = nil
         } catch {
-            // Name the session: the menu lists several, and the common failure — a 404 — means
+            // Name the scenario: the menu lists several, and the common failure — a 404 — means
             // this one went away between the last refresh and the click, which the bare message
             // would not say.
             lastError = "activate '\(name)': \(error.localizedDescription)"
