@@ -146,6 +146,8 @@ and what the PAC advertises — those are deliberately separate settings.
 
 ## Admin API (`/__mock__/*`)
 
+- `DELETE /recent` clears the traffic history only; rules, sequence cursors, answer counts and run IDs
+  are preserved. New traffic appears normally and event IDs are not reused.
 - `GET /health` (reports `intercepting` / `proxyUp` / `pacEnabled` / `simBundleId` / `scenarios` /
   `sequences` / `answers` / `loadProblems` / `scenariosNotWhole`, and `pacError` when the PAC could
   not be read — `intercepting` is then unproven, not off) · `GET /recent`

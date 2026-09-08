@@ -269,6 +269,11 @@ def make_app(store: Store, meta_provider: MetaProvider) -> web.Application:
     async def recent(_request: web.Request) -> web.StreamResponse:
         return web.json_response(store.recent_list())
 
+    @routes.delete("/__mock__/recent")
+    async def clear_recent(_request: web.Request) -> web.StreamResponse:
+        store.clear_recent()
+        return web.json_response({"ok": True})
+
     # MARK: - Overrides (act on the active scenario)
 
     @routes.get("/__mock__/overrides")
