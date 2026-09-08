@@ -9,7 +9,7 @@ SWIFT_SOURCES := menubar/Lyrebird menubar/LyrebirdTests acceptance/FixtureApp/Fi
 
 .PHONY: help setup setup-engine setup-app doctor check check-engine check-app check-shell \
 	format format-engine format-app lint-engine lint-app types test test-engine test-app \
-	build-fixture acceptance lock check-locks require-engine
+	build-fixture install-app acceptance lock check-locks require-engine
 
 help:
 	@echo 'make setup         Install locked Python dependencies and pinned Swift tools'
@@ -18,6 +18,7 @@ help:
 	@echo 'make check-engine  Python formatting, lint, types and tests'
 	@echo 'make check-app     Swift lint, app build/tests and fixture build'
 	@echo 'make format        Format Python and Swift sources'
+	@echo 'make install-app   Build the menu-bar app as Release into /Applications and launch it'
 	@echo 'make test-engine   Fast Python tests (TEST_ARGS="-k reset" to select tests)'
 	@echo 'make acceptance    Real simulator/network checks; opt-in, see CONTRIBUTING.md'
 	@echo 'make lock          Regenerate hashed requirements after editing *.in'
@@ -44,7 +45,7 @@ doctor: require-engine
 check: check-shell check-engine check-app
 
 check-shell:
-	bash -n bin/lyrebird scripts/setup-tools.sh scripts/check-tools.sh scripts/check-swift-format.sh menubar/scripts/verify-version.sh
+	bash -n bin/lyrebird scripts/setup-tools.sh scripts/check-tools.sh scripts/check-swift-format.sh menubar/scripts/verify-version.sh menubar/scripts/install-app.sh
 
 check-engine: check-locks lint-engine types test-engine
 
@@ -80,6 +81,12 @@ test-app:
 	cd menubar && ../$(XCODEGEN) generate
 	cd menubar && xcodebuild -quiet -project Lyrebird.xcodeproj -scheme Lyrebird \
 		-configuration Debug -derivedDataPath .build -destination 'platform=macOS' build test
+
+# APP_INSTALL_DIR=/path/to/dir to install somewhere other than /Applications.
+APP_INSTALL_DIR ?= /Applications
+install-app:
+	bash scripts/check-tools.sh
+	bash menubar/scripts/install-app.sh "$(APP_INSTALL_DIR)"
 
 build-fixture:
 	bash scripts/check-tools.sh

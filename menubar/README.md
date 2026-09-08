@@ -15,6 +15,17 @@ make setup-app
 make check-app              # formatting/lint, build, unit tests, fixture build
 ```
 
+To run it day to day, install one copy and launch that:
+
+```bash
+make install-app            # Release build into /Applications, replacing the old one, then open
+```
+
+It quits a running Lyrebird first and checks the installed bundle reports the build it just made.
+Keep Xcode's own builds out of the picture — every DerivedData build is a launchable `.app`, and
+Spotlight lists all of them as "Lyrebird" with nothing to say which is current. `make install-app`
+is the one that is.
+
 Or open the generated `menubar/Lyrebird.xcodeproj` in Xcode.
 See [CONTRIBUTING.md](../CONTRIBUTING.md) for pinned tools and formatter setup.
 
