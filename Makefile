@@ -6,6 +6,8 @@ ENGINE_PYTHON := .venv/bin/python
 SWIFT_FORMAT := .build/tools/bin/swift-format
 XCODEGEN := .build/tools/bin/xcodegen
 SWIFT_SOURCES := menubar/Lyrebird menubar/LyrebirdTests acceptance/FixtureApp/FixtureApp
+SHELL_SCRIPTS := bin/lyrebird scripts/setup-tools.sh scripts/check-tools.sh scripts/check-swift-format.sh \
+	menubar/scripts/verify-version.sh menubar/scripts/install-app.sh
 
 .PHONY: help setup setup-engine setup-app doctor check check-engine check-app check-shell \
 	format format-engine format-app lint-engine lint-app types test test-engine test-app \
@@ -44,8 +46,13 @@ doctor: require-engine
 
 check: check-shell check-engine check-app
 
+# One `bash -n` per file: given several, bash parses only the first; see
+# test_check_shell_parses_every_listed_script_not_only_the_first.
 check-shell:
-	bash -n bin/lyrebird scripts/setup-tools.sh scripts/check-tools.sh scripts/check-swift-format.sh menubar/scripts/verify-version.sh menubar/scripts/install-app.sh
+	@for script in $(SHELL_SCRIPTS); do \
+		echo "bash -n $$script"; \
+		bash -n "$$script" || exit 1; \
+	done
 
 check-engine: check-locks lint-engine types test-engine
 
