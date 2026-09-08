@@ -11,13 +11,15 @@ final class RuleFormattingTests: XCTestCase {
     // MARK: - What a rule matches
 
     func testARuleWithNoMethodMatchesAnyOfThemAndSaysSo() {
-        // A blank there reads as a value that failed to render, when it is a rule that answers
-        // every method on the path.
-        XCTAssertEqual(RuleFormatting.matchLine(RuleMatch(path: "/api/v1/items")), "ANY /api/v1/items")
-        XCTAssertEqual(RuleFormatting.matchLine(nil), "ANY *")
-        XCTAssertEqual(
-            RuleFormatting.matchLine(RuleMatch(method: "get", path: "/api/v1/orders")),
-            "GET /api/v1/orders")
+        // A blank in either field reads as a value that failed to render, when it is a rule that
+        // answers every method, or every path. The row and the detail set the two halves in
+        // different weights, so each is read on its own.
+        XCTAssertEqual(RuleFormatting.method(of: RuleMatch(path: "/api/v1/items")), "ANY")
+        XCTAssertEqual(RuleFormatting.method(of: nil), "ANY")
+        XCTAssertEqual(RuleFormatting.method(of: RuleMatch(method: "get")), "GET", "the wire's casing is not the rule")
+        XCTAssertEqual(RuleFormatting.path(of: RuleMatch(method: "GET")), "*")
+        XCTAssertEqual(RuleFormatting.path(of: nil), "*")
+        XCTAssertEqual(RuleFormatting.path(of: RuleMatch(path: "/api/v1/orders")), "/api/v1/orders")
     }
 
     // MARK: - What it answers with
@@ -81,18 +83,55 @@ final class RuleFormattingTests: XCTestCase {
 
     // MARK: - What it has done
 
-    func testAnInactiveRuleSaysSoWhereItsAnswerCountWouldBe() {
+    func testTheRowCaptionCountsAnswersAndSaysWhenARuleIsOff() {
         // Zero answers and switched off are different facts; a rule that is off has not merely
-        // answered nothing yet, it will not answer.
+        // answered nothing yet, it will not answer. The run id is not here — thirty rows each
+        // ending in the same opaque token is noise, and the detail pane is where it answers
+        // something.
+        XCTAssertEqual(RuleFormatting.answerCaption(AnswerState(active: true, count: 3, runId: "r7")), "3 answers")
+        XCTAssertEqual(RuleFormatting.answerCaption(AnswerState(active: true, count: 1, runId: "r7")), "1 answer")
+        XCTAssertEqual(RuleFormatting.answerCaption(AnswerState(active: true, count: 0)), "no answers yet")
+        XCTAssertEqual(RuleFormatting.answerCaption(AnswerState(active: false, count: 3, runId: "r7")), "inactive")
+    }
+
+    func testTheDetailPaneNamesTheRunACountBelongsTo() {
+        // A count with no run is evidence bound to no boundary, and must not read as one.
+        XCTAssertEqual(RuleFormatting.runCaption(AnswerState(active: true, count: 3, runId: "r7")), "run r7")
+        XCTAssertEqual(RuleFormatting.runCaption(AnswerState(active: true, count: 0)), "no run")
+    }
+
+    func testTheRowSummaryLeavesTheStatusToItsOwnColumn() {
+        // The row shows the status in a fixed column so the codes line up; repeating it in the
+        // summary beside it reads as two different facts about the same rule.
+        let replace = Rewrite(mode: "replace", status: 503, bodyKind: "json", bodyBytes: 1229)
+        let patch = Rewrite(mode: "patch", status: 503, bodyKind: "none", patchKeys: 3)
+
+        XCTAssertEqual(RuleFormatting.howLine(replace, includingStatus: false), "replace → json 1.2 KB")
         XCTAssertEqual(
-            RuleFormatting.answerCaption(AnswerState(active: true, count: 3, runId: "r7")),
-            "3 answers · run r7")
+            RuleFormatting.howLine(patch, includingStatus: false), "patch → merge 3 keys · JSON upstream only")
         XCTAssertEqual(
-            RuleFormatting.answerCaption(AnswerState(active: false, count: 0)), "inactive · no run")
+            RuleFormatting.howLine(replace), "replace → 503 json 1.2 KB",
+            "the detail and the tooltip still want the whole sentence")
+    }
+
+    func testAModeWithNothingAfterItDropsTheArrow() {
+        // Found by looking at the rendered rows: a bodyless 204, with the status moved to its own
+        // column, left the summary reading "replace →" — a sentence cut off mid-way.
+        let bodyless = Rewrite(mode: "replace", status: 204, bodyKind: "none")
+
+        XCTAssertEqual(RuleFormatting.howLine(bodyless, includingStatus: false), "replace")
         XCTAssertEqual(
-            RuleFormatting.answerCaption(AnswerState(active: true, count: 1)),
-            "1 answer · no run",
-            "a count with no run is evidence bound to no boundary, and must not read as one")
+            RuleFormatting.howLine(bodyless), "replace → 204",
+            "the arrow earns its place as soon as something follows it")
+    }
+
+    func testOnlyTheDestructiveMethodCarriesAWarningTint() {
+        // Colouring every method spends the reader's attention on a field they can already read.
+        XCTAssertEqual(RuleFormatting.methodTint("DELETE"), .orange)
+        XCTAssertEqual(RuleFormatting.methodTint("delete"), .orange, "the wire's casing is not the rule")
+        XCTAssertNil(RuleFormatting.methodTint("GET"))
+        XCTAssertNil(RuleFormatting.methodTint("POST"))
+        XCTAssertNil(RuleFormatting.methodTint("ANY"))
     }
 
     // MARK: - The chips in the detail pane
@@ -261,5 +300,184 @@ final class RuleFormattingTests: XCTestCase {
         let snapshot = try JSONDecoder().decode(RulesSnapshot.self, from: Data(RulesFixture.snapshot.utf8))
 
         XCTAssertNil(RuleFormatting.vacancy(status: .intercepting, read: .ok(snapshot), controlPort: 8088))
+    }
+
+    // MARK: - Searching, filtering and grouping
+
+    /// Thirty rules, built here rather than decoded, so the counts below are arithmetic a reader can
+    /// check: every 7th is switched off, every 6th is a sequence, and every 4th has answered nothing
+    /// in a run it does not have.
+    private func manyRules(_ count: Int = 30) -> [RuleRow] {
+        (1...count).map { index in
+            let number = String(format: "%02d", index)
+            return RuleRow(
+                id: "ovr_r" + number,
+                match: RuleMatch(method: index % 3 == 0 ? "POST" : "GET", path: "/api/v1/items/" + number),
+                notes: index % 5 == 0 ? "checkout note " + number : nil,
+                rewrite: Rewrite(mode: "replace", status: 200),
+                answer: AnswerState(
+                    active: index % 7 != 0, count: index % 4, runId: index % 4 == 0 ? nil : "r1"),
+                sequenceState: index % 6 == 0 ? SequenceState(runId: "r1", nextStep: 1) : nil)
+        }
+    }
+
+    private func rule(
+        id: String, method: String? = nil, path: String? = nil, notes: String? = nil,
+        answer: AnswerState = AnswerState(active: true, count: 0)
+    ) -> RuleRow {
+        RuleRow(
+            id: id, match: RuleMatch(method: method, path: path), notes: notes,
+            rewrite: Rewrite(mode: "replace", status: 200), answer: answer)
+    }
+
+    func testSearchLooksAtThePathTheMethodTheIdAndTheNotes() {
+        // Four fields because four are what someone has to hand: the id they wrote in a test, the
+        // path they are debugging, the method, and the note they left themselves.
+        let rows = [
+            rule(id: "ovr_orders", method: "GET", path: "/api/v1/orders"),
+            rule(id: "ovr_flags", method: "POST", path: "/api/v1/features", notes: "checkout toggle"),
+        ]
+
+        XCTAssertEqual(RuleFormatting.filter(rows, query: "orders", segment: .all).map(\.id), ["ovr_orders"])
+        XCTAssertEqual(RuleFormatting.filter(rows, query: "features", segment: .all).map(\.id), ["ovr_flags"])
+        XCTAssertEqual(RuleFormatting.filter(rows, query: "post", segment: .all).map(\.id), ["ovr_flags"])
+        XCTAssertEqual(RuleFormatting.filter(rows, query: "checkout", segment: .all).map(\.id), ["ovr_flags"])
+        XCTAssertEqual(RuleFormatting.filter(rows, query: "", segment: .all).count, 2, "an empty query hides nothing")
+    }
+
+    func testSearchIgnoresCaseAndSurroundingSpace() {
+        let rows = [rule(id: "ovr_orders", method: "GET", path: "/api/v1/Orders")]
+
+        for query in ["orders", "ORDERS", "  Orders  "] {
+            XCTAssertEqual(RuleFormatting.filter(rows, query: query, segment: .all).count, 1, query)
+        }
+    }
+
+    func testSearchDoesNotMatchAcrossTwoFields() {
+        // The fields are joined for one substring test, and without a separator a query could span
+        // the end of the id and the start of the path and report a rule that contains no such text.
+        let rows = [rule(id: "ovr_a", method: "GET", path: "/b")]
+
+        XCTAssertTrue(RuleFormatting.filter(rows, query: "ovr_a/b", segment: .all).isEmpty)
+    }
+
+    func testSearchIgnoresAccentsTheReaderDidNotType() {
+        // Neither case nor accents are a distinction the person typing made on purpose, and a note
+        // reading "café" that `cafe` does not find is how someone concludes the rule is not there.
+        let rows = [rule(id: "ovr_a", path: "/api/v1/a", notes: "café outage")]
+
+        for query in ["cafe", "café", "CAFE", "CAFÉ"] {
+            XCTAssertEqual(RuleFormatting.filter(rows, query: query, segment: .all).count, 1, query)
+        }
+    }
+
+    func testACountWithNoRunIsNotAnsweredThisRun() {
+        // A count with no run is a count from no boundary anyone drew: the slot it was counted in is
+        // gone, so it says nothing about the run the window is showing.
+        let orphan = rule(id: "ovr_orphan", path: "/api/v1/orphan", answer: AnswerState(active: true, count: 2))
+        let current = rule(
+            id: "ovr_now", path: "/api/v1/now", answer: AnswerState(active: true, count: 2, runId: "r1"))
+
+        XCTAssertEqual(
+            RuleFormatting.filter([orphan, current], query: "", segment: .answered).map(\.id), ["ovr_now"])
+    }
+
+    func testEachSegmentAdmitsWhatItsNameSays() {
+        let rows = manyRules()
+
+        XCTAssertEqual(RuleFormatting.filter(rows, query: "", segment: .all).count, 30)
+        XCTAssertEqual(
+            RuleFormatting.filter(rows, query: "", segment: .sequences).map(\.id),
+            ["ovr_r06", "ovr_r12", "ovr_r18", "ovr_r24", "ovr_r30"])
+        // Answered this run: a count above zero under a run id. The seven rules whose index divides
+        // by four have neither, and a rule with a count but no run has answered in no run at all.
+        let answered = RuleFormatting.filter(rows, query: "", segment: .answered)
+        XCTAssertEqual(answered.count, 23)
+        XCTAssertTrue(answered.allSatisfy { $0.answer.count > 0 && $0.answer.runId != nil })
+    }
+
+    func testASearchAndASegmentApplyTogether() {
+        let rows = manyRules()
+
+        XCTAssertEqual(
+            RuleFormatting.filter(rows, query: "items/12", segment: .sequences).map(\.id), ["ovr_r12"])
+        XCTAssertTrue(RuleFormatting.filter(rows, query: "items/13", segment: .sequences).isEmpty)
+    }
+
+    func testFilteringKeepsTheOrderTheSnapshotListedThemIn() {
+        // The snapshot's order is the order the proxy holds the rules in, which is what an operator
+        // looking for a rule by position is counting on.
+        let rows = manyRules()
+
+        let shown = RuleFormatting.filter(rows, query: "api", segment: .all)
+
+        XCTAssertEqual(shown.map(\.id), rows.map(\.id))
+    }
+
+    func testTheInactiveRulesAreGroupedApartFromTheOnesThatCanAnswer() {
+        let rows = manyRules()
+
+        let groups = RuleFormatting.grouped(rows)
+
+        XCTAssertEqual(groups.inactive.map(\.id), ["ovr_r07", "ovr_r14", "ovr_r21", "ovr_r28"])
+        XCTAssertEqual(groups.active.count, 26)
+        XCTAssertTrue(groups.active.allSatisfy(\.isActive), "a rule that cannot answer is not in the top list")
+        XCTAssertEqual(
+            (groups.active.map(\.id) + groups.inactive.map(\.id)).sorted(), rows.map(\.id).sorted(),
+            "every rule is in exactly one of the two, and none in both")
+    }
+
+    func testASelectionTheFilterHidesIsReportedRatherThanDropped() {
+        // The detail pane keeps showing it — narrowing a search must not throw away what you were
+        // reading — so the list has to say why the highlighted row is not in it.
+        let rows = manyRules()
+        let shown = RuleFormatting.filter(rows, query: "items/12", segment: .all)
+
+        XCTAssertTrue(RuleFormatting.selectionIsHidden("ovr_r13", shown: shown, all: rows))
+        XCTAssertFalse(RuleFormatting.selectionIsHidden("ovr_r12", shown: shown, all: rows))
+        XCTAssertFalse(RuleFormatting.selectionIsHidden(nil, shown: shown, all: rows))
+        XCTAssertFalse(
+            RuleFormatting.selectionIsHidden("ovr_gone", shown: shown, all: rows),
+            "a rule the scenario no longer has is not one a filter is hiding")
+    }
+
+    func testTheDetailPaneResolvesASelectionTheFilterHides() {
+        // The pane looks the rule up in every rule the snapshot carries, not in the shown ones:
+        // reading it from the filtered list would blank the pane while every filter test passed.
+        let rows = manyRules()
+        let snapshot = RulesSnapshot(scenario: "orders-outage", notWhole: [], rules: rows)
+        let shown = RuleFormatting.filter(rows, query: "items/12", segment: .all)
+
+        XCTAssertEqual(RuleFormatting.detailRule(selection: "ovr_r07", in: snapshot)?.id, "ovr_r07")
+        XCTAssertTrue(
+            RuleFormatting.selectionIsHidden("ovr_r07", shown: shown, all: rows),
+            "and the list says why the highlighted row is not in it")
+        XCTAssertNil(RuleFormatting.detailRule(selection: "ovr_gone", in: snapshot))
+        XCTAssertNil(RuleFormatting.detailRule(selection: nil, in: snapshot))
+        XCTAssertNil(RuleFormatting.detailRule(selection: "ovr_r07", in: nil))
+    }
+
+    func testTheInactiveGroupOpensForASearchAndClosesWhenItEnds() {
+        XCTAssertFalse(
+            RuleFormatting.inactiveGroupExpanded(userExpanded: false, query: "", inactiveMatches: false))
+        XCTAssertFalse(
+            RuleFormatting.inactiveGroupExpanded(userExpanded: false, query: "  ", inactiveMatches: true),
+            "an empty field is not a search")
+        XCTAssertTrue(
+            RuleFormatting.inactiveGroupExpanded(userExpanded: false, query: "checkout", inactiveMatches: true))
+        XCTAssertFalse(
+            RuleFormatting.inactiveGroupExpanded(userExpanded: false, query: "checkout", inactiveMatches: false),
+            "a search that found nothing in there leaves it shut")
+        XCTAssertTrue(
+            RuleFormatting.inactiveGroupExpanded(userExpanded: true, query: "checkout", inactiveMatches: false),
+            "what the reader opened stays open whatever the search does")
+    }
+
+    func testTheRuleCountNamesTheTotalOnceAFilterIsHidingSome() {
+        // Without the total, a filtered list reads as a scenario that has lost most of its rules.
+        XCTAssertEqual(RuleFormatting.ruleCount(shown: 12, total: 12), "12 rules")
+        XCTAssertEqual(RuleFormatting.ruleCount(shown: 3, total: 12), "3 of 12 rules")
+        XCTAssertEqual(RuleFormatting.ruleCount(shown: 1, total: 1), "1 rule")
+        XCTAssertEqual(RuleFormatting.ruleCount(shown: 0, total: 12), "0 of 12 rules")
     }
 }

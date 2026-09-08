@@ -17,10 +17,6 @@ enum RuleFormatting {
     /// `*` for the same reason: a rule with no path answers every intercepted request.
     static func path(of match: RuleMatch?) -> String { match?.path ?? "*" }
 
-    /// `GET /api/v1/orders`, for the list. The detail pane sets the two halves in different weights
-    /// and so builds them from the pieces above.
-    static func matchLine(_ match: RuleMatch?) -> String { "\(method(of: match)) \(path(of: match))" }
-
     /// What the rule answers with, in one line: `replace → 200 json 1.2 KB · +1000 ms`,
     /// `patch → merge 3 keys, force 503 · JSON upstream only`,
     /// `sequence 5 steps · next 2 · then repeatLast`.
@@ -28,7 +24,11 @@ enum RuleFormatting {
     /// `state` supplies the cursor only. It is passed separately because a sequenced rule's *shape*
     /// is in `rewrite` and its *position* is runtime state, and the two are read from different
     /// slots of the snapshot.
-    static func howLine(_ rewrite: Rewrite, state: SequenceState? = nil) -> String {
+    /// `includingStatus: false` leaves the status out, for the list row that shows it in a column of
+    /// its own — the same number twice on one line reads as two different facts.
+    static func howLine(
+        _ rewrite: Rewrite, state: SequenceState? = nil, includingStatus: Bool = true
+    ) -> String {
         var parts: [String] = []
         if let sequence = rewrite.sequence {
             parts.append("sequence \(sequence.steps.count) \(sequence.steps.count == 1 ? "step" : "steps")")
@@ -41,17 +41,21 @@ enum RuleFormatting {
             if let strategy = rewrite.patchStrategy { phrase += ", \(strategy)" }
             // Only when the rule forces one: a patch that names no status keeps the real response's,
             // and printing a number there would be a claim about a response this engine never saw.
-            if let status = rewrite.status { phrase += ", force \(status)" }
+            if includingStatus, let status = rewrite.status { phrase += ", force \(status)" }
             parts.append(phrase)
             parts.append("JSON upstream only")
         } else {
+            var tail = ""
+            if includingStatus, let status = rewrite.status { tail += " \(status)" }
+            tail += bodyPhrase(kind: rewrite.bodyKind, bytes: rewrite.bodyBytes)
             // No `?? "replace"`, for the reason the mode chip has none: the engine sends a mode for
             // every validated rule, so a missing one is a snapshot this app does not understand, and
             // the word is dropped rather than guessed — see testAHowLineDoesNotInventAModeEither.
-            var phrase = rewrite.mode.map { "\($0) →" } ?? "→"
-            if let status = rewrite.status { phrase += " \(status)" }
-            phrase += bodyPhrase(kind: rewrite.bodyKind, bytes: rewrite.bodyBytes)
-            parts.append(phrase)
+            //
+            // And no arrow with nothing after it: a bodyless 204 in a list that shows the status in
+            // its own column left every such row reading "replace →", a sentence cut off mid-way.
+            // See testAModeWithNothingAfterItDropsTheArrow.
+            parts.append(tail.isEmpty ? (rewrite.mode ?? "") : (rewrite.mode.map { "\($0) →" } ?? "→") + tail)
         }
         if let delay = rewrite.delayMs, delay > 0 { parts.append("+\(delay) ms") }
         return parts.joined(separator: " · ")
@@ -72,14 +76,47 @@ enum RuleFormatting {
         return phrase.isEmpty ? "no body" : phrase
     }
 
-    /// `3 answers · run r7`, or `inactive · no run`. One argument, because activeness and the count
-    /// come from the same row: passing them separately invited a caller to show one rule's state
-    /// beside another's evidence. `runId` nil is a rule with no run at all, which is a different
-    /// fact from a count of zero and must not be shown as one.
+    /// What a rule has done, for the list: `3 answers`, `1 answer`, `no answers yet`, `inactive`.
+    ///
+    /// One argument, because activeness and the count come from the same row: passing them
+    /// separately invited a caller to show one rule's state beside another's evidence. The run id is
+    /// deliberately not here — thirty rows each ending in the same opaque token is noise, and the
+    /// one place it answers a question is the detail pane, where it appears verbatim and labelled.
     static func answerCaption(_ answer: AnswerState) -> String {
-        let served = answer.count == 1 ? "1 answer" : "\(answer.count) answers"
-        let run = answer.runId.map { "run \($0)" } ?? "no run"
-        return "\(answer.active ? served : "inactive") · \(run)"
+        guard answer.active else { return "inactive" }
+        switch answer.count {
+        case 0: return "no answers yet"
+        case 1: return "1 answer"
+        default: return "\(answer.count) answers"
+        }
+    }
+
+    /// The run a count belongs to, spelled out for the detail pane. `no run` is a rule that has none
+    /// — never reset, never near a request — which is a different fact from a count of zero.
+    static func runCaption(_ answer: AnswerState) -> String {
+        answer.runId.map { "run \($0)" } ?? "no run"
+    }
+
+    /// One neutral badge for every method, and a warning tint for the one that destroys something.
+    /// Colouring all of them would spend the reader's attention on a field they can already read.
+    static func methodTint(_ method: String) -> Color? {
+        method.uppercased() == "DELETE" ? .orange : nil
+    }
+
+    // MARK: - Spacing
+    //
+    // Four steps, used everywhere, so that "these two things belong together" is said by distance
+    // rather than by a number somebody picked at the moment they wrote the view.
+
+    enum Space {
+        /// Between the lines of one thing.
+        static let tight: CGFloat = 4
+        /// Between neighbouring things in a row.
+        static let snug: CGFloat = 8
+        /// Between a label and what it labels, and around the edges of a strip.
+        static let step: CGFloat = 12
+        /// Between sections that are about different things.
+        static let section: CGFloat = 16
     }
 
     // MARK: - Numbers
@@ -156,6 +193,111 @@ enum RuleFormatting {
         guard let value else { return "" }
         if case .string(let text) = value { return text }
         return jsonText(value)
+    }
+
+    // MARK: - Searching, filtering and grouping
+
+    /// Which rules the segmented control lets through. Client-side over the snapshot already read —
+    /// there is no engine call behind any of these, and none of them decides anything about a rule.
+    enum Segment: String, CaseIterable, Identifiable {
+        case all
+        case answered
+        case sequences
+
+        var id: String { rawValue }
+
+        var label: String {
+            switch self {
+            case .all: return "All"
+            case .answered: return "Answered this run"
+            case .sequences: return "Sequences"
+            }
+        }
+
+        func admits(_ rule: RuleRow) -> Bool {
+            switch self {
+            case .all:
+                return true
+            case .answered:
+                // `count` is already scoped to the run the rule is in — `reset` replaces the slot
+                // rather than clearing it — so a positive count under a run id is "answered in this
+                // run". A nil run id is a rule with no run at all, which has answered nothing.
+                return rule.answer.runId != nil && rule.answer.count > 0
+            case .sequences:
+                return rule.sequenceState != nil
+            }
+        }
+    }
+
+    /// Substring over the fields someone would search by: the id they wrote in a test, the path they
+    /// are debugging, the method, and the notes they left themselves.
+    ///
+    /// Case- *and* diacritic-insensitive, because neither is a distinction the person typing made on
+    /// purpose: a note reading "café outage" was not findable by typing `cafe`, which is how someone
+    /// concludes the rule is not there. See testSearchIgnoresAccentsTheReaderDidNotType.
+    ///
+    /// The fields are joined with a newline so a query cannot match across two of them and appear to
+    /// have found a rule whose path contains what is really the end of its id.
+    static func matches(_ rule: RuleRow, query: String) -> Bool {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !needle.isEmpty else { return true }
+        let haystack = [rule.id, rule.match?.path, rule.match?.method, rule.notes]
+            .compactMap { $0 }
+            .joined(separator: "\n")
+        return haystack.range(of: needle, options: [.caseInsensitive, .diacriticInsensitive]) != nil
+    }
+
+    /// The rules a query and a segment leave, in the order the snapshot listed them — which is the
+    /// order the proxy holds them in, and the one an operator looking for a rule by position needs.
+    static func filter(_ rows: [RuleRow], query: String, segment: Segment) -> [RuleRow] {
+        rows.filter { segment.admits($0) && matches($0, query: query) }
+    }
+
+    /// Split for the list: the rules that can answer, and the ones switched off. Inactive rules are
+    /// still listed — a rule you cannot find is a rule you will write a second time — but they go
+    /// below, behind a disclosure, because they cannot explain anything the proxy just did.
+    static func grouped(_ rows: [RuleRow]) -> (active: [RuleRow], inactive: [RuleRow]) {
+        (rows.filter(\.isActive), rows.filter { !$0.isActive })
+    }
+
+    /// `12 rules`, or `3 of 12 rules` once a filter is hiding some. The total is what stops a
+    /// filtered list from reading as a scenario that has lost most of its rules.
+    static func ruleCount(shown: Int, total: Int) -> String {
+        let noun = total == 1 ? "rule" : "rules"
+        return shown == total ? "\(total) \(noun)" : "\(shown) of \(total) \(noun)"
+    }
+
+    /// The rule the detail pane shows: looked up in *all* of the snapshot's rules, never in the
+    /// filtered ones.
+    ///
+    /// Narrowing a search must not throw away what you were reading, so the lookup deliberately
+    /// ignores the filter and `selectionIsHidden` explains the missing row instead. It is a function
+    /// rather than a line in the view because reading it from the shown rules would blank the pane
+    /// while every filter test still passed — see testTheDetailPaneResolvesASelectionTheFilterHides.
+    static func detailRule(selection: String?, in snapshot: RulesSnapshot?) -> RuleRow? {
+        guard let selection, let snapshot else { return nil }
+        return snapshot.rules.first { $0.id == selection }
+    }
+
+    /// Whether the inactive group is open: because the reader opened it, or because a search has
+    /// found something inside it.
+    ///
+    /// Derived on every render rather than set once when a search first matches — typing on past the
+    /// match, or clearing the field, has to close it again, and a one-shot handler would leave it
+    /// open over a group holding nothing the search found. An empty field is not a search.
+    static func inactiveGroupExpanded(userExpanded: Bool, query: String, inactiveMatches: Bool) -> Bool {
+        if userExpanded { return true }
+        return !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && inactiveMatches
+    }
+
+    /// True when the selected rule exists but the filter is hiding it.
+    ///
+    /// The detail pane deliberately keeps showing it — narrowing a search must not throw away what
+    /// you were reading — so the list has to say why the highlighted row is not there, or the
+    /// selection looks lost.
+    static func selectionIsHidden(_ selection: String?, shown: [RuleRow], all: [RuleRow]) -> Bool {
+        guard let selection, all.contains(where: { $0.id == selection }) else { return false }
+        return !shown.contains { $0.id == selection }
     }
 
     // MARK: - Printing stored JSON

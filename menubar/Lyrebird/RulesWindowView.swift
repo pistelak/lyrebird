@@ -1,10 +1,13 @@
 import AppKit
 import SwiftUI
 
-/// What the active scenario rewrites, and how. Read-only apart from "Reset run": every line comes
-/// from `GET /__mock__/rules`, whose `rewrite` is the engine's own description of what a rule
-/// answers with, so this window can show "json 1.2 KB" or "next step 2" without a second reading of
-/// step inheritance, the default status or the wire encoding of a body.
+/// What the active scenario rewrites, and how. Read-only apart from "Reset run" and the scenario
+/// picker: every line comes from `GET /__mock__/rules`, whose `rewrite` is the engine's own
+/// description of what a rule answers with, so this window can show "json 1.2 KB" or "next step 2"
+/// without a second reading of step inheritance, the default status or the wire encoding of a body.
+///
+/// Layout only. Everything it decides about which rules to show is a pure function in
+/// `RuleFormatting`, so the searching, the segments and the grouping are checked without a view.
 struct RulesWindowView: View {
     /// One spelling of the scene id, so the `Window` that declares it and the `openWindow` that
     /// asks for it cannot drift apart into a button that opens nothing.
@@ -12,15 +15,21 @@ struct RulesWindowView: View {
 
     let model: AppModel
     @State private var selection: RuleRow.ID?
+    @State private var query = ""
+    @State private var segment = RuleFormatting.Segment.all
+    @State private var inactiveExpanded = false
 
     private var snapshot: RulesSnapshot? {
         if case .ok(let snapshot) = model.rulesRead { return snapshot }
         return nil
     }
 
-    private var selectedRule: RuleRow? {
-        snapshot?.rules.first { $0.id == selection }
-    }
+    private var allRules: [RuleRow] { snapshot?.rules ?? [] }
+    private var shownRules: [RuleRow] { RuleFormatting.filter(allRules, query: query, segment: segment) }
+
+    /// Kept even when the filter hides it: narrowing a search must not throw away what you were
+    /// reading. The list says so instead — see `selectionIsHidden`.
+    private var selectedRule: RuleRow? { RuleFormatting.detailRule(selection: selection, in: snapshot) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -34,11 +43,12 @@ struct RulesWindowView: View {
                 status: model.status, read: model.rulesRead, controlPort: Config.controlURL.port)
             {
                 VacancyView(vacancy: vacancy)
-            } else if let snapshot {
-                rules(snapshot)
+            } else if snapshot != nil {
+                panes
             }
         }
         .frame(minWidth: 700, minHeight: 400)
+        .toolbar { toolbar }
         .task { await model.rulesWindowAppeared() }
         // The poll skips the rules read while this is false, so a window left shut costs nothing.
         .onDisappear { model.rulesWindowOpen = false }
@@ -47,7 +57,7 @@ struct RulesWindowView: View {
     // MARK: - Header strip
 
     private var header: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: RuleFormatting.Space.step) {
             Circle()
                 .fill(model.status.dotColor ?? Color.secondary)
                 .frame(width: 9, height: 9)
@@ -65,10 +75,8 @@ struct RulesWindowView: View {
             } else {
                 Text("Rules").font(.headline)
             }
-            if let snapshot {
-                // String(_:) rather than an interpolated literal: `Text` localises an interpolated
-                // Int and would put a grouping separator in a port or a count.
-                Text(String(snapshot.rules.count) + (snapshot.rules.count == 1 ? " rule" : " rules"))
+            if snapshot != nil {
+                Text(RuleFormatting.ruleCount(shown: shownRules.count, total: allRules.count))
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
@@ -76,22 +84,63 @@ struct RulesWindowView: View {
             if let error = model.lastError, !error.isEmpty {
                 Text(error).font(.caption).foregroundStyle(.red).lineLimit(2)
             }
-            Button("Reset run") { Task { await model.resetRun() } }
-                .disabled(model.busy || snapshot == nil)
-                .help("Rewind every sequence cursor and clear every answer count")
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
+        .padding(.horizontal, RuleFormatting.Space.section)
+        .padding(.vertical, RuleFormatting.Space.step)
+    }
+
+    // MARK: - Toolbar
+
+    /// The scenario this window is describing, as a binding the picker can drive. Writing it goes
+    /// through `model.activate`, which is the one gated path — it refuses when the app does not know
+    /// which profile it is configured for, and reports the engine's refusal rather than swallowing it.
+    private var activeScenario: Binding<String> {
+        Binding(
+            get: { model.scenarios?.active ?? "" },
+            set: { name in
+                guard !name.isEmpty, name != model.scenarios?.active else { return }
+                Task { await model.activate(name) }
+            })
+    }
+
+    @ToolbarContentBuilder
+    private var toolbar: some ToolbarContent {
+        ToolbarItem(placement: .navigation) {
+            Picker("Scenario", selection: activeScenario) {
+                ForEach(model.scenarios?.scenarios ?? []) { scenario in
+                    Text(scenario.name).tag(scenario.name)
+                }
+            }
+            .labelsHidden()
+            .disabled(model.busy || model.scenarios == nil)
+            .help("Switch the active scenario")
+        }
+        ToolbarItem(placement: .principal) {
+            Picker("Filter", selection: $segment) {
+                ForEach(RuleFormatting.Segment.allCases) { one in
+                    Text(one.label).tag(one)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+        }
+        ToolbarItem(placement: .primaryAction) {
+            Button {
+                Task { await model.resetRun() }
+            } label: {
+                Label("Reset run", systemImage: "arrow.counterclockwise")
+            }
+            .disabled(model.busy || snapshot == nil)
+            .help("Rewind every sequence cursor and clear every answer count")
+        }
     }
 
     // MARK: - The two panes
 
-    private func rules(_ snapshot: RulesSnapshot) -> some View {
+    private var panes: some View {
         NavigationSplitView {
-            List(snapshot.rules, selection: $selection) { rule in
-                RuleRowView(rule: rule)
-            }
-            .navigationSplitViewColumnWidth(min: 320, ideal: 400)
+            sidebar
+                .navigationSplitViewColumnWidth(min: 340, ideal: 420)
         } detail: {
             if let rule = selectedRule {
                 // Keyed to the rule, so the step a previous selection was looking at does not carry
@@ -104,32 +153,77 @@ struct RulesWindowView: View {
             }
         }
         .navigationSplitViewStyle(.balanced)
+        .searchable(text: $query, placement: .toolbar, prompt: "Path, method, id or notes")
+    }
+
+    private var sidebar: some View {
+        let groups = RuleFormatting.grouped(shownRules)
+        return VStack(alignment: .leading, spacing: 0) {
+            if RuleFormatting.selectionIsHidden(selection, shown: shownRules, all: allRules) {
+                // The detail pane still shows it, so without this line the highlighted row simply is
+                // not there and the selection reads as lost.
+                Text("selected rule hidden by filter")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, RuleFormatting.Space.step)
+                    .padding(.vertical, RuleFormatting.Space.tight)
+            }
+            List(selection: $selection) {
+                ForEach(groups.active) { rule in
+                    RuleRowView(rule: rule)
+                }
+                if !groups.inactive.isEmpty { inactiveGroup(groups.inactive) }
+            }
+        }
+    }
+
+    private func inactiveGroup(_ rules: [RuleRow]) -> some View {
+        DisclosureGroup(isExpanded: inactiveExpansion(matching: rules)) {
+            ForEach(rules) { rule in
+                RuleRowView(rule: rule).opacity(0.55)
+            }
+        } label: {
+            Text("Inactive (" + String(rules.count) + ")")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    /// Open when the reader opened it, and open while a search has found something inside it. The
+    /// rule itself is `RuleFormatting.inactiveGroupExpanded`, so it is checked rather than read.
+    private func inactiveExpansion(matching rules: [RuleRow]) -> Binding<Bool> {
+        Binding(
+            get: {
+                RuleFormatting.inactiveGroupExpanded(
+                    userExpanded: inactiveExpanded, query: query, inactiveMatches: !rules.isEmpty)
+            },
+            set: { inactiveExpanded = $0 })
     }
 }
 
 /// One centred bold line and a hint. Never a blank table: each of these says a different thing
 /// about why there is nothing to show.
-private struct VacancyView: View {
+struct VacancyView: View {
     let vacancy: RuleFormatting.Vacancy
 
     var body: some View {
-        VStack(spacing: 6) {
+        VStack(spacing: RuleFormatting.Space.snug) {
             Text(vacancy.message).font(.headline)
             Text(vacancy.hint).font(.callout).foregroundStyle(.secondary)
         }
         .multilineTextAlignment(.center)
-        .padding(30)
+        .padding(RuleFormatting.Space.section * 2)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
 /// The scenario loaded with rules missing. Shown above the table rather than beside a rule, because
 /// what it names is not there: a dropped rule is invisible in a list of the ones that survived.
-private struct NotWholeBanner: View {
+struct NotWholeBanner: View {
     let problems: [String]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
+        VStack(alignment: .leading, spacing: RuleFormatting.Space.tight) {
             Text("This scenario did not load whole.").font(.callout.bold())
             ForEach(problems, id: \.self) { problem in
                 Text(problem).font(.caption).fixedSize(horizontal: false, vertical: true)
@@ -137,226 +231,7 @@ private struct NotWholeBanner: View {
         }
         .foregroundStyle(.red)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(10)
+        .padding(RuleFormatting.Space.step)
         .background(Color.red.opacity(0.1))
-    }
-}
-
-/// A rule in the list: what it matches, what it answers with, and what it has done.
-private struct RuleRowView: View {
-    let rule: RuleRow
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: rule.isActive ? "largecircle.fill.circle" : "circle")
-                .foregroundStyle(rule.isActive ? Color.accentColor : Color.secondary)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(RuleFormatting.matchLine(rule.match))
-                    .font(.system(.body, design: .monospaced))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Text(RuleFormatting.howLine(rule.rewrite, state: rule.sequenceState))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                Text(RuleFormatting.answerCaption(rule.answer))
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            }
-        }
-        .padding(.vertical, 3)
-        .opacity(rule.isActive ? 1 : 0.55)
-    }
-}
-
-/// The right-hand pane: everything the snapshot says about the selected rule.
-private struct RuleDetailView: View {
-    let rule: RuleRow
-    /// Which step's stored JSON is printed. Nil until the pane picks the one the cursor is on.
-    @State private var selectedStep: Int?
-
-    private var storedSteps: [JSONValue] { rule.sequence?.steps ?? [] }
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                matches
-                if let sequence = rule.rewrite.sequence {
-                    self.sequence(sequence)
-                } else {
-                    answersWith
-                }
-                // The rule's own headers, which a sequence's steps inherit — so they belong to both
-                // shapes, not only to the one that answers with a body of its own.
-                if let headers = rule.headers, !headers.isEmpty {
-                    section("HEADERS") { codeBlock { Text(RuleFormatting.headerBlock(headers)) } }
-                }
-                if rule.rewrite.sequence == nil, let stored = rule.patch ?? rule.body {
-                    jsonSection(rule.patch == nil ? "BODY" : "PATCH", stored)
-                }
-                if let notes = rule.notes, !notes.isEmpty {
-                    section("NOTES") {
-                        Text(notes).font(.callout).fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(16)
-        }
-    }
-
-    // MARK: - Matches
-
-    /// The request as a person would write it, not a table of field names: `GET /api/v1/orders`,
-    /// with the constraints that are not method-or-path as chips underneath.
-    private var matches: some View {
-        section("MATCHES") {
-            VStack(alignment: .leading, spacing: 6) {
-                (Text(RuleFormatting.method(of: rule.match))
-                    .font(.system(size: 13, design: .monospaced).weight(.semibold))
-                    + Text(" " + RuleFormatting.path(of: rule.match))
-                    .font(.system(size: 13, design: .monospaced)))
-                    .textSelection(.enabled)
-                let chips = RuleFormatting.matchChips(for: rule.match)
-                if !chips.isEmpty { chipRow(chips) }
-            }
-        }
-    }
-
-    // MARK: - Answers with
-
-    private var answersWith: some View {
-        section("ANSWERS WITH") { chipRow(RuleFormatting.answerChips(for: rule.rewrite)) }
-    }
-
-    // MARK: - Sequence
-
-    private func sequence(_ sequence: RewriteSequence) -> some View {
-        section("SEQUENCE") {
-            VStack(alignment: .leading, spacing: 8) {
-                Text(
-                    sequence.advanceOn == "match"
-                        ? "advances on its own matcher" : "advances when this rule answers"
-                )
-                .font(.callout)
-                Text("exhausted → \(sequence.onExhausted ?? "error")").font(.callout)
-                Text("run " + (rule.sequenceState?.runId ?? "none"))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                ForEach(Array(sequence.steps.enumerated()), id: \.offset) { index, step in
-                    stepRow(number: index + 1, step: step)
-                }
-                if let step = shownStep, step >= 1, step <= storedSteps.count {
-                    jsonSection("STEP " + String(step) + " AS STORED", storedSteps[step - 1])
-                }
-            }
-        }
-    }
-
-    /// The step whose stored JSON is printed: the one clicked, else the one the cursor is on, else
-    /// the first. A sequence that has run out has no next step, so the fallback matters.
-    private var shownStep: Int? {
-        selectedStep ?? rule.sequenceState?.nextStep ?? (storedSteps.isEmpty ? nil : 1)
-    }
-
-    private func stepRow(number: Int, step: StepSummary) -> some View {
-        let isNext = rule.sequenceState?.nextStep == number
-        return Button {
-            selectedStep = number
-        } label: {
-            HStack(spacing: 8) {
-                Text(String(number)).font(.caption.monospaced()).frame(width: 18, alignment: .trailing)
-                if let status = step.status {
-                    Text(String(status))
-                        .font(.system(.callout, design: .monospaced))
-                        .foregroundStyle(RuleFormatting.statusColor(status))
-                }
-                Text(RuleFormatting.bodySummary(kind: step.bodyKind, bytes: step.bodyBytes))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                if let count = step.headerCount, count > 0 {
-                    Text(String(count) + (count == 1 ? " header" : " headers"))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                if let served = rule.sequenceState?.serves?[String(number)] {
-                    Text("served " + String(served) + "×").font(.caption).foregroundStyle(.secondary)
-                }
-                Spacer()
-                if isNext { tag("next") }
-            }
-            .contentShape(Rectangle())
-            .padding(.vertical, 2)
-            .padding(.horizontal, 4)
-            .background(shownStep == number ? Color.accentColor.opacity(0.12) : Color.clear)
-        }
-        .buttonStyle(.plain)
-    }
-
-    // MARK: - Building blocks
-
-    private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            sectionLabel(title)
-            content()
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    /// A JSON block under its own label, with the Copy that hands over exactly what is on screen.
-    private func jsonSection(_ title: String, _ value: JSONValue) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                sectionLabel(title)
-                Spacer()
-                Button("Copy") { copy(RuleFormatting.jsonText(value)) }
-                    .buttonStyle(.borderless)
-                    .font(.caption)
-            }
-            codeBlock { Text(RuleFormatting.attributedJSON(value)) }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    /// The printed text, not the decoded value: what is copied is what the pane shows, so a body
-    /// pasted back into a scenario file is the one that was being looked at.
-    private func copy(_ text: String) {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
-    }
-
-    private func sectionLabel(_ title: String) -> some View {
-        Text(title).font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
-    }
-
-    private func chipRow(_ chips: [RuleFormatting.Chip]) -> some View {
-        HStack(spacing: 6) {
-            ForEach(Array(chips.enumerated()), id: \.offset) { _, chip in
-                Text(chip.text)
-                    .font(.system(.caption, design: .monospaced))
-                    .fontWeight(chip.tint == nil ? .regular : .semibold)
-                    .foregroundStyle(chip.tint ?? .primary)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 4))
-            }
-        }
-    }
-
-    private func tag(_ text: String) -> some View {
-        Text(text)
-            .font(.caption)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(Color.secondary.opacity(0.15), in: Capsule())
-    }
-
-    private func codeBlock<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-        content()
-            .font(.system(size: 11.5, design: .monospaced))
-            .textSelection(.enabled)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(8)
-            .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 4))
     }
 }
