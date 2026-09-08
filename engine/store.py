@@ -281,6 +281,10 @@ class Store:
         self.scenarios: dict[str, dict] = {}
         self.active_name: str = "default"
         self.recent: deque[dict] = deque(maxlen=config.RECENT_CAP)
+        # Numbers the entries in `recent`, so each one has a name a client can hold on to. Not
+        # persisted and deliberately not unique across runs: the list itself lives and dies with the
+        # proxy process, and an id that outlived it would be a promise this store cannot keep.
+        self._recent_seq = 0
         self.load_problems: list[str] = []
         # The same problems, keyed by the scenario each belongs to. A diagnostic string cannot be
         # matched back to its scenario: a file may be named `orders-outage.json: backup.json`, and
@@ -653,8 +657,20 @@ class Store:
     # MARK: - Recent
 
     def record_recent(self, entry: dict) -> None:
-        entry.setdefault("time", _now_iso())
-        self.recent.appendleft(entry)
+        """Record one request, under an id this store gives it.
+
+        The id is an identity of the engine's own making, because the alternatives are not
+        identities: a client polls this list, and a selection keyed by position follows the row that
+        slid into it while one keyed by content follows whichever repeat of the same request came
+        last. Both quietly select something other than what the user clicked.
+
+        Assigned, never defaulted: a caller's own `evt-2` would collide with the counter and a
+        `{"id": None}` would leave a row nothing can select at all — one list with two rows under
+        one name is worse than no id — see test_a_recent_id_replaces_whatever_the_caller_supplied.
+        Onto a copy, so an id is not written back into a dict the caller still holds.
+        """
+        self._recent_seq += 1
+        self.recent.appendleft({"time": _now_iso(), **entry, "id": f"evt-{self._recent_seq}"})
 
     def recent_list(self) -> list[dict]:
         return list(self.recent)

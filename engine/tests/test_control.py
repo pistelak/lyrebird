@@ -756,3 +756,214 @@ def test_a_fresh_snapshot_gives_a_sequenced_rule_one_run_id(profile):
     assert sequenced, "the scenario has a sequenced rule; without one this proves nothing"
     for rule in sequenced:
         assert rule["answer"]["runId"] == rule["sequenceState"]["runId"], rule["id"]
+
+
+# MARK: - Browsing a scenario that is not the active one
+#
+# A sidebar selection is a look, not a switch. The window shows what a scenario would do while the
+# proxy goes on answering from whichever one is active, so the snapshot has to say which of the two
+# it is describing — a browsed scenario presented as the running one is a person reading rules that
+# are not in force and concluding the proxy is broken.
+
+# The ids are `default`'s on purpose. A snapshot that filled a browsed row's runtime from the
+# active scenario's maps — the obvious way to write this handler — would look right against a
+# scenario whose ids are all its own, and be wrong for every profile where two scenarios describe
+# the same endpoints, which is what scenarios of one app usually are.
+BROWSED_SCENARIO = {
+    "name": "orders-outage",
+    "overrides": [
+        {
+            "id": "ovr_orders",
+            "mode": "replace",
+            "match": {"method": "GET", "path": "/api/v1/orders"},
+            "status": 500,
+        },
+        {
+            "id": "ovr_seq",
+            "mode": "replace",
+            "match": {"path": "/api/v1/items"},
+            "sequence": {"steps": [{"status": 500}, {"status": 500}, {"status": 200}]},
+        },
+    ],
+}
+
+
+def seed_browsable(profile):
+    seed_rules(profile)  # `default`, which stays active
+    (profile / "scenarios" / "orders-outage.json").write_text(json.dumps(BROWSED_SCENARIO), encoding="utf-8")
+
+
+def test_browsing_a_scenario_reports_its_rules_with_no_run(profile):
+    """The rules are real; the runtime is not. Cursors and answer counts belong to the scenario the
+    proxy is serving, and a browsed rule that borrowed them would report a run it has never had.
+
+    Both scenarios name their rules `ovr_orders` and `ovr_seq` — two scenarios for one app describe
+    the same endpoints — so a handler keying the active runtime by id would hand the browsed rows
+    the active scenario's count and cursor, and look correct anywhere the ids happened to differ."""
+    seed_browsable(profile)
+    (profile / "profile.json").write_text('{"hosts": []}', encoding="utf-8")
+    config.reload_profile()
+    subject = store.Store()
+    store.credit(subject.answer_slot("ovr_orders"))  # the *active* rule answered a request
+    subject.bump_selected(next(o for o in subject.active_overrides() if o["id"] == "ovr_seq"))
+    app = control.make_app(subject, _meta)
+
+    async def main():
+        async with TestClient(TestServer(app)) as client:
+            headers = {"Host": config.CONTROL_HOST_HEADER}
+            browsed = await (await client.get("/__mock__/rules?scenario=orders-outage", headers=headers)).json()
+            live = await (await client.get("/__mock__/rules", headers=headers)).json()
+            return browsed, live
+
+    browsed, live = asyncio.run(main())
+
+    assert browsed["scenario"] == "orders-outage" and browsed["active"] is False
+    assert [rule["id"] for rule in browsed["rules"]] == ["ovr_orders", "ovr_seq"]
+    for rule in browsed["rules"]:
+        assert rule["answer"] is None and rule["sequenceState"] is None, rule["id"]
+    browsed_rules = {rule["id"]: rule for rule in browsed["rules"]}
+    assert len(browsed_rules["ovr_seq"]["rewrite"]["sequence"]["steps"]) == 3, (
+        "the browsed scenario's own steps, not the active scenario's two"
+    )
+
+    live_rules = {rule["id"]: rule for rule in live["rules"]}
+    assert live["active"] is True
+    assert live_rules["ovr_orders"]["answer"]["count"] == 1, "the run is still reported where it exists"
+    assert live_rules["ovr_seq"]["sequenceState"]["nextStep"] == 2
+
+
+def test_browsing_a_scenario_does_not_switch_the_proxy_to_it(profile):
+    """The failure this closes is the whole reason the parameter exists: a read that activated what
+    it was asked about would repoint the running proxy at every scenario a pointer moved over."""
+    seed_browsable(profile)
+    (profile / "profile.json").write_text('{"hosts": []}', encoding="utf-8")
+    config.reload_profile()
+    subject = store.Store()
+    app = control.make_app(subject, _meta)
+
+    async def main():
+        async with TestClient(TestServer(app)) as client:
+            headers = {"Host": config.CONTROL_HOST_HEADER}
+            browsed = await (await client.get("/__mock__/rules?scenario=orders-outage", headers=headers)).json()
+            after = await (await client.get("/__mock__/rules", headers=headers)).json()
+            return browsed, after
+
+    browsed, after = asyncio.run(main())
+    assert browsed["scenario"] == "orders-outage"
+    assert after["scenario"] == "default" and after["active"] is True
+    assert subject.active_name == "default", "and the store itself never moved"
+
+
+def test_naming_the_active_scenario_returns_the_parameterless_snapshot(profile):
+    """One payload, two ways of asking for it. A window that names the scenario it is showing —
+    which is what it does once a sidebar exists — must not get a different answer from the same
+    read, including the run ids that bind a count to a boundary."""
+    seed_browsable(profile)
+    (profile / "profile.json").write_text('{"hosts": []}', encoding="utf-8")
+    config.reload_profile()
+    app = control.make_app(store.Store(), _meta)
+
+    async def main():
+        async with TestClient(TestServer(app)) as client:
+            headers = {"Host": config.CONTROL_HOST_HEADER}
+            named = await (await client.get("/__mock__/rules?scenario=default", headers=headers)).json()
+            plain = await (await client.get("/__mock__/rules", headers=headers)).json()
+            return named, plain
+
+    named, plain = asyncio.run(main())
+    assert named == plain
+    assert named["active"] is True
+
+
+def test_browsing_an_unknown_scenario_is_a_404_that_names_it(profile):
+    """Not an empty snapshot: a typo must not look like a scenario with no rules, which is a real
+    thing a profile can contain and reads exactly the same on screen."""
+    seed_browsable(profile)
+    status, _, body = call(profile, "GET", "/__mock__/rules?scenario=nope")
+    assert status == 404
+    assert body["error"] == "unknown_scenario" and body["name"] == "nope"
+    assert body["detail"] == "no scenario named 'nope' in this profile"
+
+
+def test_browsing_with_an_empty_scenario_name_is_a_bad_request(profile):
+    """`?scenario=` is a client that meant to name one and sent nothing. Reported as that, not as
+    an unknown scenario called "" — the second sends someone looking for a file they never wrote."""
+    seed_browsable(profile)
+    status, _, body = call(profile, "GET", "/__mock__/rules?scenario=")
+    assert status == 400 and body["error"] == "name_required"
+
+
+def test_browsing_is_still_scoped_to_the_running_profile(profile):
+    """The parameter is a new way into the same read, and the read is another profile's rules and
+    saved bodies. `_guard` is global; this pins that the parameter did not step around it."""
+    seed_browsable(profile)
+    status, _, body = call(profile, "GET", "/__mock__/rules?scenario=orders-outage", headers=_FOREIGN)
+    assert status == 409 and body["error"] == "profile_mismatch"
+
+
+def test_browsing_reports_a_scenario_that_did_not_load_whole(profile):
+    """Keyed by the scenario being browsed, not by the active one — otherwise a window would show
+    `default`'s problems beside another scenario's rules and blame the wrong file."""
+    seed_rules(profile)
+    (profile / "scenarios" / "orders-outage.json").write_text(
+        json.dumps(
+            {
+                "name": "orders-outage",
+                "overrides": [
+                    {"id": "ovr_kept", "match": {"path": "/api/v1/orders"}, "mode": "replace", "status": 500},
+                    {"id": "ovr_typo", "match": {"path": "/api/v1/items"}, "mode": "replace", "statsu": 500},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    status, _, body = call(profile, "GET", "/__mock__/rules?scenario=orders-outage")
+
+    assert status == 200
+    assert [rule["id"] for rule in body["rules"]] == ["ovr_kept"]
+    assert len(body["notWhole"]) == 1 and "'statsu'" in body["notWhole"][0]
+
+    _, _, plain = call(profile, "GET", "/__mock__/rules")
+    assert plain["notWhole"] == [], "`default` loaded whole and must not wear another file's problem"
+
+
+# MARK: - Identity for the recent list
+
+
+def test_recent_rows_carry_an_id(profile):
+    """The id has to survive to the HTTP boundary: it exists so a client can keep a selection
+    across polls, and a client only ever sees this list through here."""
+
+    def record(subject):
+        subject.record_recent({"method": "GET", "path": "/api/v1/orders"})
+        subject.record_recent({"method": "GET", "path": "/api/v1/orders"})
+
+    status, _, body = call(profile, "GET", "/__mock__/recent", prepare=record)
+    assert status == 200
+    assert [entry["id"] for entry in body] == ["evt-2", "evt-1"]
+
+
+def test_browsing_a_name_that_differs_only_by_case_is_unknown(profile):
+    """Scenario names are exact everywhere else — they are filenames, and `set_active` matches them
+    exactly — so a read that quietly resolved `Orders-Outage` would be the one place in the tool
+    where two names mean one scenario, and the first place a case-sensitive filesystem disagrees."""
+    seed_browsable(profile)
+    status, _, body = call(profile, "GET", "/__mock__/rules?scenario=Orders-Outage")
+    assert status == 404 and body["name"] == "Orders-Outage"
+
+
+def test_browsing_a_scenario_whose_file_was_rejected_is_unknown(profile):
+    """A file that would not parse leaves a name that is *mentioned* — health reports the problem
+    against it — but no scenario. 404 is the honest answer: there are no rules to show. An empty
+    snapshot would present a broken file as a scenario with nothing in it."""
+    seed_rules(profile)
+    (profile / "scenarios" / "broken.json").write_text("{ not json", encoding="utf-8")
+
+    status, _, body = call(profile, "GET", "/__mock__/rules?scenario=broken")
+    assert status == 404 and body["error"] == "unknown_scenario"
+
+    _, _, health = call(profile, "GET", "/__mock__/health")
+    assert "broken" not in health["scenarios"], "it never became one"
+    assert list(health["scenariosNotWhole"]) == ["broken"], "but the name is still named"
+    assert health["loadProblems"] and "broken" in health["loadProblems"][0]
