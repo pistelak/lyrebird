@@ -45,24 +45,150 @@ def test_connection_strategy_is_lazy(hosts):
 
 
 # MARK: - Response construction
+#
+# How an answer is *shaped* — the 200 default, a bodyless status, the Content-Type — moved to
+# `rules.wire_response`, so that a client can be told what a rule answers with without a second
+# implementation of it. Its own tests are in test_rules.py; what stays here is the wire itself: the
+# bytes the refactor must not have changed.
 
 
+def test_the_wire_answer_for_a_json_rule_is_unchanged(hosts, profile):
+    """Pins the produced response field by field, because `_answer` now composes it from
+    `rules.wire_response` instead of deciding the status, the body and the header itself. A refactor
+    that changed any of the three would still look like a rule that matched."""
+    subject = addon.Lyrebird()
+    subject.store.add_override(
+        {
+            "id": "o",
+            "mode": "replace",
+            "status": 503,
+            "match": {"path": "/api/v1/orders/*"},
+            "body": {"error": "mocked"},
+        }
+    )
+    flow = _flow()
+    run_request(subject, flow)
+    assert flow.response.status_code == 503
+    assert flow.response.headers["content-type"] == "application/json"
+    assert flow.response.raw_content == b'{"error": "mocked"}'
+
+
+# What a `replace` puts on the wire, case by case, against literals rather than against a "before"
+# that no longer exists anywhere to be compared with. `rules.wire_response` decides the status, the
+# headers and the body; `Response.make` encodes them and sets the true Content-Length. Each row is
+# one decision, and the header set is asserted whole so a header that appears from nowhere fails.
 @pytest.mark.parametrize(
-    "headers,expected",
+    "rule,status,headers,body",
     [
-        ({}, {"Content-Type": "application/json"}),
-        ({"Content-Type": "application/json;charset=UTF-8"}, {"Content-Type": "application/json;charset=UTF-8"}),
-        ({"content-type": "text/plain"}, {"content-type": "text/plain"}),
+        pytest.param(
+            {"status": 200, "headers": {"Content-Length": "999"}, "body": {"a": 1}},
+            200,
+            {"content-type": "application/json", "content-length": "8"},
+            b'{"a": 1}',
+            id="a stored Content-Length is replaced by the real one",
+        ),
+        pytest.param(
+            {"status": 304, "body": {"a": 1}},
+            304,
+            {},
+            b"",
+            id="a bodyless status sends neither the body nor a length",
+        ),
+        pytest.param(
+            {"status": 200, "body": 0},
+            200,
+            {"content-type": "application/json", "content-length": "1"},
+            b"0",
+            id="a falsy number is a body, not an absent one",
+        ),
+        pytest.param(
+            {"status": 200, "body": False},
+            200,
+            {"content-type": "application/json", "content-length": "5"},
+            b"false",
+            id="so is false",
+        ),
+        pytest.param(
+            {"status": 200, "body": ""},
+            200,
+            {"content-type": "application/json", "content-length": "0"},
+            b"",
+            id="and so is the empty string",
+        ),
+        pytest.param(
+            {"status": None, "body": {"a": 1}},
+            200,
+            {"content-type": "application/json", "content-length": "8"},
+            b'{"a": 1}',
+            id="a rule naming no status answers 200",
+        ),
+        pytest.param(
+            {"status": 200, "headers": {"content-type": "text/plain"}, "body": {"a": 1}},
+            200,
+            {"content-type": "text/plain", "content-length": "8"},
+            b'{"a": 1}',
+            id="a lowercase content-type is not duplicated",
+        ),
+        pytest.param(
+            {"status": 200, "body": "plain text"},
+            200,
+            {"content-type": "application/json", "content-length": "10"},
+            b"plain text",
+            id="a string body is sent verbatim, with the header the wire has always added",
+        ),
     ],
 )
-def test_content_type_is_merged_case_insensitively(headers, expected):
-    """A scenario spelling the header `Content-Type` used to emit both that and a lowercase
-    `content-type` on the wire."""
-    assert addon.Lyrebird._headers_with_default_content_type(headers, json_body=True) == expected
+def test_the_wire_answer_matches_what_is_described(hosts, profile, rule, status, headers, body):
+    subject = addon.Lyrebird()
+    subject.store.add_override({"id": "o", "mode": "replace", "match": {"path": "/api/v1/orders/*"}, **rule})
+    flow = _flow()
+    run_request(subject, flow)
+    assert flow.response.status_code == status
+    assert {key.lower(): value for key, value in flow.response.headers.items()} == headers
+    assert (flow.response.raw_content or b"") == body
 
 
-def test_no_content_type_is_added_for_a_bodyless_response():
-    assert addon.Lyrebird._headers_with_default_content_type({}, json_body=False) == {}
+def test_the_wire_answer_for_a_bodyless_rule_is_unchanged(hosts, profile):
+    """The other half of the same pin. A 204 that acquired a body or a Content-Length in the
+    refactor is a malformed response, and clients do notice."""
+    subject = addon.Lyrebird()
+    subject.store.add_override(
+        {"id": "d", "mode": "replace", "status": 204, "match": {"path": "/api/v1/orders/*"}, "body": {"ignored": True}}
+    )
+    flow = _flow()
+    run_request(subject, flow)
+    assert flow.response.status_code == 204
+    assert flow.response.raw_content in (b"", None)
+    assert "content-length" not in {key.lower() for key in flow.response.headers}
+    assert "content-type" not in {key.lower() for key in flow.response.headers}
+
+
+def test_a_content_encoding_is_applied_after_the_described_size(hosts, profile):
+    """`bodyBytes` is the payload before encoding, and the contract says so.
+
+    A rule that sets `Content-Encoding: gzip` is compressed by mitmproxy when its content is set, so
+    the wire carries more bytes than the payload and a Content-Length to match. Reporting the encoded
+    size would mean compressing every body once per description; reporting the payload size is
+    cheap and true as long as it is named as such — which is what this pins, from both ends.
+    """
+    import gzip
+
+    import rules
+
+    override = {
+        "id": "z",
+        "mode": "replace",
+        "match": {"path": "/api/v1/orders/*"},
+        "headers": {"Content-Encoding": "gzip"},
+        "body": "hello",
+    }
+    subject = addon.Lyrebird()
+    subject.store.add_override(override)
+    flow = _flow()
+    run_request(subject, flow)
+    assert gzip.decompress(flow.response.raw_content) == b"hello"
+    assert int(flow.response.headers["content-length"]) == len(flow.response.raw_content) > 5
+    assert rules.describe_rewrite(subject.store.active_overrides()[0])["bodyBytes"] == 5
 
 
 # MARK: - The wire behaviour, exercised through mitmproxy's own flow objects

@@ -25,7 +25,6 @@ from store import Store, credit
 # into its own event log, so this reaches the same place without polluting the log with warnings.
 _log = logging.getLogger("lyrebird")
 
-BODYLESS_STATUSES = (204, 304)  # must not carry a body or a Content-Length
 # How long `/health` waits for the PAC observation before answering without it. Well under the
 # CLI's 1.5s read timeout (`cli._get_json`), because two silent health reads are what the watchdog
 # takes for a dead proxy — so health answering late is the same failure as health not answering.
@@ -231,14 +230,18 @@ class Lyrebird:
             return
 
         if resolved.get("mode") == "replace":
-            status = int(resolved.get("status") or 200)
-            body = resolved.get("body")
-            bodyless = body is None or status in BODYLESS_STATUSES
-            headers = self._headers_with_default_content_type(resolved.get("headers"), json_body=not bodyless)
-            payload = b"" if bodyless else (body if isinstance(body, str) else json.dumps(body)).encode("utf-8")
-            response = http.Response.make(status, payload, headers)
-            if status in BODYLESS_STATUSES:
-                response.headers.pop("content-length", None)  # bodyless statuses must not carry a body/length
+            # Status, headers and body come from `rules.wire_response`, which is also what
+            # `describe_rewrite` reports — so what a client is shown and what the app receives
+            # cannot drift. Only the encoding is done here.
+            wire = rules.wire_response(resolved)
+            status, body = wire["status"], wire["body"]
+            payload = b"" if body is None else (body if isinstance(body, str) else json.dumps(body)).encode("utf-8")
+            response = http.Response.make(status, payload, wire["headers"])
+            if status in rules.BODYLESS_STATUSES:
+                # Still needed after `wire_response` drops the header: `Response.make` sets
+                # `content-length: 0` for the empty payload, and a 204 carrying one is malformed —
+                # see the bodyless row of test_the_wire_answer_matches_what_is_described.
+                response.headers.pop("content-length", None)
             flow.response = response
             flow.metadata["mock_matched"] = resolved["id"]
             credit(self.store.answer_slot(resolved["id"]))
@@ -349,15 +352,6 @@ class Lyrebird:
     # MARK: - Helpers
 
     @staticmethod
-    def _headers_with_default_content_type(headers: dict | None, json_body: bool) -> dict:
-        """Merge case-insensitively: a scenario that spells the header `Content-Type` must not end
-        up emitting both that and a lowercase `content-type` on the wire."""
-        result = dict(headers or {})
-        if json_body and not any(key.lower() == "content-type" for key in result):
-            result["Content-Type"] = "application/json"
-        return result
-
-    @staticmethod
     def _apply_patch(response: http.Response, override: dict) -> bool:
         try:
             response.decode()
@@ -368,7 +362,7 @@ class Lyrebird:
             return False
 
         status = override.get("status")
-        if status and int(status) in BODYLESS_STATUSES:
+        if status and int(status) in rules.BODYLESS_STATUSES:
             response.status_code = int(status)
             response.set_content(b"")
             response.headers.pop("content-length", None)

@@ -44,9 +44,20 @@ from typing import Any, TypeGuard
 SCHEMA_VERSION = 1  # the scenario-file format this engine reads; see `normalise_scenario`
 MAX_WILDCARDS = 10  # a bounded number of wildcards keeps the generated regex cheap to evaluate
 MAX_SEQUENCE_STEPS = 50  # bounded for the same reason: a pasted file must not cost unbounded memory
+# The largest body `describe_rewrite` will hand back inside a sequence step. Each step is
+# described after inheritance, so one 1 MB body on the parent of a 50-step sequence is 50 MB of
+# snapshot — the same body, repeated, for a pane that only needs to say how big it is. Over this,
+# a step reports its size and says the body was left out; see
+# test_describe_rewrite_omits_a_step_body_too_large_to_repeat.
+MAX_DESCRIBED_BODY_BYTES = 256 * 1024
 VALID_MODES = ("replace", "patch")
 VALID_PATCH_STRATEGIES = ("appendToArray",)
 VALID_EXHAUSTION_POLICIES = ("error", "repeatLast", "passThrough")
+# Statuses that must not carry a body or a Content-Length. Here rather than in `addon` because
+# both the wire and the summary of what a rule answers with have to agree about them: a rule
+# described as sending 8 bytes with a 204 describes a response no request receives — see
+# test_describe_rewrite_reports_no_body_for_a_bodyless_status.
+BODYLESS_STATUSES = (204, 304)
 
 # A step is the response half of an override and nothing else. Listing what is allowed rather than
 # what is forbidden means a step can never quietly carry a field that cannot take effect: `active`
@@ -204,6 +215,16 @@ def is_active(override: Mapping[str, Any]) -> bool:
     return override.get("active", True) is not False
 
 
+def effective_status(spec: Mapping[str, Any]) -> int:
+    """The status a `replace` answers with: its own, or 200 when it names none.
+
+    One spelling, shared by the wire (`addon._answer`) and by `describe_rewrite`, so a client shown
+    "200" is shown the status it will actually get. Two copies of `or 200` would be two places to
+    change the default in, and the summary exists precisely so no one has to know it.
+    """
+    return int(spec.get("status") or 200)
+
+
 def matches(
     override: Mapping[str, Any],
     method: str,
@@ -343,6 +364,164 @@ def deep_merge(target: Any, patch: Any, strategy: str | None = None) -> Any:
         return result
 
     return patch
+
+
+# MARK: - The answer on the wire
+#
+# What a `replace` actually sends. It lives here, in the module with no IO, because two consumers
+# have to agree about it: the proxy that serves the answer and the summary that tells a client what
+# a rule answers with. A second copy of these rules is a description that drifts from the wire it
+# describes, and the drift is invisible — the screen is exactly where nobody can check it.
+
+
+def headers_with_default_content_type(headers: Mapping[str, str] | None, json_body: bool) -> dict:
+    """Merge case-insensitively: a scenario that spells the header `Content-Type` must not end
+    up emitting both that and a lowercase `content-type` on the wire."""
+    result = dict(headers or {})
+    if json_body and not any(key.lower() == "content-type" for key in result):
+        result["Content-Type"] = "application/json"
+    return result
+
+
+def wire_response(spec: Mapping[str, Any]) -> dict:
+    """The answer one `replace` response spec produces: `{"status", "headers", "body"}`.
+
+    The three shaping decisions are made here and nowhere else: the 200 a rule that names no status
+    answers with, the body a bodyless status drops however much the rule carries, and the default
+    `Content-Type` — see test_the_wire_answer_for_a_json_rule_is_unchanged.
+
+    `body` is the value as stored, not the bytes it becomes. Encoding is the caller's (`json.dumps`
+    then utf-8 for anything that is not a string), because a client asking what a rule answers with
+    wants the JSON it will receive, not a length of bytes it cannot read.
+    """
+    status = effective_status(spec)
+    body = None if status in BODYLESS_STATUSES else spec.get("body")
+    # `json_body` is "there is a body at all", a string body included. That is what the wire does
+    # today, and this function reports the wire rather than deciding it — a string body losing the
+    # header it has been sent with is a change to served responses, not to a description of them.
+    headers = headers_with_default_content_type(spec.get("headers"), body is not None)
+    # A stored `Content-Length` never reaches anyone: `http.Response.make` overwrites it with the
+    # true length of what it encodes, and a bodyless status drops it entirely. Reporting the stored
+    # one would show a client a header no response carries — see
+    # test_the_wire_answer_matches_what_is_described.
+    return {
+        "status": status,
+        "headers": {key: value for key, value in headers.items() if key.lower() != "content-length"},
+        "body": body,
+    }
+
+
+# MARK: - Describing a rule
+#
+# One summary of what a rule answers with, for a client that shows rules but must not decide
+# anything about them. Every field comes from the helpers above rather than from a second reading
+# of the schema, so a change to step inheritance or to the exhaustion default cannot leave a
+# client describing behaviour this engine no longer has.
+
+
+def _body_summary(wire: Mapping[str, Any]) -> tuple[str, int | None]:
+    """The kind and the byte size of an already-shaped answer's body.
+
+    It takes the output of `wire_response` and classifies it; it does not decide anything. Whether a
+    status carries a body is `wire_response`'s question, asked once — asking it here as well is a
+    second implementation of the same rule, and the two would answer differently the day one of them
+    learns a new status.
+
+    Sized as `addon._answer` encodes the payload — `json.dumps` for anything that is not a string,
+    then utf-8. That is the size before any `Content-Encoding` the rule's own headers ask for:
+    mitmproxy compresses such a body on the way out, and the wire then carries more bytes than the
+    payload — see test_a_content_encoding_is_applied_after_the_described_size.
+    """
+    body = wire.get("body")
+    if body is None:
+        return "none", None
+    if isinstance(body, str):
+        return "text", len(body.encode("utf-8"))
+    return "json", len(json.dumps(body).encode("utf-8"))
+
+
+def _step_summary(override: Mapping[str, Any], step: Mapping[str, Any]) -> dict:
+    """One sequence step, as the wire would answer it, and which of its fields it did not write.
+
+    Through `step_view` and then `wire_response`, not the raw step: a step that omits `body` answers
+    with the parent's, and a step that sets 304 answers with none however much it inherited — see
+    test_describe_rewrite_shows_what_a_step_inherits and
+    test_describe_rewrite_reports_no_body_for_a_step_that_turns_bodyless.
+    """
+    wire = wire_response(step_view(override, step))
+    kind, size = _body_summary(wire)
+    # Reported, then left out: the size is what a pane shows, and repeating a megabyte of body once
+    # per step is a snapshot that grows with the square of what a scenario holds. The key is absent
+    # rather than false when the body is included, so the ordinary step stays the ordinary shape.
+    omitted = size is not None and size > MAX_DESCRIBED_BODY_BYTES
+    return {
+        "status": wire["status"],
+        "headers": wire["headers"],
+        "body": None if omitted else wire["body"],
+        **({"bodyOmitted": True} if omitted else {}),
+        "bodyKind": kind,
+        "bodyBytes": size,
+        # Which of these values came from the parent. A pane showing an inherited body as the step's
+        # own invites an edit to the step that changes nothing, because the value is not written
+        # there; sorted so the list does not depend on the order the fields happen to be checked in.
+        "inherited": sorted(field for field in STEP_FIELDS if field not in step),
+    }
+
+
+def describe_rewrite(override: Mapping[str, Any]) -> dict:
+    """What a validated override answers with, in one flat summary.
+
+    It describes; it does not validate, and it does not decide. Rule semantics — which rule wins,
+    which step is selected, what a patch merges into — stay in this module and in the store, and a
+    client that renders this dict is the only kind of client that cannot drift away from them.
+
+    The top-level response fields (`status`, `bodyKind`, `bodyBytes`) belong to a rule that answers
+    with one response. A sequenced rule does not: its answers are its steps, each described here
+    after inheritance, so those fields are empty and `sequence` is what a reader must use instead.
+    """
+    steps = sequence_steps(override)
+    mode = override.get("mode")
+    patch = override.get("patch")
+    patching = mode == "patch"
+    # Only a plain `replace` rule answers with a body of its own: a sequenced rule answers with its
+    # steps, and a patch answers with the upstream body merged — the wire ignores a `body` a patch
+    # rule carries, and describing one would name a payload no request ever receives.
+    kind, size = _body_summary(wire_response(override)) if steps is None and not patching else ("none", None)
+    if steps is not None:
+        status = None  # each step carries its own, reported below
+    elif patching:
+        # A patch that forces no status preserves the upstream's, which this engine has not seen —
+        # `null` is the whole answer, and reporting 200 would be a claim about someone else's
+        # response.
+        status = override.get("status")
+    else:
+        # Not `override.get("status")`: a replace that names none answers 200, and reporting `null`
+        # would leave every client re-deriving the default this summary exists to carry.
+        status = effective_status(override)
+    summary = {
+        "mode": mode,
+        "status": status,
+        "bodyKind": kind,
+        "bodyBytes": size,
+        # Present as None for a `replace` rule rather than absent, so one shape decodes both modes.
+        "patchKeys": (len(patch) if is_plain_object(patch) else 0) if patching else None,
+        "patchStrategy": override.get("patchStrategy") if patching else None,
+        "delayMs": override.get("delayMs"),
+        "sequence": None,
+    }
+    if steps is not None:
+        summary["sequence"] = {
+            # The matcher itself, as stored, or None for the implicit `self`. `store.sequence_states`
+            # reports the *word* ("self"/"match") because a cursor is all it describes; a client
+            # showing what moves a sequence on needs the request that does it, and deriving one from
+            # the other is the reimplementation this endpoint exists to spare it.
+            "advanceOn": advance_matcher(override),
+            # Via `exhaustion_policy`, so an omitted `onExhausted` reads as the "error" the engine
+            # will actually apply — a client showing "none" would promise a rule that keeps serving.
+            "onExhausted": exhaustion_policy(override),
+            "steps": [_step_summary(override, step) for step in steps],
+        }
+    return summary
 
 
 # MARK: - Validation

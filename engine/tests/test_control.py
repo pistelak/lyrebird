@@ -547,3 +547,212 @@ def test_a_rule_whose_write_fails_is_reported_and_not_installed(profile, monkeyp
     assert body["error"] == "persist_failed"
     assert "No space left" in body["detail"]
     assert overrides == [], "the rule was published despite the write that failed"
+
+
+# MARK: - The rules snapshot
+#
+# One read that hands a client everything a rules window shows: the rules as stored, the engine's
+# own description of what each answers with, and the runtime state each has. The point of the
+# description travelling with the rule is that no client has to re-derive step inheritance, the
+# exhaustion default or the wire encoding of a body — a client that did would drift, silently, and
+# describe behaviour this engine no longer has.
+
+RULES_SCENARIO = {
+    "name": "default",
+    "overrides": [
+        {
+            "id": "ovr_orders",
+            "mode": "replace",
+            "match": {"method": "GET", "path": "/api/v1/orders"},
+            "status": 200,
+            "body": {"orders": []},
+        },
+        {
+            "id": "ovr_flags",
+            "mode": "patch",
+            "match": {"method": "GET", "path": "/api/v1/features"},
+            "patch": {"checkout_v2": True},
+        },
+        {
+            "id": "ovr_seq",
+            "mode": "replace",
+            "match": {"path": "/api/v1/items"},
+            "sequence": {"steps": [{"status": 201}, {"status": 202}]},
+        },
+    ],
+}
+
+
+def seed_rules(profile):
+    (profile / "scenarios").mkdir(parents=True, exist_ok=True)
+    (profile / "scenarios" / "default.json").write_text(json.dumps(RULES_SCENARIO), encoding="utf-8")
+
+
+def test_the_rules_route_stays_behind_the_guard(profile):
+    """A new route is a new way in, and this one reads a whole scenario — every rule, every saved
+    body. `_guard` is global; this pins that the route did not arrive outside it."""
+    seed_rules(profile)
+    status, _, body = call(profile, "GET", "/__mock__/rules", headers={"Host": "evil.example.com"})
+    assert status == 421 and body["error"] == "bad_host"
+    status, _, body = call(profile, "GET", "/__mock__/rules", headers={"Origin": "https://attacker.test"})
+    assert status == 403 and body["error"] == "cross_origin_denied"
+    status, _, body = call(profile, "GET", "/__mock__/rules", headers=_FOREIGN)
+    assert status == 409 and body["error"] == "profile_mismatch"
+
+
+def test_rules_lists_the_same_rules_in_the_same_order_as_the_overrides_listing(profile):
+    """The two reads describe one list. A window showing rules in another order, or missing one,
+    would send an operator looking for a rule by a position the proxy does not use."""
+    seed_rules(profile)
+    _, _, listed = call(profile, "GET", "/__mock__/overrides")
+    status, _, body = call(profile, "GET", "/__mock__/rules")
+    assert status == 200
+    assert body["scenario"] == "default"
+    assert [rule["id"] for rule in body["rules"]] == [override["id"] for override in listed]
+
+
+def test_a_rules_row_carries_the_rule_exactly_as_stored(profile):
+    """The row claims to hold the rule as written, so nothing added beside it may overwrite a field
+    of it — `sequenceState` is spelled that way because `sequence` already holds the steps, and a
+    row that dropped them would be a rules window unable to show what a sequence answers with."""
+    seed_rules(profile)
+    _, _, body = call(profile, "GET", "/__mock__/rules")
+    rows = {rule["id"]: rule for rule in body["rules"]}
+    assert rows["ovr_seq"]["sequence"] == RULES_SCENARIO["overrides"][2]["sequence"]
+    assert rows["ovr_orders"]["body"] == {"orders": []}
+    assert rows["ovr_flags"]["patch"] == {"checkout_v2": True}
+
+
+def test_a_rules_row_describes_what_the_rule_answers_with(profile):
+    """`rewrite` is the engine's description, not the client's reading of the schema. It is here so
+    that a rules window can show 'json, 14 bytes' or 'step 2 of 2' without reimplementing either."""
+    seed_rules(profile)
+    _, _, body = call(profile, "GET", "/__mock__/rules")
+    rows = {rule["id"]: rule for rule in body["rules"]}
+    assert rows["ovr_orders"]["rewrite"]["bodyKind"] == "json"
+    assert rows["ovr_flags"]["rewrite"]["patchKeys"] == 1
+    sequence = rows["ovr_seq"]["rewrite"]["sequence"]
+    assert [step["status"] for step in sequence["steps"]] == [201, 202]
+    # Each step as the wire would answer it, over the wire: a pane composes nothing, and `inherited`
+    # is what lets it say which of those values the step did not write itself.
+    assert sequence["steps"][0] == {
+        "status": 201,
+        "headers": {},
+        "body": None,
+        "bodyKind": "none",
+        "bodyBytes": None,
+        "inherited": ["body", "headers"],
+    }
+    assert sequence["advanceOn"] is None, "this sequence advances on its own answer"
+
+
+def test_a_rule_with_no_sequence_reports_no_sequence_state(profile):
+    """Null, not an empty cursor: a plain rule has no step to be on, and a zeroed one would read as
+    a sequence waiting at step 1."""
+    seed_rules(profile)
+    _, _, body = call(profile, "GET", "/__mock__/rules")
+    rows = {rule["id"]: rule for rule in body["rules"]}
+    assert rows["ovr_orders"]["sequenceState"] is None
+    assert rows["ovr_flags"]["sequenceState"] is None
+    assert rows["ovr_seq"]["sequenceState"]["nextStep"] == 1
+
+
+def test_rules_and_health_report_the_same_runtime_state(profile):
+    """One store, two reads, and they must agree — including the `runId`, which is what binds a
+    count to the reset that started it. Separate readings of the same counters that could disagree
+    would leave 'the window says 1, assert-answered says 0' with no way to tell which is right."""
+    seed_rules(profile)
+    (profile / "profile.json").write_text('{"hosts": []}', encoding="utf-8")
+    config.reload_profile()
+    subject = store.Store()
+    store.credit(subject.answer_slot("ovr_orders"))
+    app = control.make_app(subject, _meta)
+
+    async def main():
+        async with TestClient(TestServer(app)) as client:
+            headers = {"Host": config.CONTROL_HOST_HEADER}
+            health = await (await client.get("/__mock__/health", headers=headers)).json()
+            snapshot = await (await client.get("/__mock__/rules", headers=headers)).json()
+            return health, snapshot
+
+    health, snapshot = asyncio.run(main())
+    assert [rule["answer"] for rule in snapshot["rules"]] == health["answers"]
+    assert [rule["sequenceState"] for rule in snapshot["rules"] if rule["sequenceState"]] == health["sequences"]
+
+
+def test_a_rules_row_reports_a_request_the_rule_answered(profile):
+    """The count is the evidence that a mock was in play. It reaches the window from the same slot
+    `assert-answered` reads, so a rule shown as never used is a rule that never answered."""
+    seed_rules(profile)
+    status, _, body = call(
+        profile, "GET", "/__mock__/rules", prepare=lambda s: store.credit(s.answer_slot("ovr_orders"))
+    )
+    assert status == 200
+    rows = {rule["id"]: rule for rule in body["rules"]}
+    assert rows["ovr_orders"]["answer"]["count"] == 1
+    assert rows["ovr_orders"]["answer"]["runId"], "the run it was counted in, not merely a number"
+    assert rows["ovr_flags"]["answer"]["count"] == 0
+
+
+def test_rules_lists_what_loaded_and_names_what_did_not(profile):
+    """A rule dropped at load time leaves a window that looks complete: the rules that survived are
+    all there, and nothing on the screen says one is missing. `notWhole` is that sentence."""
+    (profile / "scenarios" / "default.json").write_text(
+        json.dumps(
+            {
+                "name": "default",
+                "overrides": [
+                    {"id": "ovr_orders", "match": {"path": "/api/v1/orders"}, "mode": "replace", "status": 500},
+                    {"id": "ovr_typo", "match": {"path": "/api/v1/items"}, "mode": "replace", "statsu": 500},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    status, _, body = call(profile, "GET", "/__mock__/rules")
+
+    assert status == 200
+    assert [rule["id"] for rule in body["rules"]] == ["ovr_orders"], "what loaded is still served"
+    assert len(body["notWhole"]) == 1
+    assert "'statsu'" in body["notWhole"][0], "the problem itself, so the window can say which rule"
+
+
+def test_rules_blames_no_scenario_for_a_file_merely_named_after_one(profile):
+    """Why `notWhole` is read from the keyed map and never filtered out of the flat strings: this
+    file's name is rejected, and the line it leaves begins exactly like a problem with `default`,
+    whose own file is perfectly good."""
+    seed_rules(profile)
+    (profile / "scenarios" / "default.json: backup.json").write_text("{", encoding="utf-8")
+
+    status, _, body = call(profile, "GET", "/__mock__/rules")
+
+    assert status == 200
+    assert body["notWhole"] == [], "default loaded whole and must not be blamed"
+    assert len(body["rules"]) == 3
+
+
+def test_rules_reports_no_problems_when_the_scenario_loaded_whole(profile):
+    """The other half: empty is a real answer, and a window that greys itself out on any non-empty
+    `notWhole` needs it to mean exactly nothing went wrong."""
+    seed_rules(profile)
+    status, _, body = call(profile, "GET", "/__mock__/rules")
+    assert status == 200 and body["notWhole"] == []
+
+
+def test_a_fresh_snapshot_gives_a_sequenced_rule_one_run_id(profile):
+    """The first read of a store nobody has touched. `sequence_states` mints a rule's runtime slot
+    where `answer_states` only reads one, so reading answers first reported `answer.runId: null`
+    beside a live `sequenceState.runId` for the same rule — two run ids for one run, and a client
+    binding a count to a boundary cannot tell which of them it drew.
+
+    No health call and no credit first, deliberately: anything that touches the store beforehand
+    creates the slot and hides this."""
+    seed_rules(profile)
+    status, _, body = call(profile, "GET", "/__mock__/rules")
+
+    assert status == 200
+    sequenced = [rule for rule in body["rules"] if rule["sequenceState"]]
+    assert sequenced, "the scenario has a sequenced rule; without one this proves nothing"
+    for rule in sequenced:
+        assert rule["answer"]["runId"] == rule["sequenceState"]["runId"], rule["id"]

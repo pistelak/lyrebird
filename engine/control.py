@@ -25,6 +25,7 @@ from aiohttp import web
 from aiohttp.typedefs import Handler
 
 import config
+import rules
 from store import Store, UnsafeName
 
 _CSP = "default-src 'none'; frame-ancestors 'none'"
@@ -160,6 +161,45 @@ def make_app(store: Store, meta_provider: MetaProvider) -> web.Application:
                 # the rules themselves, which is what GET /overrides returns.
                 "answers": store.answer_states(),
                 **meta,
+            }
+        )
+
+    @routes.get("/__mock__/rules")
+    async def rules_snapshot(_request: web.Request) -> web.StreamResponse:
+        """The active scenario's rules, each with the engine's own description of what it answers
+        with and the runtime state it has. It exists so a client can show rules without
+        reimplementing which rule wins, which step is next or what a patch does.
+
+        Nothing is awaited: unlike `health` this needs no meta, and the four reads below are the
+        rules, their answer counts, their cursors and the problems recorded against this scenario —
+        a suspension anywhere among them would pair one scenario's rules with another's counters,
+        so the handler stays synchronous and every row describes the same moment.
+        """
+        # Sequences first: `sequence_states` mints a rule's runtime slot where `answer_states` only
+        # reads one, so reading answers first left the very first snapshot after activation showing
+        # a null `answer.runId` beside a live `sequenceState.runId` for one rule — two run ids for
+        # one run. See test_a_fresh_snapshot_gives_a_sequenced_rule_one_run_id.
+        sequences = {state["id"]: state for state in store.sequence_states()}
+        answers = {state["id"]: state for state in store.answer_states()}
+        return web.json_response(
+            {
+                "scenario": store.active_name,
+                # From the keyed map, never by filtering `load_problems`: a file named
+                # `orders-outage.json: backup.json` leaves a line that begins exactly like a problem
+                # with `orders-outage`, and a client would blame a scenario that loaded whole.
+                "notWhole": list(store.scenarios_not_whole.get(store.active_name, [])),
+                "rules": [
+                    {
+                        **override,
+                        "rewrite": rules.describe_rewrite(override),
+                        "answer": answers.get(override["id"]),
+                        # Not "sequence": that key already holds the rule's steps as written, and
+                        # overwriting it with the cursor would hand back a payload that claims to
+                        # carry the rule as stored while having dropped half of it.
+                        "sequenceState": sequences.get(override["id"]),
+                    }
+                    for override in store.active_overrides()
+                ],
             }
         )
 
