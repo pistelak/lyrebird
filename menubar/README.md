@@ -15,6 +15,16 @@ make setup-app
 make check-app              # formatting/lint, build, unit tests, fixture build
 ```
 
+To run it day to day, install one copy and launch that:
+
+```bash
+make install-app            # Release build into /Applications, replacing the old one, then open
+```
+
+It quits a running Lyrebird, replaces the installed bundle with the one it just built, and launches
+it. It exists because every Xcode build is a launchable `.app` that Spotlight also lists as
+"Lyrebird", with nothing to say which is current; this is the one that is.
+
 Or open the generated `menubar/Lyrebird.xcodeproj` in Xcode.
 See [CONTRIBUTING.md](../CONTRIBUTING.md) for pinned tools and formatter setup.
 
