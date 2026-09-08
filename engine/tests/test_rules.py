@@ -709,3 +709,178 @@ def test_a_status_that_is_not_a_usable_integer_is_refused_the_same_way(status):
 def test_a_schema_version_that_is_not_a_usable_integer_is_refused_the_same_way(version):
     with pytest.raises(rules.ValidationError, match="schemaVersion"):
         rules.normalise_scenario({"schemaVersion": version, "overrides": []}, "s")
+
+
+# MARK: - Describing a rule
+#
+# The summary a client renders instead of reading the schema itself. What these protect is that
+# reading: a field that drifts from what the engine does turns a rules window into a confident
+# description of behaviour nothing has.
+
+
+def test_describe_rewrite_summarises_a_json_replacement():
+    """The ordinary rule. `bodyBytes` is the size the wire sends — `json.dumps` then utf-8, the
+    same two steps `addon._answer` takes — so a client never has to guess at an encoding."""
+    summary = rules.describe_rewrite(
+        {"id": "o", "mode": "replace", "match": {"path": "/api/v1/orders"}, "status": 200, "body": {"orders": []}}
+    )
+    assert summary["mode"] == "replace"
+    assert summary["status"] == 200
+    assert summary["bodyKind"] == "json"
+    assert summary["bodyBytes"] == len(b'{"orders": []}')
+    assert summary["delayMs"] is None
+    assert summary["sequence"] is None
+
+
+def test_describe_rewrite_calls_a_string_body_text_and_measures_it_in_bytes():
+    """A string body goes out verbatim, not through `json.dumps`, so its size is its utf-8 length —
+    counting characters would under-report every non-ASCII payload."""
+    summary = rules.describe_rewrite(
+        {
+            "id": "o",
+            "mode": "replace",
+            "match": {"path": "/api/v1/status"},
+            "status": 503,
+            "body": "café",
+            "delayMs": 1500,
+        }
+    )
+    assert summary["bodyKind"] == "text"
+    assert summary["bodyBytes"] == 5, "four characters, five bytes"
+    assert summary["delayMs"] == 1500
+
+
+def test_describe_rewrite_describes_a_patch_by_its_patch():
+    """A patch answers with the upstream body merged, so there is no body of its own to size. What
+    a reader needs instead is how much it changes and whether arrays are appended to.
+
+    The stray `body` is the trap: validation allows the field on a patch rule and the wire ignores
+    it, so reporting it would describe a payload no request ever receives."""
+    summary = rules.describe_rewrite(
+        {
+            "id": "o",
+            "mode": "patch",
+            "match": {"path": "/api/v1/orders"},
+            "status": 500,
+            "body": {"ignored": True},
+            "patch": {"orders": [{"id": "ord_1"}], "total": 1},
+            "patchStrategy": "appendToArray",
+        }
+    )
+    assert summary["mode"] == "patch"
+    assert summary["status"] == 500, "a patch may force a status onto the real response"
+    assert summary["bodyKind"] == "none" and summary["bodyBytes"] is None
+    assert summary["patchKeys"] == 2
+    assert summary["patchStrategy"] == "appendToArray"
+
+
+SUMMARY_SEQUENCE = {
+    "id": "ovr_orders",
+    "mode": "replace",
+    "match": {"path": "/api/v1/orders"},
+    "status": 200,
+    "headers": {"X-Lyrebird": "1"},
+    "body": {"orders": []},
+    "sequence": {
+        "steps": [{"body": "pending"}, {"status": 500}],
+        "advanceOn": {"method": "POST", "path": "/api/v1/orders"},
+        "onExhausted": "repeatLast",
+    },
+}
+
+
+def test_describe_rewrite_shows_what_a_step_inherits():
+    """The second step names only a status, and answers with the parent's body and headers. A
+    summary built from the raw step would report an empty 500 — a response no request ever gets."""
+    steps = rules.describe_rewrite(SUMMARY_SEQUENCE)["sequence"]["steps"]
+    assert steps[0] == {"status": 200, "bodyKind": "text", "bodyBytes": 7, "headerCount": 1}
+    assert steps[1] == {
+        "status": 500,
+        "bodyKind": "json",
+        "bodyBytes": len(b'{"orders": []}'),
+        "headerCount": 1,
+    }
+
+
+def test_describe_rewrite_leaves_the_top_level_response_empty_for_a_sequence():
+    """A sequenced rule has no single answer: `sequence` is what a reader must use, and the parent's
+    status and body reach the wire only as what a step inherits — where they are already reported."""
+    summary = rules.describe_rewrite(SUMMARY_SEQUENCE)
+    assert summary["status"] is None
+    assert summary["bodyKind"] == "none" and summary["bodyBytes"] is None
+    assert len(summary["sequence"]["steps"]) == 2
+    assert summary["sequence"]["advanceOn"] == "match", "the same word `sequence_states` reports"
+    assert summary["sequence"]["onExhausted"] == "repeatLast"
+
+
+def test_describe_rewrite_reports_the_default_advance_trigger_and_exhaustion_policy():
+    """Both are omitted far more often than they are written, and both have a default the engine
+    applies. Reporting them as absent would show a rule that advances on nothing and never fails,
+    which is the opposite of what an omitted `onExhausted` does — see `exhaustion_policy`."""
+    summary = rules.describe_rewrite(
+        {
+            "id": "o",
+            "mode": "replace",
+            "match": {"path": "/api/v1/orders"},
+            "sequence": {"steps": [{"status": 200}]},
+        }
+    )
+    assert summary["sequence"]["advanceOn"] == "self"
+    assert summary["sequence"]["onExhausted"] == "error"
+
+
+def test_describe_rewrite_reports_no_body_rather_than_a_zero_length_one():
+    """A body of zero bytes and no body at all are different rules: one sends an empty string, the
+    other sends nothing. A client showing "0 bytes" for both cannot tell them apart."""
+    absent = rules.describe_rewrite({"id": "o", "mode": "replace", "match": {}, "status": 200})
+    empty = rules.describe_rewrite({"id": "o", "mode": "replace", "match": {}, "status": 200, "body": ""})
+    assert absent["bodyKind"] == "none" and absent["bodyBytes"] is None
+    assert empty["bodyKind"] == "text" and empty["bodyBytes"] == 0
+
+
+def test_describe_rewrite_reports_no_body_for_a_bodyless_status():
+    """204 and 304 are answered with no body however much body the rule carries (`addon._answer`
+    drops it), so sizing one here would show a payload no request receives."""
+    summary = rules.describe_rewrite(
+        {"id": "o", "mode": "replace", "match": {"path": "/api/v1/orders"}, "status": 204, "body": {"a": 1}}
+    )
+    assert summary["status"] == 204
+    assert summary["bodyKind"] == "none" and summary["bodyBytes"] is None
+
+
+def test_describe_rewrite_reports_no_body_for_a_step_that_turns_bodyless():
+    """The same rule one level down, where it is easier to get wrong: the step inherits a body it
+    will never send, because the status it sets is one that carries none."""
+    steps = rules.describe_rewrite(
+        {
+            "id": "o",
+            "mode": "replace",
+            "match": {"path": "/api/v1/orders"},
+            "body": {"orders": []},
+            "sequence": {"steps": [{}, {"status": 304}]},
+        }
+    )["sequence"]["steps"]
+    assert steps[0]["bodyKind"] == "json", "the step that keeps a body-carrying status still sends it"
+    assert steps[1] == {"status": 304, "bodyKind": "none", "bodyBytes": None, "headerCount": 0}
+
+
+def test_describe_rewrite_reports_the_status_a_replace_defaults_to():
+    """The wire answers 200 for a replace that names no status. Reporting null would leave the
+    default to be re-derived by every client — which is the reimplementation this summary exists to
+    make unnecessary — so both the rule and its steps report what will actually be sent."""
+    summary = rules.describe_rewrite({"id": "o", "mode": "replace", "match": {"path": "/api/v1/orders"}})
+    assert summary["status"] == 200
+    stepped = rules.describe_rewrite(
+        {"id": "o", "mode": "replace", "match": {"path": "/api/v1/orders"}, "sequence": {"steps": [{"body": "ok"}]}}
+    )
+    assert stepped["sequence"]["steps"][0]["status"] == 200
+
+
+def test_describe_rewrite_leaves_a_patch_status_null_when_it_forces_none():
+    """A patch that forces no status preserves the real response's, which this engine has not seen.
+    200 there would be a claim about someone else's response, and the one number a reader would
+    take for the answer."""
+    summary = rules.describe_rewrite(
+        {"id": "o", "mode": "patch", "match": {"path": "/api/v1/orders"}, "patch": {"a": 1}}
+    )
+    assert summary["status"] is None

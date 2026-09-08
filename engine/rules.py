@@ -47,6 +47,11 @@ MAX_SEQUENCE_STEPS = 50  # bounded for the same reason: a pasted file must not c
 VALID_MODES = ("replace", "patch")
 VALID_PATCH_STRATEGIES = ("appendToArray",)
 VALID_EXHAUSTION_POLICIES = ("error", "repeatLast", "passThrough")
+# Statuses that must not carry a body or a Content-Length. Here rather than in `addon` because
+# both the wire and the summary of what a rule answers with have to agree about them: a rule
+# described as sending 8 bytes with a 204 describes a response no request receives — see
+# test_describe_rewrite_reports_no_body_for_a_bodyless_status.
+BODYLESS_STATUSES = (204, 304)
 
 # A step is the response half of an override and nothing else. Listing what is allowed rather than
 # what is forbidden means a step can never quietly carry a field that cannot take effect: `active`
@@ -204,6 +209,16 @@ def is_active(override: Mapping[str, Any]) -> bool:
     return override.get("active", True) is not False
 
 
+def effective_status(spec: Mapping[str, Any]) -> int:
+    """The status a `replace` answers with: its own, or 200 when it names none.
+
+    One spelling, shared by the wire (`addon._answer`) and by `describe_rewrite`, so a client shown
+    "200" is shown the status it will actually get. Two copies of `or 200` would be two places to
+    change the default in, and the summary exists precisely so no one has to know it.
+    """
+    return int(spec.get("status") or 200)
+
+
 def matches(
     override: Mapping[str, Any],
     method: str,
@@ -343,6 +358,104 @@ def deep_merge(target: Any, patch: Any, strategy: str | None = None) -> Any:
         return result
 
     return patch
+
+
+# MARK: - Describing a rule
+#
+# One summary of what a rule answers with, for a client that shows rules but must not decide
+# anything about them. Every field comes from the helpers above rather than from a second reading
+# of the schema, so a change to step inheritance or to the exhaustion default cannot leave a
+# client describing behaviour this engine no longer has.
+
+
+def _body_summary(spec: Mapping[str, Any]) -> tuple[str, int | None]:
+    """The kind and the byte size of one response spec's body, or ("none", None) when it has none.
+
+    Encoded exactly as `addon._answer` encodes it — `json.dumps` for anything that is not a string,
+    then utf-8 — so a size shown beside a rule is the size that rule actually sends.
+
+    A bodyless status is answered with no body however much body the rule carries, which is why the
+    status is read here rather than only reported: sizing a 204's body describes a payload no
+    request receives — see test_describe_rewrite_reports_no_body_for_a_bodyless_status.
+    """
+    body = spec.get("body")
+    if body is None or effective_status(spec) in BODYLESS_STATUSES:
+        return "none", None
+    if isinstance(body, str):
+        return "text", len(body.encode("utf-8"))
+    return "json", len(json.dumps(body).encode("utf-8"))
+
+
+def _step_summary(override: Mapping[str, Any], step: Mapping[str, Any]) -> dict:
+    """One sequence step, described *after* inheritance.
+
+    Through `step_view`, not the raw step: a step that omits `body` answers with the parent's, and
+    a summary built from the step alone would report "no body" for a step that sends one — see
+    test_describe_rewrite_shows_what_a_step_inherits.
+    """
+    view = step_view(override, step)
+    kind, size = _body_summary(view)
+    headers = view.get("headers")
+    return {
+        "status": effective_status(view),
+        "bodyKind": kind,
+        "bodyBytes": size,
+        "headerCount": len(headers) if is_plain_object(headers) else 0,
+    }
+
+
+def describe_rewrite(override: Mapping[str, Any]) -> dict:
+    """What a validated override answers with, in one flat summary.
+
+    It describes; it does not validate, and it does not decide. Rule semantics — which rule wins,
+    which step is selected, what a patch merges into — stay in this module and in the store, and a
+    client that renders this dict is the only kind of client that cannot drift away from them.
+
+    The top-level response fields (`status`, `bodyKind`, `bodyBytes`) belong to a rule that answers
+    with one response. A sequenced rule does not: its answers are its steps, each described here
+    after inheritance, so those fields are empty and `sequence` is what a reader must use instead.
+    """
+    steps = sequence_steps(override)
+    mode = override.get("mode")
+    patch = override.get("patch")
+    patching = mode == "patch"
+    # Only a plain `replace` rule answers with a body of its own: a sequenced rule answers with its
+    # steps, and a patch answers with the upstream body merged — the wire ignores a `body` a patch
+    # rule carries, and describing one would name a payload no request ever receives.
+    kind, size = _body_summary(override) if steps is None and not patching else ("none", None)
+    if steps is not None:
+        status = None  # each step carries its own, reported below
+    elif patching:
+        # A patch that forces no status preserves the upstream's, which this engine has not seen —
+        # `null` is the whole answer, and reporting 200 would be a claim about someone else's
+        # response.
+        status = override.get("status")
+    else:
+        # Not `override.get("status")`: a replace that names none answers 200, and reporting `null`
+        # would leave every client re-deriving the default this summary exists to carry.
+        status = effective_status(override)
+    summary = {
+        "mode": mode,
+        "status": status,
+        "bodyKind": kind,
+        "bodyBytes": size,
+        # Present as None for a `replace` rule rather than absent, so one shape decodes both modes.
+        "patchKeys": (len(patch) if is_plain_object(patch) else 0) if patching else None,
+        "patchStrategy": override.get("patchStrategy") if patching else None,
+        "delayMs": override.get("delayMs"),
+        "sequence": None,
+    }
+    if steps is not None:
+        summary["sequence"] = {
+            # The same two words `store.sequence_states` reports, so a client is never asked to
+            # match "self" against another spelling of the same fact.
+            "advanceOn": "self" if advance_matcher(override) is None else "match",
+            # Via `exhaustion_policy`, so an omitted `onExhausted` reads as the "error" the engine
+            # will actually apply — a client showing "none" would promise a rule that keeps serving.
+            "onExhausted": exhaustion_policy(override),
+            "steps": [_step_summary(override, step) for step in steps],
+        }
+    return summary
 
 
 # MARK: - Validation

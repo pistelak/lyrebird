@@ -25,7 +25,6 @@ from store import Store, credit
 # into its own event log, so this reaches the same place without polluting the log with warnings.
 _log = logging.getLogger("lyrebird")
 
-BODYLESS_STATUSES = (204, 304)  # must not carry a body or a Content-Length
 # How long `/health` waits for the PAC observation before answering without it. Well under the
 # CLI's 1.5s read timeout (`cli._get_json`), because two silent health reads are what the watchdog
 # takes for a dead proxy — so health answering late is the same failure as health not answering.
@@ -231,13 +230,13 @@ class Lyrebird:
             return
 
         if resolved.get("mode") == "replace":
-            status = int(resolved.get("status") or 200)
+            status = rules.effective_status(resolved)
             body = resolved.get("body")
-            bodyless = body is None or status in BODYLESS_STATUSES
+            bodyless = body is None or status in rules.BODYLESS_STATUSES
             headers = self._headers_with_default_content_type(resolved.get("headers"), json_body=not bodyless)
             payload = b"" if bodyless else (body if isinstance(body, str) else json.dumps(body)).encode("utf-8")
             response = http.Response.make(status, payload, headers)
-            if status in BODYLESS_STATUSES:
+            if status in rules.BODYLESS_STATUSES:
                 response.headers.pop("content-length", None)  # bodyless statuses must not carry a body/length
             flow.response = response
             flow.metadata["mock_matched"] = resolved["id"]
@@ -368,7 +367,7 @@ class Lyrebird:
             return False
 
         status = override.get("status")
-        if status and int(status) in BODYLESS_STATUSES:
+        if status and int(status) in rules.BODYLESS_STATUSES:
             response.status_code = int(status)
             response.set_content(b"")
             response.headers.pop("content-length", None)

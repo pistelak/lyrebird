@@ -162,6 +162,18 @@ and what the PAC advertises — those are deliberately separate settings.
     strings cannot answer it: a file named `orders-outage.json: backup.json` produces a
     `"skipped …"` line that begins exactly like a problem with `orders-outage`. A file whose
     *name* was rejected appears in `loadProblems` only — it could never have become a scenario.
+- `GET /rules` — the active scenario's rules, each carrying `rewrite`, `answer` (its row from
+  `answers`) and `sequenceState` (its row from `sequences`, or `null`). It exists so a client can
+  show what a scenario rewrites without reimplementing rule semantics: `rewrite` is the *engine's*
+  description of what that rule answers with — `mode`, the `status` that will actually be sent (200
+  for a `replace` naming none; `null` for a patch forcing none, which keeps the real response's),
+  `bodyKind`/`bodyBytes` sized as the wire encodes them and reported as none for a bodyless 204/304,
+  `patchKeys`/`patchStrategy`, `delayMs`, and for a sequenced rule its `advanceOn`, the
+  `onExhausted` that will actually apply, and each step described *after* it inherits from the
+  parent. A sequenced rule leaves the top-level `status` and body fields empty,
+  because its answers are its steps, and a patch reports no body of its own, because it answers with
+  the upstream's. `notWhole` is this scenario's entries from `scenariosNotWhole`,
+  so a window can say a rule was dropped instead of quietly showing a shorter list.
 - `POST /reset` — start a fresh run in the active scenario: rewind sequence cursors and clear answer
   counts, for every rule or one named with `{"id": ...}`. Returns `{"scenario": …, "reset": {id:
   runId}}` — the run id per rule is what binds a later assertion to this boundary
