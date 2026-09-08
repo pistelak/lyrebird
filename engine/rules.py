@@ -44,6 +44,12 @@ from typing import Any, TypeGuard
 SCHEMA_VERSION = 1  # the scenario-file format this engine reads; see `normalise_scenario`
 MAX_WILDCARDS = 10  # a bounded number of wildcards keeps the generated regex cheap to evaluate
 MAX_SEQUENCE_STEPS = 50  # bounded for the same reason: a pasted file must not cost unbounded memory
+# The ceiling on a per-override `delayMs`, so a typo cannot wedge a flow indefinitely. Here
+# rather than in `config` because it is not configuration: the proxy applies it and
+# `describe_rewrite` reports it, and a rule described as waiting two minutes while the wire
+# waits one is the drift this module exists to prevent — see
+# test_describe_rewrite_reports_the_delay_the_proxy_will_apply.
+MAX_DELAY_MS = 60_000
 # The largest body `describe_rewrite` will hand back inside a sequence step. Each step is
 # described after inheritance, so one 1 MB body on the parent of a 50-step sequence is 50 MB of
 # snapshot — the same body, repeated, for a pane that only needs to say how big it is. Over this,
@@ -213,6 +219,21 @@ def is_active(override: Mapping[str, Any]) -> bool:
     out why it is not firing.
     """
     return override.get("active", True) is not False
+
+
+def effective_delay_ms(override: Mapping[str, Any]) -> int | None:
+    """How long the proxy will actually hold a matched response, or None for no delay.
+
+    Capped here rather than at the sleep, so the number a client is shown is the number the flow
+    waits: a rule configured with 120000 used to be described as two minutes and served after one.
+    Validation has already made `delayMs` a non-negative int, and 0 is "no delay" the same as an
+    absent field — that is what the proxy does with it, and a description saying "0 ms" would offer
+    a distinction the wire does not make.
+    """
+    delay = override.get("delayMs")
+    if not delay:
+        return None
+    return min(int(delay), MAX_DELAY_MS)
 
 
 def effective_status(spec: Mapping[str, Any]) -> int:
@@ -544,7 +565,10 @@ def describe_rewrite(override: Mapping[str, Any]) -> dict:
         # Present as None for a `replace` rule rather than absent, so one shape decodes both modes.
         "patchKeys": (len(patch) if is_plain_object(patch) else 0) if patching else None,
         "patchStrategy": override.get("patchStrategy") if patching else None,
-        "delayMs": override.get("delayMs"),
+        # The delay as it will be applied, not as it was written; the flag is what tells a reader
+        # the two differ. Absent rather than false when they agree, like `bodyOmitted`.
+        "delayMs": effective_delay_ms(override),
+        **({"delayCapped": True} if (override.get("delayMs") or 0) > MAX_DELAY_MS else {}),
         "sequence": None,
     }
     if steps is not None:

@@ -17,6 +17,7 @@ from mitmproxy.test import taddons, tflow, tutils
 
 import addon
 import config
+import rules
 
 
 def test_proxy_options_are_accepted_by_mitmproxy(hosts):
@@ -427,6 +428,36 @@ def _delayed_subject():
         }
     )
     return subject
+
+
+@pytest.mark.parametrize(
+    "configured,applied",
+    [
+        (250, 250),
+        (rules.MAX_DELAY_MS, rules.MAX_DELAY_MS),
+        (rules.MAX_DELAY_MS + 1, rules.MAX_DELAY_MS),
+        (120_000, rules.MAX_DELAY_MS),
+    ],
+)
+def test_the_proxy_waits_for_the_capped_delay(hosts, profile, monkeypatch, configured, applied):
+    """The cap is the proxy's, and `describe_rewrite` reports the same number through
+    `rules.effective_delay_ms` — a rule described as waiting two minutes and answering after one is
+    a description nobody can check against the wire. The sleep is recorded rather than taken,
+    because the point is the duration and the longest of these is a minute."""
+    slept = []
+
+    async def record(seconds):
+        slept.append(seconds)
+
+    monkeypatch.setattr(asyncio, "sleep", record)
+    subject = addon.Lyrebird()
+    subject.store.add_override(
+        {"id": "o", "mode": "replace", "status": 200, "match": {"path": "/api/v1/orders/*"}, "delayMs": configured}
+    )
+    flow = _flow()
+    run_request(subject, flow)
+    assert slept == [applied / 1000]
+    assert flow.metadata["mock_delay_ms"] == applied, "and /recent reports what was waited, not what was written"
 
 
 def test_a_reset_during_the_delay_is_honoured(hosts, profile):

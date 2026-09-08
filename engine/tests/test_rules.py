@@ -1102,3 +1102,40 @@ def test_same_matcher_separates_different_query_pins():
     assert rules.same_matcher({**base, "query": {"page": 2}}, {**base, "query": {"page": "2"}}), (
         "a query value is compared as the string the wire carries"
     )
+
+
+# MARK: - The delay that will actually be applied
+
+
+@pytest.mark.parametrize("mode_fields", [{"mode": "replace", "status": 200}, {"mode": "patch", "patch": {"a": 1}}])
+def test_describe_rewrite_reports_the_delay_the_proxy_will_apply(mode_fields):
+    """The proxy caps a per-rule delay so a typo cannot wedge a flow, and it caps it for every mode
+    — the sleep happens before the mode is looked at. A description carrying the configured 120000
+    would tell a reader the response takes two minutes when the flow is released after one."""
+    over = rules.describe_rewrite({"match": {}, "delayMs": 120_000, **mode_fields})
+    assert over["delayMs"] == rules.MAX_DELAY_MS
+    assert over["delayCapped"] is True
+
+    under = rules.describe_rewrite({"match": {}, "delayMs": 250, **mode_fields})
+    assert under["delayMs"] == 250
+    assert "delayCapped" not in under, "absent, not false: the flag is the exception"
+
+
+def test_describe_rewrite_reports_a_sequenced_rules_delay_the_same_way():
+    """`delayMs` is parent-level — a step may not carry one — so a sequence has exactly one delay,
+    and it is capped like any other."""
+    summary = rules.describe_rewrite(
+        {"match": {}, "mode": "replace", "delayMs": 120_000, "sequence": {"steps": [{"status": 200}]}}
+    )
+    assert summary["delayMs"] == rules.MAX_DELAY_MS and summary["delayCapped"] is True
+
+
+@pytest.mark.parametrize("configured,expected", [(None, None), (0, None), (1, 1), (60_000, 60_000), (60_001, 60_000)])
+def test_effective_delay_ms_is_the_one_number_both_sides_use(configured, expected):
+    """0 and an absent field are one thing on the wire — neither delays anything — so they are one
+    thing here; reporting "0 ms" would offer a distinction the proxy does not make."""
+    override = {"match": {}, "mode": "replace"}
+    if configured is not None:
+        override["delayMs"] = configured
+    assert rules.effective_delay_ms(override) == expected
+    assert rules.describe_rewrite(override)["delayMs"] == expected

@@ -182,7 +182,9 @@ and what the PAC advertises — those are deliberately separate settings.
   will actually be sent (200
   for a `replace` naming none; `null` for a patch forcing none, which keeps the real response's),
   `bodyKind`/`bodyBytes` sized as the payload is encoded (utf-8 or JSON, before any `Content-Encoding` the rule's headers ask for) and reported as none for a bodyless 204/304,
-  `patchKeys`/`patchStrategy`, `delayMs`, and for a sequenced rule the `advanceOn` matcher as
+  `patchKeys`/`patchStrategy`, `delayMs` as it will actually be applied (with `delayCapped: true`
+  when the rule asked for longer than the 60 s ceiling), and for a sequenced rule the `advanceOn`
+  matcher as
   stored (`null` when it advances on its own answer), `advanceOnRule` — the id of the rule in the
   same scenario whose `match` describes exactly those requests, or `null` when no rule does — the
   `onExhausted` that will actually apply,
@@ -283,7 +285,9 @@ one vocabulary, `OVERRIDE_FIELD_HELP` and `MATCHER_FIELD_HELP` in `rules.py`, so
 advertise a field validation would refuse. The two tables above mirror that vocabulary; they are
 maintained by hand, so keep them in step with it.
 
-`delayMs` delays a matched response (that flow only). Most-specific wins: fewer wildcards first,
+`delayMs` delays a matched response (that flow only), up to a ceiling of 60 s — a typo must not be
+able to wedge a flow indefinitely. The delay is applied before the mode is looked at, so it holds a
+`replace`, a `patch` and a sequenced rule alike, and `GET /rules` reports the capped value. Most-specific wins: fewer wildcards first,
 then a longer path, then more constraints — so a rule that also pins a query parameter beats a
 generic rule on the same path. `lyrebird explain-match METHOD PATH` shows which rule a given request
 would select and why each of the others would not, including the ones that matched and lost — which
