@@ -98,20 +98,6 @@ enum JSONValue: Codable, Sendable, Equatable {
         case .object(let value): try container.encode(value)
         }
     }
-
-    /// The loose `Any` tree `JSONSerialization` prints. A whole number is handed over as `Int`, so
-    /// a saved status shows as `503` and not `503.0`, and a large one survives the round trip.
-    var foundationObject: Any {
-        switch self {
-        case .null: return NSNull()
-        case .bool(let value): return value
-        case .int(let value): return value
-        case .number(let value): return value
-        case .string(let value): return value
-        case .array(let values): return values.map(\.foundationObject)
-        case .object(let values): return values.mapValues(\.foundationObject)
-        }
-    }
 }
 
 /// Which requests a rule answers. Every field is optional because every constraint is: a rule with

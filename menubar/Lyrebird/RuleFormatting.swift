@@ -45,7 +45,10 @@ enum RuleFormatting {
             parts.append(phrase)
             parts.append("JSON upstream only")
         } else {
-            var phrase = "\(rewrite.mode ?? "replace") →"
+            // No `?? "replace"`, for the reason the mode chip has none: the engine sends a mode for
+            // every validated rule, so a missing one is a snapshot this app does not understand, and
+            // the word is dropped rather than guessed — see testAHowLineDoesNotInventAModeEither.
+            var phrase = rewrite.mode.map { "\($0) →" } ?? "→"
             if let status = rewrite.status { phrase += " \(status)" }
             phrase += bodyPhrase(kind: rewrite.bodyKind, bytes: rewrite.bodyBytes)
             parts.append(phrase)
@@ -124,7 +127,10 @@ enum RuleFormatting {
     /// What the rule answers with, as one row. Every value comes from `rewrite` — the engine's own
     /// description — so this decides nothing; it only chooses what is worth a pill.
     static func answerChips(for rewrite: Rewrite) -> [Chip] {
-        var chips = [Chip(rewrite.mode ?? "replace")]
+        // No `?? "replace"`: the engine sends a mode for every validated rule, so a missing one is a
+        // snapshot this app does not understand — and a chip reading "replace" over a rule that
+        // might be a patch is worse than no chip. See testAModeTheEngineDidNotSendIsNotInvented.
+        var chips = rewrite.mode.map { [Chip($0)] } ?? []
         if let status = rewrite.status { chips.append(Chip(String(status), tint: statusColor(status))) }
         if let delay = rewrite.delayMs, delay > 0 { chips.append(Chip("+\(delay) ms")) }
         if let kind = rewrite.bodyKind, kind != "none" {
@@ -168,6 +174,12 @@ enum RuleFormatting {
     /// scenario file says, and that wants colour and a shape a person can read — but it must still
     /// parse back to the value it came from, which is what
     /// testThePrintedJsonParsesBackToTheValueItCameFrom pins.
+    ///
+    /// Its input is only ever a `JSONValue` that came off the wire, which bounds what it can meet:
+    /// `JSONValue` tries `Int` before `Double`, so a whole number arrives as `.int` and `.number`
+    /// holds only genuine fractions; and JSON has no infinity or NaN literal, so there is no
+    /// non-finite double to print as something no parser will read back. See
+    /// testWhatTheWireCanCarryIsWhatThePrinterEverSees.
     static func attributedJSON(_ value: JSONValue) -> AttributedString {
         var out = AttributedString()
         append(value, to: &out, indent: 0)
@@ -195,8 +207,6 @@ enum RuleFormatting {
         case .int(let number):
             out += token(String(number), numberColor)
         case .number(let number):
-            // A `JSONValue` only ever arrives from a JSON decode, and JSON has no infinity or NaN
-            // literal, so there is no non-finite double here to print as something JSON cannot read.
             out += token(String(describing: number), numberColor)
         case .string(let text):
             out += token(quoted(text), stringColor)

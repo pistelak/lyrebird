@@ -141,6 +141,21 @@ final class RuleFormattingTests: XCTestCase {
             "the status chip carries its own colour so the number and the colour cannot disagree")
     }
 
+    func testAModeTheEngineDidNotSendIsNotInvented() {
+        // Every validated rule carries a mode, so a missing one is a snapshot this app does not
+        // understand — and a chip reading "replace" over what might be a patch is a claim about the
+        // rule, not a gap in the row.
+        XCTAssertEqual(RuleFormatting.answerChips(for: Rewrite(status: 200)).map(\.text), ["200"])
+    }
+
+    func testAHowLineDoesNotInventAModeEither() {
+        // The row's line and the detail's chip read the same field, so they refuse the same way:
+        // the mode word is dropped rather than guessed, and what the rule answers with still shows.
+        XCTAssertEqual(
+            RuleFormatting.howLine(Rewrite(status: 200, bodyKind: "json", bodyBytes: 1229)),
+            "→ 200 json 1.2 KB")
+    }
+
     func testARuleThatAnswersWithNoBodyGetsNoBodyChip() {
         // "none · 0 B" would be a pill describing a payload no request receives.
         XCTAssertEqual(
