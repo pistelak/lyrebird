@@ -12,10 +12,16 @@ import XCTest
 @MainActor
 final class ProfileScopingTests: XCTestCase {
 
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        // Never `UserDefaults.standard`: these tests run hosted inside Lyrebird.app, so that is the
+        // user's own Settings — see TestDefaults.
+        try TestDefaults.install()
+    }
+
     override func tearDown() {
         StubURLProtocol.reset()
-        UserDefaults.standard.removeObject(forKey: Config.lyrebirdPathKey)
-        UserDefaults.standard.removeObject(forKey: Config.profilePathKey)
+        TestDefaults.restore()
         super.tearDown()
     }
 
@@ -330,7 +336,7 @@ final class ProfileScopingTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(5))
         }
         XCTAssertFalse(StubURLProtocol.requests.isEmpty, "the refresh never sent its health request")
-        UserDefaults.standard.set("/tmp/another-profile", forKey: Config.profilePathKey)
+        Config.defaults.set("/tmp/another-profile", forKey: Config.profilePathKey)
         gate.signal()
         await refresh.value
 
@@ -348,7 +354,7 @@ final class ProfileScopingTests: XCTestCase {
         await model.discoverProfile()
         XCTAssertEqual(model.expectedFingerprint, Fixture.ours)
 
-        UserDefaults.standard.set("/tmp/another-profile", forKey: Config.profilePathKey)
+        Config.defaults.set("/tmp/another-profile", forKey: Config.profilePathKey)
         await model.refresh()
 
         XCTAssertTrue(
@@ -365,7 +371,7 @@ final class ProfileScopingTests: XCTestCase {
         // Pointed at a path that is not there, so the test cannot start a proxy on the machine
         // running it — the failure it pins is the one an operator sees with the wrong path
         // in Settings.
-        UserDefaults.standard.set("/does-not-exist/lyrebird", forKey: Config.lyrebirdPathKey)
+        Config.defaults.set("/does-not-exist/lyrebird", forKey: Config.lyrebirdPathKey)
         StubURLProtocol.install { _ in throw URLError(.cannotConnectToHost) }
         let model = makeModel()
 

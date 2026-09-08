@@ -1,9 +1,11 @@
 import SwiftUI
 
 struct SettingsView: View {
-    @AppStorage(Config.controlURLKey) private var controlURL = Config.defaultControlURL
-    @AppStorage(Config.lyrebirdPathKey) private var lyrebirdPath = ""
-    @AppStorage(Config.profilePathKey) private var profilePath = ""
+    // `store:` on every one of them: `@AppStorage` defaults to `.standard`, and the sheet writing
+    // there while `Config` read somewhere else would leave a typed-in path that nothing acts on.
+    @AppStorage(Config.controlURLKey, store: Config.defaults) private var controlURL = Config.defaultControlURL
+    @AppStorage(Config.lyrebirdPathKey, store: Config.defaults) private var lyrebirdPath = ""
+    @AppStorage(Config.profilePathKey, store: Config.defaults) private var profilePath = ""
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {

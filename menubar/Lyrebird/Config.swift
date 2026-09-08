@@ -7,8 +7,17 @@ enum Config {
 
     static let defaultControlURL = "http://127.0.0.1:8088"
 
+    /// The store every setting is read from, and the one `SettingsView` writes to.
+    ///
+    /// A `var` only so the tests can point it somewhere else: they run hosted inside Lyrebird.app,
+    /// so `UserDefaults.standard` in a test is the user's real `com.lyrebird.Lyrebird` domain — a
+    /// suite that set a path and tidied up after itself deleted the launcher and profile paths the
+    /// user had typed into Settings, and the app came up "profile unknown" after every `make check`.
+    /// See testARunOfTheSuiteLeavesTheUsersOwnSettingsAlone.
+    static var defaults: UserDefaults = .standard
+
     private static func string(_ key: String, default fallback: String) -> String {
-        let value = UserDefaults.standard.string(forKey: key)
+        let value = defaults.string(forKey: key)
         return (value?.isEmpty == false) ? value! : fallback
     }
 
