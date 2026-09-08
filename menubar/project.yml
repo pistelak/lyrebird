@@ -13,7 +13,7 @@ targets:
     info:
       path: Lyrebird/Info.plist
       properties:
-        LSUIElement: true
+        # Dock visibility is controlled at runtime by DockPresence.
         CFBundleName: Lyrebird
         CFBundleDisplayName: Lyrebird
         CFBundleShortVersionString: "$(MARKETING_VERSION)"

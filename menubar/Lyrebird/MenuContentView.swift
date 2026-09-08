@@ -6,45 +6,52 @@ struct MenuContentView: View {
     @State private var showSettings = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            header
+        VStack(alignment: .leading, spacing: RuleFormatting.Space.step) {
+            MenuHeader(model: model)
             Divider()
-            controls
+            MenuControls(model: model)
             if let error = model.lastError, !error.isEmpty {
                 Text(error)
                     .font(.caption)
-                    .foregroundStyle(.red)
+                    .foregroundStyle(RuleFormatting.danger)
                     .lineLimit(3)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Divider()
-            scenariosSection
+            MenuScenarios(model: model)
             Divider()
-            recentSection
+            MenuRecentTraffic(model: model)
             Divider()
-            footer
+            MenuFooter(showSettings: $showSettings)
         }
-        .padding(12)
+        .padding(RuleFormatting.Space.section)
         .frame(width: 340)
-        // `@AppStorage` writes as the field is typed in, so everything on screen describes the
-        // previous settings until this runs: the profile is asked for again, and nothing read
-        // under the old one is kept.
+        // Refresh the profile and discard old readings after settings change.
         .sheet(isPresented: $showSettings, onDismiss: { Task { await model.settingsChanged() } }) {
             SettingsView()
         }
     }
 
-    private var header: some View {
+}
+
+private struct MenuHeader: View {
+    let model: AppModel
+
+    var body: some View {
         HStack(spacing: 8) {
             StatusGlyph(status: model.status).font(.title3)
-            VStack(alignment: .leading, spacing: 1) {
+            VStack(alignment: .leading, spacing: RuleFormatting.Space.tight) {
                 Text("Lyrebird").font(.headline)
                 Text(model.statusLine).font(.caption).foregroundStyle(.secondary)
             }
         }
     }
+}
 
-    private var controls: some View {
+private struct MenuControls: View {
+    let model: AppModel
+
+    var body: some View {
         HStack {
             Button {
                 Task { await model.toggle() }
@@ -66,8 +73,12 @@ struct MenuContentView: View {
             if model.busy { ProgressView().controlSize(.small) }
         }
     }
+}
 
-    private var scenariosSection: some View {
+private struct MenuScenarios: View {
+    let model: AppModel
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("SCENARIOS").font(.caption2).foregroundStyle(.secondary)
             if let list = model.scenarios {
@@ -75,13 +86,13 @@ struct MenuContentView: View {
                     Button {
                         Task { await model.activate(scenario.name) }
                     } label: {
-                        HStack(spacing: 6) {
+                        HStack(spacing: RuleFormatting.Space.snug) {
                             Image(
                                 systemName: scenario.name == list.active
                                     ? "largecircle.fill.circle" : "circle")
                             Text(scenario.name)
                             if scenario.verified {
-                                Image(systemName: "checkmark.seal.fill").foregroundStyle(.green)
+                                Image(systemName: "checkmark.seal.fill").foregroundStyle(RuleFormatting.success)
                             }
                             Spacer()
                             Text("\(scenario.overrideCount)").foregroundStyle(.secondary)
@@ -95,19 +106,33 @@ struct MenuContentView: View {
             }
         }
     }
+}
 
-    private var recentSection: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text("RECENT").font(.caption2).foregroundStyle(.secondary)
+private struct MenuRecentTraffic: View {
+    let model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: RuleFormatting.Space.tight) {
+            HStack {
+                Text("RECENT").font(.caption2).foregroundStyle(.secondary)
+                Spacer()
+                Button("Clear") { Task { await model.clearRecent() } }
+                    .font(.caption2)
+                    .buttonStyle(.borderless)
+                    .disabled(model.busy || model.recent.isEmpty)
+                    .help("Clear recent traffic")
+                    .accessibilityLabel("Clear recent traffic")
+            }
             if model.recent.isEmpty {
-                Text("no traffic yet").font(.caption).foregroundStyle(.secondary)
+                Text(model.recentPlaceholder).font(.caption).foregroundStyle(.secondary)
             } else {
-                ForEach(Array(model.recent.prefix(8).enumerated()), id: \.offset) { _, entry in
-                    HStack(spacing: 6) {
+                ForEach(RecentTrafficItem.items(Array(model.recent.prefix(8)))) { item in
+                    let entry = item.entry
+                    HStack(spacing: RuleFormatting.Space.snug) {
                         Text(entry.method).font(.caption2.monospaced())
                             .frame(width: 42, alignment: .leading)
-                        Text("\(entry.status)").font(.caption2.monospaced())
-                            .foregroundStyle(entry.status < 400 ? .green : .red)
+                        Text(RuleFormatting.statusText(entry.status)).font(.caption2.monospaced())
+                            .foregroundStyle(RuleFormatting.statusColor(entry.status))
                         Text(entry.path).font(.caption2.monospaced())
                             .lineLimit(1).truncationMode(.middle)
                     }
@@ -115,9 +140,14 @@ struct MenuContentView: View {
             }
         }
     }
+}
 
-    private var footer: some View {
+private struct MenuFooter: View {
+    @Binding var showSettings: Bool
+
+    var body: some View {
         HStack {
+            Button("Scenarios") { WindowLauncher.show() }
             Button("Settings") { showSettings = true }
             Spacer()
             Button("Quit") { NSApplication.shared.terminate(nil) }

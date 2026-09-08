@@ -4,6 +4,7 @@ enum Config {
     static let controlURLKey = "controlURL"
     static let lyrebirdPathKey = "lyrebirdPath"
     static let profilePathKey = "profilePath"
+    static let dockOnlyWhileWindowOpenKey = "dockOnlyWhileWindowOpen"
 
     static let defaultControlURL = "http://127.0.0.1:8088"
 
@@ -52,6 +53,13 @@ enum Config {
     /// The profile directory. Empty means "let the engine use its own default".
     static var profilePath: String {
         string(profilePathKey, default: "")
+    }
+
+    /// Whether Lyrebird leaves the Dock when its last window closes. Off by default: a menu bar
+    /// extra is easy to miss, and the HIG asks for the app's functionality to be reachable some
+    /// other way too. See `DockPresence`.
+    static var dockOnlyWhileWindowOpen: Bool {
+        defaults.bool(forKey: dockOnlyWhileWindowOpenKey)
     }
 
     /// The menu re-reads health, scenarios and recent traffic at this interval.

@@ -57,8 +57,32 @@ conventional route.
 
 Menu-bar glyph: filled bird with a green dot while intercepting, orange when the proxy is up but
 not intercepting, and an outlined bird with no dot when stopped.
-Click for a scenario picker, Start/Stop (`lyrebird up|down`), a Relaunch-app button, recent traffic,
-and settings. Dock-less agent (`LSUIElement`).
+Click for a scenario picker, Start/Stop (`lyrebird up|down`), a Relaunch-app button, the requests
+the proxy has seen, and settings.
+
+**Scenarios** opens a three-column browser: scenarios and Recent in the sidebar, configured
+requests or recorded traffic in the middle, and details on the right. A single click browses a
+scenario; double-clicking activates it. Activation is also available from the context menu.
+The sidebar marks the active scenario, and the toolbar shows the interception status.
+
+Sequence rules appear in configured order, with each response state followed by its advancing
+request. These are configured transitions, not a traffic trace: reads can repeat, and an advance
+matcher may have different conditions from the rule that answers that request. The detail pane
+shows those conditions and any candidate response rules. Other rules are listed separately.
+Scenario notes provide context above the list. ⌘F searches the current list.
+
+**Recent** shows recorded requests newest first, with status and override/sequence metadata.
+Request and response bodies are not captured. **Clear** removes recent traffic only; it leaves
+rules, sequence progress and answer counters intact. Clearing requires an engine that supports
+`DELETE /__mock__/recent`.
+
+The browser reads the engine's rule descriptions through `GET /__mock__/rules`. It distinguishes
+failed reads from empty results, preserves selection across polls, and does not edit rules.
+
+Lyrebird is a regular app: a Dock icon and a menu bar extra, both from launch. **Show in Dock only
+while a window is open** in Settings puts it in the menu bar instead, with the Dock icon appearing
+only while the window is. ⌘Q quits the app and removes the extra; it leaves a running proxy running,
+exactly as Quit in the menu does.
 
 ## Configuration
 
