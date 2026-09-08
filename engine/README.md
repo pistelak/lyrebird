@@ -176,7 +176,10 @@ and what the PAC advertises — those are deliberately separate settings.
   that is `PUT /scenarios/active`. Naming the active scenario returns exactly the parameterless
   snapshot; an unknown name is **404** `unknown_scenario` and an empty one **400** `name_required`. It exists so a client can
   show what a scenario rewrites without reimplementing rule semantics: `rewrite` is the *engine's*
-  description of what that rule answers with — `mode`, the `status` that will actually be sent (200
+  description of what that rule answers with — `active` (its own reading of the field, where a
+  missing key means active and only a literal `false` switches a rule off; it is here as well as in
+  `answers` because a browsed scenario's rows have no run to carry it), `mode`, the `status` that
+  will actually be sent (200
   for a `replace` naming none; `null` for a patch forcing none, which keeps the real response's),
   `bodyKind`/`bodyBytes` sized as the payload is encoded (utf-8 or JSON, before any `Content-Encoding` the rule's headers ask for) and reported as none for a bodyless 204/304,
   `patchKeys`/`patchStrategy`, `delayMs`, and for a sequenced rule the `advanceOn` matcher as

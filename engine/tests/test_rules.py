@@ -1030,3 +1030,40 @@ def test_wire_response_drops_a_stored_content_length():
     assert rules.wire_response({"headers": {"content-length": "999"}, "body": "x"})["headers"] == {
         "Content-Type": "application/json"
     }, "however it is spelled"
+
+
+@pytest.mark.parametrize(
+    "override,expected",
+    [
+        ({"mode": "replace", "match": {}}, True),
+        ({"mode": "replace", "match": {}, "active": True}, True),
+        ({"mode": "replace", "match": {}, "active": False}, False),
+        # Validation does not check this field's type, and `is_active` answers for what gets
+        # through: only a literal `false` switches a rule off, so these are all live rules.
+        ({"mode": "replace", "match": {}, "active": 0}, True),
+        ({"mode": "replace", "match": {}, "active": "no"}, True),
+        ({"mode": "replace", "match": {}, "active": None}, True),
+    ],
+)
+def test_describe_rewrite_reports_the_engines_own_reading_of_activeness(override, expected):
+    """The encoding is not obvious — a missing key means active, and only a literal `false` switches
+    a rule off — and a browsed scenario's rows carry no runtime state to read it from, so a client
+    without this field ends up implementing `is_active` a second time and disagreeing at the edges.
+    """
+    assert rules.describe_rewrite(override)["active"] is expected
+    assert rules.describe_rewrite(override)["active"] is rules.is_active(override), "one reading, not two"
+
+
+def test_every_described_rule_and_step_says_what_kind_of_body_it_has():
+    """`bodyKind` is the field a client branches on, so it is never absent: a row missing it would
+    be read as a rule with no body by any client written to `.get`."""
+    for override in (
+        {"mode": "replace", "match": {}},
+        {"mode": "replace", "match": {}, "status": 204, "body": {"a": 1}},
+        {"mode": "patch", "match": {}, "patch": {"a": 1}},
+        {"mode": "replace", "match": {}, "body": "x", "sequence": {"steps": [{}, {"status": 304}]}},
+    ):
+        summary = rules.describe_rewrite(override)
+        assert "active" in summary and "bodyKind" in summary, summary
+        for step in (summary["sequence"] or {}).get("steps", []):
+            assert "bodyKind" in step, step

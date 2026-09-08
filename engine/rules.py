@@ -475,6 +475,10 @@ def describe_rewrite(override: Mapping[str, Any]) -> dict:
     which step is selected, what a patch merges into — stay in this module and in the store, and a
     client that renders this dict is the only kind of client that cannot drift away from them.
 
+    `active` is here as well as in `store.answer_states`, because that one describes a run and a
+    scenario merely being browsed has none: the field a client reads must not depend on which
+    scenario it is looking at.
+
     The top-level response fields (`status`, `bodyKind`, `bodyBytes`) belong to a rule that answers
     with one response. A sequenced rule does not: its answers are its steps, each described here
     after inheritance, so those fields are empty and `sequence` is what a reader must use instead.
@@ -499,6 +503,12 @@ def describe_rewrite(override: Mapping[str, Any]) -> dict:
         # would leave every client re-deriving the default this summary exists to carry.
         status = effective_status(override)
     summary = {
+        # First, and on every row: a browsed scenario's rules have no runtime state, so `answer` is
+        # null there and a client reading activeness off it would fall back to reading the stored
+        # `active` field itself — a second implementation of `is_active`, whose encoding is not
+        # obvious (a missing key means active, and only a literal `false` switches a rule off).
+        # See test_describe_rewrite_reports_the_engines_own_reading_of_activeness.
+        "active": is_active(override),
         "mode": mode,
         "status": status,
         "bodyKind": kind,
