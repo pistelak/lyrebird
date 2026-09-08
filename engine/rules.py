@@ -427,8 +427,10 @@ def _body_summary(wire: Mapping[str, Any]) -> tuple[str, int | None]:
     second implementation of the same rule, and the two would answer differently the day one of them
     learns a new status.
 
-    Sized as `addon._answer` encodes it — `json.dumps` for anything that is not a string, then
-    utf-8 — so a size shown beside a rule is the size that rule actually sends.
+    Sized as `addon._answer` encodes the payload — `json.dumps` for anything that is not a string,
+    then utf-8. That is the size before any `Content-Encoding` the rule's own headers ask for:
+    mitmproxy compresses such a body on the way out, and the wire then carries more bytes than the
+    payload — see test_a_content_encoding_is_applied_after_the_described_size.
     """
     body = wire.get("body")
     if body is None:

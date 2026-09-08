@@ -167,7 +167,7 @@ and what the PAC advertises — those are deliberately separate settings.
   show what a scenario rewrites without reimplementing rule semantics: `rewrite` is the *engine's*
   description of what that rule answers with — `mode`, the `status` that will actually be sent (200
   for a `replace` naming none; `null` for a patch forcing none, which keeps the real response's),
-  `bodyKind`/`bodyBytes` sized as the wire encodes them and reported as none for a bodyless 204/304,
+  `bodyKind`/`bodyBytes` sized as the payload is encoded (utf-8 or JSON, before any `Content-Encoding` the rule's headers ask for) and reported as none for a bodyless 204/304,
   `patchKeys`/`patchStrategy`, `delayMs`, and for a sequenced rule the `advanceOn` matcher as
   stored (`null` when it advances on its own answer), the `onExhausted` that will actually apply,
   and each step as the wire would answer it — `status`, `headers`, `body`, `bodyKind`/`bodyBytes`,

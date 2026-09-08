@@ -163,6 +163,34 @@ def test_the_wire_answer_for_a_bodyless_rule_is_unchanged(hosts, profile):
     assert "content-type" not in {key.lower() for key in flow.response.headers}
 
 
+def test_a_content_encoding_is_applied_after_the_described_size(hosts, profile):
+    """`bodyBytes` is the payload before encoding, and the contract says so.
+
+    A rule that sets `Content-Encoding: gzip` is compressed by mitmproxy when its content is set, so
+    the wire carries more bytes than the payload and a Content-Length to match. Reporting the encoded
+    size would mean compressing every body once per description; reporting the payload size is
+    cheap and true as long as it is named as such — which is what this pins, from both ends.
+    """
+    import gzip
+
+    import rules
+
+    override = {
+        "id": "z",
+        "mode": "replace",
+        "match": {"path": "/api/v1/orders/*"},
+        "headers": {"Content-Encoding": "gzip"},
+        "body": "hello",
+    }
+    subject = addon.Lyrebird()
+    subject.store.add_override(override)
+    flow = _flow()
+    run_request(subject, flow)
+    assert gzip.decompress(flow.response.raw_content) == b"hello"
+    assert int(flow.response.headers["content-length"]) == len(flow.response.raw_content) > 5
+    assert rules.describe_rewrite(subject.store.active_overrides()[0])["bodyBytes"] == 5
+
+
 # MARK: - The wire behaviour, exercised through mitmproxy's own flow objects
 #
 # The request/response hooks are where a silent regression hurts most: a dropped patch or a
