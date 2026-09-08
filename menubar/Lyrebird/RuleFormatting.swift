@@ -10,13 +10,16 @@ enum RuleFormatting {
 
     // MARK: - The two lines of a row
 
-    /// `GET /api/v1/orders`. `ANY` rather than a blank, because a rule with no method matches every
-    /// one of them, and a gap there reads as a missing value instead of as the constraint it is not.
-    static func matchLine(_ match: RuleMatch?) -> String {
-        let method = match?.method?.uppercased() ?? "ANY"
-        let path = match?.path ?? "*"
-        return "\(method) \(path)"
-    }
+    /// `ANY` rather than a blank, because a rule with no method matches every one of them, and a gap
+    /// there reads as a missing value instead of as the constraint it is not.
+    static func method(of match: RuleMatch?) -> String { match?.method?.uppercased() ?? "ANY" }
+
+    /// `*` for the same reason: a rule with no path answers every intercepted request.
+    static func path(of match: RuleMatch?) -> String { match?.path ?? "*" }
+
+    /// `GET /api/v1/orders`, for the list. The detail pane sets the two halves in different weights
+    /// and so builds them from the pieces above.
+    static func matchLine(_ match: RuleMatch?) -> String { "\(method(of: match)) \(path(of: match))" }
 
     /// What the rule answers with, in one line: `replace → 200 json 1.2 KB · +1000 ms`,
     /// `patch → merge 3 keys, force 503 · JSON upstream only`,
@@ -92,22 +95,164 @@ enum RuleFormatting {
     /// one colour never means two things across the two windows.
     static func statusColor(_ status: Int) -> Color { status < 400 ? .green : .red }
 
+    // MARK: - Chips
+
+    /// One pill in the detail pane. `tint` is nil for the ordinary chip; a status chip carries its
+    /// own, so the number and the colour beside it can never come from different readings.
+    struct Chip: Equatable {
+        var text: String
+        var tint: Color?
+
+        init(_ text: String, tint: Color? = nil) {
+            self.text = text
+            self.tint = tint
+        }
+    }
+
+    /// What the matcher pins beyond its method and path. Empty when it pins nothing, so the row
+    /// disappears instead of sitting there as an empty strip.
+    static func matchChips(for match: RuleMatch?) -> [Chip] {
+        var chips = (match?.query ?? [:]).keys.sorted().map { key in
+            Chip("\(key) = \(scalarText(match?.query?[key]))")
+        }
+        if let contains = match?.bodyContains, !contains.isEmpty {
+            chips.append(Chip("body ∋ \"\(truncated(contains))\""))
+        }
+        return chips
+    }
+
+    /// What the rule answers with, as one row. Every value comes from `rewrite` — the engine's own
+    /// description — so this decides nothing; it only chooses what is worth a pill.
+    static func answerChips(for rewrite: Rewrite) -> [Chip] {
+        var chips = [Chip(rewrite.mode ?? "replace")]
+        if let status = rewrite.status { chips.append(Chip(String(status), tint: statusColor(status))) }
+        if let delay = rewrite.delayMs, delay > 0 { chips.append(Chip("+\(delay) ms")) }
+        if let kind = rewrite.bodyKind, kind != "none" {
+            chips.append(Chip(rewrite.bodyBytes.map { "\(kind) · \(byteSize($0))" } ?? kind))
+        }
+        if let keys = rewrite.patchKeys { chips.append(Chip("\(keys) \(keys == 1 ? "key" : "keys")")) }
+        if let strategy = rewrite.patchStrategy { chips.append(Chip(strategy)) }
+        return chips
+    }
+
+    /// Middle-truncated: a `bodyContains` is usually distinctive at both ends, and keeping only the
+    /// prefix makes two different pins look like the same one.
+    static func truncated(_ text: String, to limit: Int = 40) -> String {
+        guard text.count > limit else { return text }
+        let head = (limit - 1) / 2
+        return String(text.prefix(head)) + "…" + String(text.suffix(limit - 1 - head))
+    }
+
+    /// A query pin's value as written. The engine compares `str(value)`, so `2` and `"2"` pin the
+    /// same request — and the bare text is what the rule's author typed, without the quotes a JSON
+    /// print would wrap a string in.
+    static func scalarText(_ value: JSONValue?) -> String {
+        guard let value else { return "" }
+        if case .string(let text) = value { return text }
+        return jsonText(value)
+    }
+
     // MARK: - Printing stored JSON
 
-    /// A rule's body, patch or step exactly as stored, pretty-printed with sorted keys so two reads
-    /// of the same rule look the same.
+    private static let punctuationColor = Color.secondary
+    private static let keyColor = Color.primary
+    private static let stringColor = Color(nsColor: .systemGreen)
+    private static let numberColor = Color(nsColor: .systemBlue)
+    private static let literalColor = Color(nsColor: .systemPurple)
+
+    /// A rule's body, patch or step exactly as stored: two-space indent, keys sorted so two reads of
+    /// the same rule look the same, one space after a colon and none before, and empty containers on
+    /// one line.
     ///
-    /// The failure is spelled out rather than rendered as an empty block: a body shown as nothing
-    /// is indistinguishable from a rule that carries none, which is the one thing this pane exists
-    /// to tell apart.
-    static func prettyJSON(_ value: JSONValue) -> String {
-        let options: JSONSerialization.WritingOptions = [.prettyPrinted, .sortedKeys, .fragmentsAllowed]
-        guard let data = try? JSONSerialization.data(withJSONObject: value.foundationObject, options: options),
-            let text = String(data: data, encoding: .utf8)
-        else {
-            return "(this value could not be printed as JSON)"
+    /// Ours rather than `JSONSerialization`'s because the pane's whole claim is that this is what the
+    /// scenario file says, and that wants colour and a shape a person can read — but it must still
+    /// parse back to the value it came from, which is what
+    /// testThePrintedJsonParsesBackToTheValueItCameFrom pins.
+    static func attributedJSON(_ value: JSONValue) -> AttributedString {
+        var out = AttributedString()
+        append(value, to: &out, indent: 0)
+        return out
+    }
+
+    /// The same print as plain text, for the Copy button — derived from the one printer rather than
+    /// written twice, so what lands on the pasteboard is exactly what the pane shows.
+    static func jsonText(_ value: JSONValue) -> String { String(attributedJSON(value).characters) }
+
+    private static func token(_ text: String, _ color: Color) -> AttributedString {
+        var piece = AttributedString(text)
+        piece.foregroundColor = color
+        return piece
+    }
+
+    private static func append(_ value: JSONValue, to out: inout AttributedString, indent: Int) {
+        let pad = String(repeating: "  ", count: indent)
+        let inner = pad + "  "
+        switch value {
+        case .null:
+            out += token("null", literalColor)
+        case .bool(let flag):
+            out += token(flag ? "true" : "false", literalColor)
+        case .int(let number):
+            out += token(String(number), numberColor)
+        case .number(let number):
+            // A `JSONValue` only ever arrives from a JSON decode, and JSON has no infinity or NaN
+            // literal, so there is no non-finite double here to print as something JSON cannot read.
+            out += token(String(describing: number), numberColor)
+        case .string(let text):
+            out += token(quoted(text), stringColor)
+        case .array(let values):
+            guard !values.isEmpty else {
+                out += token("[]", punctuationColor)
+                return
+            }
+            out += token("[\n", punctuationColor)
+            for (offset, element) in values.enumerated() {
+                out += token(inner, punctuationColor)
+                append(element, to: &out, indent: indent + 1)
+                out += token(offset == values.count - 1 ? "\n" : ",\n", punctuationColor)
+            }
+            out += token(pad + "]", punctuationColor)
+        case .object(let members):
+            guard !members.isEmpty else {
+                out += token("{}", punctuationColor)
+                return
+            }
+            out += token("{\n", punctuationColor)
+            let keys = members.keys.sorted()
+            for (offset, key) in keys.enumerated() {
+                out += token(inner, punctuationColor)
+                out += token(quoted(key), keyColor)
+                out += token(": ", punctuationColor)
+                append(members[key] ?? .null, to: &out, indent: indent + 1)
+                out += token(offset == keys.count - 1 ? "\n" : ",\n", punctuationColor)
+            }
+            out += token(pad + "}", punctuationColor)
         }
-        return text
+    }
+
+    /// JSON string escaping: the six named escapes, `\u00XX` for any other control character, and
+    /// every other scalar literal. A body copied out of this pane has to paste back into the
+    /// scenario file it came from — see testThePrintedJsonParsesBackToTheValueItCameFrom.
+    private static func quoted(_ text: String) -> String {
+        var out = "\""
+        for scalar in text.unicodeScalars {
+            switch scalar {
+            case "\"": out += "\\\""
+            case "\\": out += "\\\\"
+            case "\n": out += "\\n"
+            case "\r": out += "\\r"
+            case "\t": out += "\\t"
+            case "\u{08}": out += "\\b"
+            case "\u{0C}": out += "\\f"
+            default:
+                if scalar.value < 0x20 {
+                    out += String(format: "\\u%04x", scalar.value)
+                } else {
+                    out.unicodeScalars.append(scalar)
+                }
+            }
+        }
+        return out + "\""
     }
 
     /// `Accept: application/json` per line, sorted, for the monospaced block in the detail pane.

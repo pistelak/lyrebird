@@ -95,6 +95,70 @@ final class RuleFormattingTests: XCTestCase {
             "a count with no run is evidence bound to no boundary, and must not read as one")
     }
 
+    // MARK: - The chips in the detail pane
+
+    func testAMatchersPinsBecomeChipsAndABareMatcherHasNone() {
+        // The row is only worth its vertical space when something is in it, and a query pin is
+        // exactly the constraint the request line above cannot show.
+        let pinned = RuleMatch(
+            method: "GET", path: "/api/v1/orders",
+            query: ["kind": .string("marketing"), "page": .int(2)])
+
+        XCTAssertEqual(
+            RuleFormatting.matchChips(for: pinned).map(\.text), ["kind = marketing", "page = 2"],
+            "sorted, and a numeric pin shown as the engine compares it")
+        XCTAssertTrue(RuleFormatting.matchChips(for: RuleMatch(path: "/api/v1/orders")).isEmpty)
+        XCTAssertTrue(RuleFormatting.matchChips(for: nil).isEmpty)
+    }
+
+    func testALongBodyContainsIsTruncatedInTheMiddleSoBothEndsStayVisible() {
+        // Keeping only the prefix makes two pins that differ at the end look like the same one.
+        let long = String(repeating: "ab", count: 40)
+        let chips = RuleFormatting.matchChips(for: RuleMatch(bodyContains: long))
+
+        XCTAssertEqual(chips.count, 1)
+        XCTAssertTrue(chips[0].text.hasPrefix("body ∋ \"ab"), chips[0].text)
+        XCTAssertTrue(chips[0].text.hasSuffix("ab\""), chips[0].text)
+        XCTAssertTrue(chips[0].text.contains("…"), chips[0].text)
+        XCTAssertLessThan(chips[0].text.count, long.count)
+    }
+
+    func testAShortBodyContainsIsShownWhole() {
+        XCTAssertEqual(
+            RuleFormatting.matchChips(for: RuleMatch(bodyContains: "orderId")).map(\.text),
+            [#"body ∋ "orderId""#])
+    }
+
+    func testTheAnswerChipsNameTheModeStatusDelayAndBody() {
+        let rewrite = Rewrite(
+            mode: "replace", status: 503, bodyKind: "json", bodyBytes: 251, delayMs: 1000)
+
+        XCTAssertEqual(
+            RuleFormatting.answerChips(for: rewrite).map(\.text),
+            ["replace", "503", "+1000 ms", "json · 251 B"])
+        XCTAssertEqual(
+            RuleFormatting.answerChips(for: rewrite)[1].tint, RuleFormatting.statusColor(503),
+            "the status chip carries its own colour so the number and the colour cannot disagree")
+    }
+
+    func testARuleThatAnswersWithNoBodyGetsNoBodyChip() {
+        // "none · 0 B" would be a pill describing a payload no request receives.
+        XCTAssertEqual(
+            RuleFormatting.answerChips(for: Rewrite(mode: "replace", status: 204, bodyKind: "none"))
+                .map(\.text),
+            ["replace", "204"])
+    }
+
+    func testAPatchsChipsCountItsKeysAndNameItsStrategy() {
+        let rewrite = Rewrite(
+            mode: "patch", bodyKind: "none", patchKeys: 3, patchStrategy: "appendToArray")
+
+        XCTAssertEqual(
+            RuleFormatting.answerChips(for: rewrite).map(\.text),
+            ["patch", "3 keys", "appendToArray"],
+            "no status chip: a patch forcing none keeps the real response's")
+    }
+
     // MARK: - Numbers
 
     func testByteSizesReadInTheUnitsTheEngineCountedThemIn() {

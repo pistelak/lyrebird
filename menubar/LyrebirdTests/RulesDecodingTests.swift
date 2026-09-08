@@ -107,8 +107,8 @@ final class RulesDecodingTests: XCTestCase {
         let body = try XCTUnwrap(rule.body)
 
         XCTAssertTrue(
-            RuleFormatting.prettyJSON(body).contains("9007199254740993"),
-            RuleFormatting.prettyJSON(body))
+            RuleFormatting.jsonText(body).contains("9007199254740993"),
+            RuleFormatting.jsonText(body))
     }
 
     func testFieldsThisAppDoesNotRenderAreIgnoredRatherThanFailingTheWholeSnapshot() throws {
@@ -123,7 +123,7 @@ final class RulesDecodingTests: XCTestCase {
         let rule = try XCTUnwrap(decoded().rules.first { $0.id == "ovr_items" })
         let step = try XCTUnwrap(rule.sequence?.steps?.first)
 
-        XCTAssertEqual(RuleFormatting.prettyJSON(step), "{\n  \"status\" : 201\n}")
+        XCTAssertEqual(RuleFormatting.jsonText(step), "{\n  \"status\": 201\n}")
     }
 }
 

@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// What the active scenario rewrites, and how. Read-only apart from "Reset run": every line comes
@@ -185,6 +186,14 @@ private struct RuleDetailView: View {
                 } else {
                     answersWith
                 }
+                // The rule's own headers, which a sequence's steps inherit — so they belong to both
+                // shapes, not only to the one that answers with a body of its own.
+                if let headers = rule.headers, !headers.isEmpty {
+                    section("HEADERS") { codeBlock { Text(RuleFormatting.headerBlock(headers)) } }
+                }
+                if rule.rewrite.sequence == nil, let stored = rule.patch ?? rule.body {
+                    jsonSection(rule.patch == nil ? "BODY" : "PATCH", stored)
+                }
                 if let notes = rule.notes, !notes.isEmpty {
                     section("NOTES") {
                         Text(notes).font(.callout).fixedSize(horizontal: false, vertical: true)
@@ -198,17 +207,18 @@ private struct RuleDetailView: View {
 
     // MARK: - Matches
 
+    /// The request as a person would write it, not a table of field names: `GET /api/v1/orders`,
+    /// with the constraints that are not method-or-path as chips underneath.
     private var matches: some View {
         section("MATCHES") {
-            Grid(alignment: .topLeading, horizontalSpacing: 12, verticalSpacing: 4) {
-                field("method", rule.match?.method?.uppercased() ?? "ANY")
-                field("path", rule.match?.path ?? "*")
-                ForEach((rule.match?.query ?? [:]).keys.sorted(), id: \.self) { key in
-                    field("query.\(key)", scalar(rule.match?.query?[key]))
-                }
-                if let bodyContains = rule.match?.bodyContains, !bodyContains.isEmpty {
-                    field("bodyContains", bodyContains)
-                }
+            VStack(alignment: .leading, spacing: 6) {
+                (Text(RuleFormatting.method(of: rule.match))
+                    .font(.system(size: 13, design: .monospaced).weight(.semibold))
+                    + Text(" " + RuleFormatting.path(of: rule.match))
+                    .font(.system(size: 13, design: .monospaced)))
+                    .textSelection(.enabled)
+                let chips = RuleFormatting.matchChips(for: rule.match)
+                if !chips.isEmpty { chipRow(chips) }
             }
         }
     }
@@ -216,40 +226,7 @@ private struct RuleDetailView: View {
     // MARK: - Answers with
 
     private var answersWith: some View {
-        section("ANSWERS WITH") {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 8) {
-                    tag(rule.rewrite.mode ?? "replace")
-                    if let status = rule.rewrite.status {
-                        Text(String(status))
-                            .font(.system(.body, design: .monospaced).bold())
-                            .foregroundStyle(RuleFormatting.statusColor(status))
-                    }
-                    if let delay = rule.rewrite.delayMs, delay > 0 { tag("+" + String(delay) + " ms") }
-                    if let keys = rule.rewrite.patchKeys {
-                        tag(String(keys) + (keys == 1 ? " patched key" : " patched keys"))
-                    }
-                    if let strategy = rule.rewrite.patchStrategy { tag(strategy) }
-                }
-                Text(bodyLine).font(.callout).foregroundStyle(.secondary)
-                if let headers = rule.headers, !headers.isEmpty {
-                    monospacedBlock(RuleFormatting.headerBlock(headers), caption: "headers")
-                }
-                if let patch = rule.patch {
-                    monospacedBlock(RuleFormatting.prettyJSON(patch), caption: "patch")
-                } else if let body = rule.body {
-                    monospacedBlock(RuleFormatting.prettyJSON(body), caption: "body")
-                }
-            }
-        }
-    }
-
-    private var bodyLine: String {
-        // "no body" spelled out: an absent line here would read as a body the pane failed to show.
-        if rule.rewrite.bodyKind == nil || rule.rewrite.bodyKind == "none" {
-            return rule.rewrite.mode == "patch" ? "merged into the real response" : "no body"
-        }
-        return "body: " + RuleFormatting.bodySummary(kind: rule.rewrite.bodyKind, bytes: rule.rewrite.bodyBytes)
+        section("ANSWERS WITH") { chipRow(RuleFormatting.answerChips(for: rule.rewrite)) }
     }
 
     // MARK: - Sequence
@@ -270,9 +247,7 @@ private struct RuleDetailView: View {
                     stepRow(number: index + 1, step: step)
                 }
                 if let step = shownStep, step >= 1, step <= storedSteps.count {
-                    monospacedBlock(
-                        RuleFormatting.prettyJSON(storedSteps[step - 1]),
-                        caption: "step " + String(step) + " as stored")
+                    jsonSection("STEP " + String(step) + " AS STORED", storedSteps[step - 1])
                 }
             }
         }
@@ -322,16 +297,49 @@ private struct RuleDetailView: View {
 
     private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(title).font(.caption2).foregroundStyle(.secondary)
+            sectionLabel(title)
             content()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func field(_ name: String, _ value: String) -> some View {
-        GridRow {
-            Text(name).font(.caption).foregroundStyle(.secondary).gridColumnAlignment(.trailing)
-            Text(value).font(.system(.callout, design: .monospaced)).textSelection(.enabled)
+    /// A JSON block under its own label, with the Copy that hands over exactly what is on screen.
+    private func jsonSection(_ title: String, _ value: JSONValue) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                sectionLabel(title)
+                Spacer()
+                Button("Copy") { copy(RuleFormatting.jsonText(value)) }
+                    .buttonStyle(.borderless)
+                    .font(.caption)
+            }
+            codeBlock { Text(RuleFormatting.attributedJSON(value)) }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// The printed text, not the decoded value: what is copied is what the pane shows, so a body
+    /// pasted back into a scenario file is the one that was being looked at.
+    private func copy(_ text: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    private func sectionLabel(_ title: String) -> some View {
+        Text(title).font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+    }
+
+    private func chipRow(_ chips: [RuleFormatting.Chip]) -> some View {
+        HStack(spacing: 6) {
+            ForEach(Array(chips.enumerated()), id: \.offset) { _, chip in
+                Text(chip.text)
+                    .font(.system(.caption, design: .monospaced))
+                    .fontWeight(chip.tint == nil ? .regular : .semibold)
+                    .foregroundStyle(chip.tint ?? .primary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 4))
+            }
         }
     }
 
@@ -343,23 +351,12 @@ private struct RuleDetailView: View {
             .background(Color.secondary.opacity(0.15), in: Capsule())
     }
 
-    private func monospacedBlock(_ text: String, caption: String) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(caption).font(.caption2).foregroundStyle(.secondary)
-            Text(text)
-                .font(.system(.caption, design: .monospaced))
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(8)
-                .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 4))
-        }
-    }
-
-    /// A query pin's value as written. Numbers are compared as `str(value)` by the engine, so `2`
-    /// and `"2"` pin the same request and are shown the same way.
-    private func scalar(_ value: JSONValue?) -> String {
-        guard let value else { return "" }
-        if case .string(let text) = value { return text }
-        return RuleFormatting.prettyJSON(value)
+    private func codeBlock<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        content()
+            .font(.system(size: 11.5, design: .monospaced))
+            .textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(8)
+            .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 4))
     }
 }
