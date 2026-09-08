@@ -230,14 +230,18 @@ class Lyrebird:
             return
 
         if resolved.get("mode") == "replace":
-            status = rules.effective_status(resolved)
-            body = resolved.get("body")
-            bodyless = body is None or status in rules.BODYLESS_STATUSES
-            headers = self._headers_with_default_content_type(resolved.get("headers"), json_body=not bodyless)
-            payload = b"" if bodyless else (body if isinstance(body, str) else json.dumps(body)).encode("utf-8")
-            response = http.Response.make(status, payload, headers)
+            # Status, headers and body come from `rules.wire_response`, which is also what
+            # `describe_rewrite` reports — so what a client is shown and what the app receives
+            # cannot drift. Only the encoding is done here.
+            wire = rules.wire_response(resolved)
+            status, body = wire["status"], wire["body"]
+            payload = b"" if body is None else (body if isinstance(body, str) else json.dumps(body)).encode("utf-8")
+            response = http.Response.make(status, payload, wire["headers"])
             if status in rules.BODYLESS_STATUSES:
-                response.headers.pop("content-length", None)  # bodyless statuses must not carry a body/length
+                # Still needed after `wire_response` drops the header: `Response.make` sets
+                # `content-length: 0` for the empty payload, and a 204 carrying one is malformed —
+                # see the bodyless row of test_the_wire_answer_matches_what_is_described.
+                response.headers.pop("content-length", None)
             flow.response = response
             flow.metadata["mock_matched"] = resolved["id"]
             credit(self.store.answer_slot(resolved["id"]))
@@ -346,15 +350,6 @@ class Lyrebird:
         self._record(flow, 0, flow.metadata.get("mock_matched"))
 
     # MARK: - Helpers
-
-    @staticmethod
-    def _headers_with_default_content_type(headers: dict | None, json_body: bool) -> dict:
-        """Merge case-insensitively: a scenario that spells the header `Content-Type` must not end
-        up emitting both that and a lowercase `content-type` on the wire."""
-        result = dict(headers or {})
-        if json_body and not any(key.lower() == "content-type" for key in result):
-            result["Content-Type"] = "application/json"
-        return result
 
     @staticmethod
     def _apply_patch(response: http.Response, override: dict) -> bool:

@@ -711,6 +711,58 @@ def test_a_schema_version_that_is_not_a_usable_integer_is_refused_the_same_way(v
         rules.normalise_scenario({"schemaVersion": version, "overrides": []}, "s")
 
 
+# MARK: - The answer on the wire
+#
+# `wire_response` is the one place that shapes an answer, and it is shared: the proxy serves what it
+# returns and `describe_rewrite` reports it. These are the behaviours the proxy had before it was
+# shared, so a change here shows up as a wire change rather than only as a differently-worded
+# description — the addon's own pins are test_the_wire_answer_for_a_json_rule_is_unchanged and its
+# bodyless twin.
+
+
+def test_wire_response_drops_the_body_a_bodyless_status_cannot_send():
+    """204 and 304 carry neither a body nor a Content-Type, whatever the rule stores. A description
+    that showed the stored body would show a payload no request receives, and a proxy that sent it
+    would emit a response clients reject."""
+    wire = rules.wire_response({"status": 204, "body": {"orders": []}})
+    assert wire == {"status": 204, "headers": {}, "body": None}
+
+
+def test_wire_response_defaults_the_content_type_for_a_json_body():
+    wire = rules.wire_response({"body": {"orders": []}})
+    assert wire["status"] == 200, "a rule that names no status answers 200"
+    assert wire["headers"] == {"Content-Type": "application/json"}
+
+
+@pytest.mark.parametrize(
+    "headers,expected",
+    [
+        ({}, {"Content-Type": "application/json"}),
+        ({"Content-Type": "application/json;charset=UTF-8"}, {"Content-Type": "application/json;charset=UTF-8"}),
+        ({"content-type": "text/plain"}, {"content-type": "text/plain"}),
+    ],
+)
+def test_content_type_is_merged_case_insensitively(headers, expected):
+    """A scenario spelling the header `Content-Type` used to emit both that and a lowercase
+    `content-type` on the wire."""
+    assert rules.wire_response({"status": 200, "headers": headers, "body": {"a": 1}})["headers"] == expected
+    assert rules.headers_with_default_content_type(headers, json_body=True) == expected
+
+
+def test_no_content_type_is_added_for_a_bodyless_response():
+    assert rules.headers_with_default_content_type({}, json_body=False) == {}
+
+
+def test_wire_response_gives_a_string_body_the_same_header_the_proxy_already_sends():
+    """Pinned as it is, not as it might better be: the wire adds the default Content-Type for any
+    body it sends, a string one included. Dropping it here would change what every text rule serves,
+    which is a change to responses and not to this description of them — so it is somebody's
+    deliberate commit, with its own test, and not a side effect of moving the code."""
+    wire = rules.wire_response({"status": 200, "body": "plain text"})
+    assert wire["body"] == "plain text"
+    assert wire["headers"] == {"Content-Type": "application/json"}
+
+
 # MARK: - Describing a rule
 #
 # The summary a client renders instead of reading the schema itself. What these protect is that
@@ -793,12 +845,21 @@ def test_describe_rewrite_shows_what_a_step_inherits():
     """The second step names only a status, and answers with the parent's body and headers. A
     summary built from the raw step would report an empty 500 — a response no request ever gets."""
     steps = rules.describe_rewrite(SUMMARY_SEQUENCE)["sequence"]["steps"]
-    assert steps[0] == {"status": 200, "bodyKind": "text", "bodyBytes": 7, "headerCount": 1}
+    assert steps[0] == {
+        "status": 200,
+        "headers": {"X-Lyrebird": "1", "Content-Type": "application/json"},
+        "body": "pending",
+        "bodyKind": "text",
+        "bodyBytes": 7,
+        "inherited": ["headers", "status"],
+    }
     assert steps[1] == {
         "status": 500,
+        "headers": {"X-Lyrebird": "1", "Content-Type": "application/json"},
+        "body": {"orders": []},
         "bodyKind": "json",
         "bodyBytes": len(b'{"orders": []}'),
-        "headerCount": 1,
+        "inherited": ["body", "headers"],
     }
 
 
@@ -809,14 +870,15 @@ def test_describe_rewrite_leaves_the_top_level_response_empty_for_a_sequence():
     assert summary["status"] is None
     assert summary["bodyKind"] == "none" and summary["bodyBytes"] is None
     assert len(summary["sequence"]["steps"]) == 2
-    assert summary["sequence"]["advanceOn"] == "match", "the same word `sequence_states` reports"
+    assert summary["sequence"]["advanceOn"] == {"method": "POST", "path": "/api/v1/orders"}
     assert summary["sequence"]["onExhausted"] == "repeatLast"
 
 
 def test_describe_rewrite_reports_the_default_advance_trigger_and_exhaustion_policy():
-    """Both are omitted far more often than they are written, and both have a default the engine
-    applies. Reporting them as absent would show a rule that advances on nothing and never fails,
-    which is the opposite of what an omitted `onExhausted` does — see `exhaustion_policy`."""
+    """`onExhausted` is omitted far more often than it is written, and the engine still applies one.
+    Reporting it as absent would show a rule that never fails, which is the opposite of what an
+    omitted policy does — see `exhaustion_policy`. `advanceOn` is the other way round: `null` is the
+    whole answer, because there is no request that moves this rule on, only its own answer."""
     summary = rules.describe_rewrite(
         {
             "id": "o",
@@ -825,7 +887,7 @@ def test_describe_rewrite_reports_the_default_advance_trigger_and_exhaustion_pol
             "sequence": {"steps": [{"status": 200}]},
         }
     )
-    assert summary["sequence"]["advanceOn"] == "self"
+    assert summary["sequence"]["advanceOn"] is None
     assert summary["sequence"]["onExhausted"] == "error"
 
 
@@ -861,7 +923,15 @@ def test_describe_rewrite_reports_no_body_for_a_step_that_turns_bodyless():
         }
     )["sequence"]["steps"]
     assert steps[0]["bodyKind"] == "json", "the step that keeps a body-carrying status still sends it"
-    assert steps[1] == {"status": 304, "bodyKind": "none", "bodyBytes": None, "headerCount": 0}
+    assert steps[1] == {
+        "status": 304,
+        "headers": {},
+        "body": None,
+        "bodyKind": "none",
+        "bodyBytes": None,
+        # Only what it omitted: it wrote its own status, and the body it inherited is not sent.
+        "inherited": ["body", "headers"],
+    }
 
 
 def test_describe_rewrite_reports_the_status_a_replace_defaults_to():
@@ -884,3 +954,79 @@ def test_describe_rewrite_leaves_a_patch_status_null_when_it_forces_none():
         {"id": "o", "mode": "patch", "match": {"path": "/api/v1/orders"}, "patch": {"a": 1}}
     )
     assert summary["status"] is None
+
+
+def test_describe_rewrite_reports_the_matcher_that_advances_a_sequence():
+    """The stored matcher, not a word for it: a pane showing what moves a sequence on has to name
+    the request that does it, and `store.sequence_states` says only *that* one exists. `null` is the
+    other answer in full — this rule advances on its own reply, so no request moves it."""
+    matcher = {"method": "POST", "path": "/api/v1/orders"}
+    stepped = {"id": "o", "mode": "replace", "match": {"path": "/api/v1/orders"}, "sequence": {"steps": [{}]}}
+    on_match = rules.describe_rewrite({**stepped, "sequence": {"steps": [{}], "advanceOn": matcher}})
+    assert on_match["sequence"]["advanceOn"] == matcher
+    assert rules.describe_rewrite(stepped)["sequence"]["advanceOn"] is None
+
+
+def test_describe_rewrite_omits_a_step_body_too_large_to_repeat():
+    """Every step is described after inheritance, so one big body on the parent is repeated once per
+    step: 50 steps and a megabyte is a 50 MB snapshot of the same bytes, for a pane that only needs
+    to say how big they are. The size still crosses; the bytes do not."""
+    body = "x" * (rules.MAX_DESCRIBED_BODY_BYTES + 1)
+    steps = rules.describe_rewrite(
+        {
+            "id": "o",
+            "mode": "replace",
+            "match": {"path": "/api/v1/orders"},
+            "body": body,
+            "sequence": {"steps": [{}]},
+        }
+    )["sequence"]["steps"]
+    assert steps[0]["body"] is None
+    assert steps[0]["bodyOmitted"] is True
+    assert steps[0]["bodyKind"] == "text"
+    assert steps[0]["bodyBytes"] == rules.MAX_DESCRIBED_BODY_BYTES + 1, "the size is the whole point of saying so"
+
+
+def test_describe_rewrite_carries_a_step_body_that_fits_with_no_flag():
+    """Absent, not `false`: the flag is the exception, and the shape a client meets on every
+    ordinary step must not grow a field to say that nothing unusual happened."""
+    steps = rules.describe_rewrite(
+        {
+            "id": "o",
+            "mode": "replace",
+            "match": {"path": "/api/v1/orders"},
+            "body": "x" * rules.MAX_DESCRIBED_BODY_BYTES,
+            "sequence": {"steps": [{}]},
+        }
+    )["sequence"]["steps"]
+    assert steps[0]["bodyBytes"] == rules.MAX_DESCRIBED_BODY_BYTES, "the cap itself still fits"
+    assert "bodyOmitted" not in steps[0]
+
+
+def test_describe_rewrite_does_not_call_a_cleared_field_inherited():
+    """An explicit null is how a step opts out of a parent's value (see `step_view`). The step wrote
+    that field, so listing it as inherited would send someone editing the parent to change a value
+    the step has already refused."""
+    steps = rules.describe_rewrite(
+        {
+            "id": "o",
+            "mode": "replace",
+            "match": {"path": "/api/v1/orders"},
+            "status": 500,
+            "body": {"orders": []},
+            "sequence": {"steps": [{"body": None}]},
+        }
+    )["sequence"]["steps"]
+    assert steps[0]["body"] is None and steps[0]["bodyKind"] == "none"
+    assert steps[0]["inherited"] == ["headers", "status"], "it cleared the body itself"
+
+
+def test_wire_response_drops_a_stored_content_length():
+    """`http.Response.make` overwrites it with the true length of what it encodes, so a stored one
+    reaches nobody. Reporting it would show a client a header no response carries — and one whose
+    number contradicts the body beside it."""
+    wire = rules.wire_response({"status": 200, "headers": {"Content-Length": "999"}, "body": {"a": 1}})
+    assert wire["headers"] == {"Content-Type": "application/json"}
+    assert rules.wire_response({"headers": {"content-length": "999"}, "body": "x"})["headers"] == {
+        "Content-Type": "application/json"
+    }, "however it is spelled"

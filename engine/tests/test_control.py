@@ -631,8 +631,19 @@ def test_a_rules_row_describes_what_the_rule_answers_with(profile):
     rows = {rule["id"]: rule for rule in body["rules"]}
     assert rows["ovr_orders"]["rewrite"]["bodyKind"] == "json"
     assert rows["ovr_flags"]["rewrite"]["patchKeys"] == 1
-    assert len(rows["ovr_seq"]["rewrite"]["sequence"]["steps"]) == 2
-    assert [step["status"] for step in rows["ovr_seq"]["rewrite"]["sequence"]["steps"]] == [201, 202]
+    sequence = rows["ovr_seq"]["rewrite"]["sequence"]
+    assert [step["status"] for step in sequence["steps"]] == [201, 202]
+    # Each step as the wire would answer it, over the wire: a pane composes nothing, and `inherited`
+    # is what lets it say which of those values the step did not write itself.
+    assert sequence["steps"][0] == {
+        "status": 201,
+        "headers": {},
+        "body": None,
+        "bodyKind": "none",
+        "bodyBytes": None,
+        "inherited": ["body", "headers"],
+    }
+    assert sequence["advanceOn"] is None, "this sequence advances on its own answer"
 
 
 def test_a_rule_with_no_sequence_reports_no_sequence_state(profile):

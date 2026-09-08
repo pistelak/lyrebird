@@ -168,9 +168,13 @@ and what the PAC advertises — those are deliberately separate settings.
   description of what that rule answers with — `mode`, the `status` that will actually be sent (200
   for a `replace` naming none; `null` for a patch forcing none, which keeps the real response's),
   `bodyKind`/`bodyBytes` sized as the wire encodes them and reported as none for a bodyless 204/304,
-  `patchKeys`/`patchStrategy`, `delayMs`, and for a sequenced rule its `advanceOn`, the
-  `onExhausted` that will actually apply, and each step described *after* it inherits from the
-  parent. A sequenced rule leaves the top-level `status` and body fields empty,
+  `patchKeys`/`patchStrategy`, `delayMs`, and for a sequenced rule the `advanceOn` matcher as
+  stored (`null` when it advances on its own answer), the `onExhausted` that will actually apply,
+  and each step as the wire would answer it — `status`, `headers`, `body`, `bodyKind`/`bodyBytes`,
+  and `inherited`, the fields it took from the parent rather than writing itself. A step body over
+  256 KiB is sent as `null` with `bodyOmitted: true` (its size is still reported): every step is
+  described after inheritance, so one large body on a parent would otherwise be repeated once per
+  step. A sequenced rule leaves the top-level `status` and body fields empty,
   because its answers are its steps, and a patch reports no body of its own, because it answers with
   the upstream's. `notWhole` is this scenario's entries from `scenariosNotWhole`,
   so a window can say a rule was dropped instead of quietly showing a shorter list.
