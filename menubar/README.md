@@ -4,6 +4,9 @@ Native SwiftUI `MenuBarExtra` client for the Lyrebird engine — a thin client o
 on `:8088` and the `lyrebird` CLI. No proxy logic in Swift; the engine stays the single source of
 truth.
 
+Use it to browse scenarios prepared by a coding agent, inspect configured responses and sequences,
+and choose which scenario to activate while testing your iOS app.
+
 ## Build
 
 The Xcode project is generated from `project.yml` via
