@@ -9,6 +9,7 @@ import asyncio
 import errno
 import json
 
+import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
 import config
@@ -967,3 +968,107 @@ def test_browsing_a_scenario_whose_file_was_rejected_is_unknown(profile):
     assert "broken" not in health["scenarios"], "it never became one"
     assert list(health["scenariosNotWhole"]) == ["broken"], "but the name is still named"
     assert health["loadProblems"] and "broken" in health["loadProblems"][0]
+
+
+# MARK: - When a sequence's trigger is another rule
+#
+# A scenario reads as a story: the steps of a sequence with the request that moves it on between
+# them, and where that request is one the scenario answers itself, the rule that answers it drawn in
+# the trigger's place. Whether a trigger *is* another rule is the engine's statement — a client
+# comparing matchers would be comparing them by rules of its own.
+
+STORY_OVERRIDES = [
+    {
+        "id": "ovr_place",
+        "mode": "replace",
+        "match": {"method": "post", "path": "/api/v1/orders"},
+        "status": 201,
+    },
+    {
+        "id": "ovr_orders",
+        "mode": "replace",
+        "match": {"method": "GET", "path": "/api/v1/orders"},
+        "sequence": {
+            # Spelled differently from the rule above on purpose: same requests, other letters.
+            "steps": [{"status": 200}, {"status": 200}],
+            "advanceOn": {"method": "POST", "path": "/api/v1/orders"},
+        },
+    },
+    {
+        "id": "ovr_items",
+        "mode": "replace",
+        "match": {"method": "GET", "path": "/api/v1/items"},
+        "sequence": {"steps": [{"status": 200}], "advanceOn": {"method": "PUT", "path": "/api/v1/nothing"}},
+    },
+    {
+        "id": "ovr_self",
+        "mode": "replace",
+        "match": {"method": "GET", "path": "/api/v1/features"},
+        "sequence": {"steps": [{"status": 200}]},
+    },
+    {
+        "id": "ovr_cancel",
+        "active": False,
+        "mode": "replace",
+        "match": {"method": "DELETE", "path": "/api/v1/orders"},
+        "status": 204,
+    },
+    {
+        "id": "ovr_cancelled",
+        "mode": "replace",
+        "match": {"method": "GET", "path": "/api/v1/cancelled"},
+        "sequence": {"steps": [{"status": 200}], "advanceOn": {"method": "DELETE", "path": "/api/v1/orders"}},
+    },
+]
+
+
+def seed_story(profile):
+    """The same rules under two names: one active, one only ever browsed."""
+    (profile / "scenarios").mkdir(parents=True, exist_ok=True)
+    for name in ("default", "story"):
+        (profile / "scenarios" / f"{name}.json").write_text(
+            json.dumps({"name": name, "overrides": STORY_OVERRIDES}), encoding="utf-8"
+        )
+
+
+def sequences_of(body):
+    return {rule["id"]: rule["rewrite"]["sequence"] for rule in body["rules"] if rule["rewrite"]["sequence"]}
+
+
+@pytest.mark.parametrize("path", ["/__mock__/rules", "/__mock__/rules?scenario=story"])
+def test_a_sequence_names_the_rule_its_trigger_is(profile, path):
+    """Both forms, because the window draws a browsed scenario exactly as it draws the active one —
+    and the answer cannot come from runtime state, which a browsed scenario does not have."""
+    seed_story(profile)
+    status, _, body = call(profile, "GET", path)
+    assert status == 200
+    assert sequences_of(body)["ovr_orders"]["advanceOnRule"] == "ovr_place", (
+        "the trigger and the rule are spelled differently and describe the same requests"
+    )
+
+
+def test_a_trigger_no_rule_answers_names_nothing(profile):
+    """Null, not a guess. The request that advances this sequence comes from somewhere outside the
+    scenario, and a window drawing some near-enough rule in its place would be inventing the story."""
+    seed_story(profile)
+    _, _, body = call(profile, "GET", "/__mock__/rules")
+    assert sequences_of(body)["ovr_items"]["advanceOnRule"] is None
+
+
+def test_a_self_advancing_sequence_names_no_trigger_rule(profile):
+    """`self` is not a request at all — the rule moves when it answers — so there is no rule to
+    draw between the steps."""
+    seed_story(profile)
+    _, _, body = call(profile, "GET", "/__mock__/rules")
+    sequence = sequences_of(body)["ovr_self"]
+    assert sequence["advanceOn"] is None and sequence["advanceOnRule"] is None
+
+
+def test_an_inactive_rule_is_still_the_rule_a_trigger_is(profile):
+    """The field describes the scenario as written, not what is switched on: that endpoint still
+    belongs to `ovr_cancel` on screen, and a story with a hole in it where a disabled rule sits
+    would send someone looking for a rule that is right there."""
+    seed_story(profile)
+    _, _, body = call(profile, "GET", "/__mock__/rules")
+    assert sequences_of(body)["ovr_cancelled"]["advanceOnRule"] == "ovr_cancel"
+    assert next(rule for rule in body["rules"] if rule["id"] == "ovr_cancel")["rewrite"]["active"] is False

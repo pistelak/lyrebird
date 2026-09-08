@@ -183,7 +183,9 @@ and what the PAC advertises — those are deliberately separate settings.
   for a `replace` naming none; `null` for a patch forcing none, which keeps the real response's),
   `bodyKind`/`bodyBytes` sized as the payload is encoded (utf-8 or JSON, before any `Content-Encoding` the rule's headers ask for) and reported as none for a bodyless 204/304,
   `patchKeys`/`patchStrategy`, `delayMs`, and for a sequenced rule the `advanceOn` matcher as
-  stored (`null` when it advances on its own answer), the `onExhausted` that will actually apply,
+  stored (`null` when it advances on its own answer), `advanceOnRule` — the id of the rule in the
+  same scenario whose `match` describes exactly those requests, or `null` when no rule does — the
+  `onExhausted` that will actually apply,
   and each step as the wire would answer it — `status`, `headers`, `body`, `bodyKind`/`bodyBytes`,
   and `inherited`, the fields it took from the parent rather than writing itself. A step body over
   256 KiB is sent as `null` with `bodyOmitted: true` (its size is still reported): every step is

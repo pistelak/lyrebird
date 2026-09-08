@@ -265,6 +265,34 @@ def is_plain_object(value: Any) -> TypeGuard[Mapping[str, Any]]:
     return isinstance(value, Mapping)
 
 
+def _matcher_shape(matcher: Any) -> tuple:
+    """One comparable shape for a matcher: what it constrains, in the terms the wire compares by.
+
+    Truthiness, `str(value)` and the upper-cased method are `explain_matcher`'s own rules, not new
+    ones: two matchers that this says are the same are two matchers that accept exactly the same
+    requests, which is the only sense in which one rule's trigger *is* another rule.
+    """
+    fields = matcher if is_plain_object(matcher) else {}
+    method = fields.get("method")
+    query = fields.get("query") or {}
+    return (
+        method.upper() if isinstance(method, str) and method else None,
+        fields.get("path") or None,
+        tuple(sorted((key, str(value)) for key, value in query.items())) if is_plain_object(query) else (),
+        fields.get("bodyContains") or None,
+    )
+
+
+def same_matcher(a: Any, b: Any) -> bool:
+    """Do two matchers constrain requests identically?
+
+    One definition, because the only caller is a claim made to a client — that a sequence's trigger
+    is some other rule — and a client comparing matchers itself would be comparing them by rules of
+    its own: `POST` against `post`, `2` against `"2"`, an absent field against an explicit null.
+    """
+    return _matcher_shape(a) == _matcher_shape(b)
+
+
 # MARK: - Sequences
 #
 # Pure: the cursor is supplied by the caller. The store owns it, because it is runtime state that

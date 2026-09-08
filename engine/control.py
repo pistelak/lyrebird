@@ -221,6 +221,27 @@ def make_app(store: Store, meta_provider: MetaProvider) -> web.Application:
             active = False
             name, overrides = requested, list(store.scenarios[requested].get("overrides") or [])
             sequences, answers = {}, {}
+
+        def advance_on_rule(override: dict) -> str | None:
+            """The id of the rule this sequence's trigger *is*, when the scenario holds one.
+
+            Here rather than in `describe_rewrite`, which sees one rule at a time. The claim is
+            about the scenario as written, so an `active: false` rule counts — it is still the rule
+            that endpoint belongs to on screen — and the first in scenario order wins if two rules
+            share the matcher, which is a presentation order and not a claim about which of them
+            would answer (that is `find_override`'s specificity, a different question).
+            """
+            matcher = rules.advance_matcher(override)
+            if matcher is None:
+                return None  # `self`: no request advances it, so there is no rule to name
+            return next((o["id"] for o in overrides if rules.same_matcher(o.get("match"), matcher)), None)
+
+        def described(override: dict) -> dict:
+            rewrite = rules.describe_rewrite(override)
+            if rewrite["sequence"] is not None:
+                rewrite["sequence"]["advanceOnRule"] = advance_on_rule(override)
+            return rewrite
+
         return web.json_response(
             {
                 "scenario": name,
@@ -232,7 +253,7 @@ def make_app(store: Store, meta_provider: MetaProvider) -> web.Application:
                 "rules": [
                     {
                         **override,
-                        "rewrite": rules.describe_rewrite(override),
+                        "rewrite": described(override),
                         "answer": answers.get(override["id"]),
                         # Not "sequence": that key already holds the rule's steps as written, and
                         # overwriting it with the cursor would hand back a payload that claims to

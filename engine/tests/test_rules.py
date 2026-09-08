@@ -1067,3 +1067,38 @@ def test_every_described_rule_and_step_says_what_kind_of_body_it_has():
         assert "active" in summary and "bodyKind" in summary, summary
         for step in (summary["sequence"] or {}).get("steps", []):
             assert "bodyKind" in step, step
+
+
+# MARK: - When one rule's trigger is another rule
+
+
+def test_same_matcher_compares_the_method_the_way_the_wire_does():
+    """`explain_matcher` upper-cases both sides, so a scenario written with `post` describes exactly
+    the requests `POST` describes. Comparing the strings would call those two different triggers."""
+    assert rules.same_matcher(
+        {"method": "post", "path": "/api/v1/orders"}, {"method": "POST", "path": "/api/v1/orders"}
+    )
+    assert not rules.same_matcher(
+        {"method": "POST", "path": "/api/v1/orders"}, {"method": "PUT", "path": "/api/v1/orders"}
+    )
+
+
+def test_same_matcher_treats_an_absent_field_and_a_null_one_alike():
+    """Both mean "this constrains nothing", which is how the wire reads them — so a rule spelling
+    out the fields it does not use must not stop being the trigger it is."""
+    assert rules.same_matcher(
+        {"method": "POST", "path": "/api/v1/orders"},
+        {"method": "POST", "path": "/api/v1/orders", "query": None, "bodyContains": None},
+    )
+    assert rules.same_matcher({"path": "/api/v1/orders", "query": {}}, {"path": "/api/v1/orders"})
+
+
+def test_same_matcher_separates_different_query_pins():
+    """Two rules on one path that pin different parameters answer different requests; drawing one
+    in the other's place would show a story the scenario does not tell."""
+    base = {"method": "GET", "path": "/api/v1/orders"}
+    assert not rules.same_matcher({**base, "query": {"page": "1"}}, {**base, "query": {"page": "2"}})
+    assert not rules.same_matcher({**base, "query": {"page": "1"}}, base)
+    assert rules.same_matcher({**base, "query": {"page": 2}}, {**base, "query": {"page": "2"}}), (
+        "a query value is compared as the string the wire carries"
+    )
