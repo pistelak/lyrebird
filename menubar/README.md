@@ -50,6 +50,23 @@ not intercepting, and an outlined bird with no dot when stopped.
 Click for a scenario picker, Start/Stop (`lyrebird up|down`), a Relaunch-app button, recent traffic,
 and settings. Dock-less agent (`LSUIElement`).
 
+**Rules…** opens a window listing what the active scenario rewrites: every rule with the endpoint it
+matches, how many requests it has answered and in which run, and — selecting one — its matcher, its
+headers, its stored body or patch pretty-printed, and for a sequenced rule every step with the
+cursor's next one marked. It is read-only apart from **Reset run**, which rewinds every sequence
+cursor and clears every answer count (`POST /__mock__/reset`); a refusal is shown rather than
+swallowed, since a reset that quietly did nothing leaves later assertions bound to a boundary that
+was never drawn. The "how" line beside each rule — `replace → 200 json 1.2 KB`,
+`patch → merge 3 keys, force 503`, `sequence 5 steps · next 2 · then repeatLast` — is the *engine's*
+own description, read from the `rewrite` field of `GET /__mock__/rules`; nothing in Swift re-derives
+step inheritance, the 200 a `replace` defaults to, or how a body is sized on the wire. Whether a
+rule is switched on comes from the engine too — `answer.active`, not the stored `active` field,
+whose "absent means on" encoding is a rule only the engine owns. A scenario
+that did not load whole says so in a banner, because a dropped rule otherwise looks exactly like a
+scenario that is one rule shorter. The window is polled only while it is open, and only against this
+profile's own proxy: a proxy running someone else's profile, a stopped one, or an engine too old to
+have the route each gets its own line saying so instead of an empty table.
+
 ## Configuration
 
 Settings holds the control URL, the `lyrebird` launcher path, and the **profile directory**. When

@@ -25,6 +25,14 @@ final class AppModel {
     var healthRead: MockClient.HealthRead?
     var scenarios: ScenarioList?
     var recent: [RecentEntry] = []
+    /// The last rules snapshot, or why there is none. Nil means the refresh did not ask — either
+    /// the window is shut or the proxy is not one this profile may read — and the window renders
+    /// from `status` in that case rather than from a failure it never had.
+    var rulesRead: MockClient.RulesRead?
+    /// Whether the Rules window is on screen. The rules read is the largest of the four — every
+    /// rule of the scenario, every saved body — and polling it twice a second for a window nobody
+    /// has opened is a cost with no reader.
+    var rulesWindowOpen = false
     var busy = false
     /// Last CLI failure, surfaced in the menu — a shell-out that fails silently is worse than useless.
     var lastError: String?
@@ -35,6 +43,28 @@ final class AppModel {
     var health: Health? {
         if case .up(let health) = healthRead { return health }
         return nil
+    }
+
+    /// This profile's own health, or nil when the proxy that answered is running someone else's.
+    ///
+    /// `health` is whatever answered, which is what `status` needs — naming a foreign proxy is the
+    /// point of `foreignProfile`. It is the wrong thing for anything that shows the reading's
+    /// *contents*: the Rules window's header used to print a foreign proxy's scenario, port and
+    /// "intercepting" directly above a line saying that proxy is not this one's — see
+    /// testAForeignProxysScenarioAndPortAreNotShownAsThoughTheyWereOurs.
+    var ownHealth: Health? {
+        guard let expected = expectedFingerprint, let health, Self.isOurs(health, expected: expected) else {
+            return nil
+        }
+        return health
+    }
+
+    /// The one reading of "may this profile show what that proxy said", used by `refresh` to decide
+    /// which follow-up reads to make and by `ownHealth` to decide what may be rendered. A missing
+    /// fingerprint is an older engine that cannot answer the question, which the CLI accepts too.
+    private static func isOurs(_ health: Health, expected: String) -> Bool {
+        guard health.proxyUp == true else { return false }
+        return health.profileFingerprint == nil || health.profileFingerprint == expected
     }
 
     private var pollTask: Task<Void, Never>?
@@ -134,6 +164,7 @@ final class AppModel {
             healthRead = nil
             scenarios = nil
             recent = []
+            rulesRead = nil
         }
     }
 
@@ -144,6 +175,7 @@ final class AppModel {
         healthRead = nil
         scenarios = nil
         recent = []
+        rulesRead = nil
         expectedFingerprint = nil
         fingerprintSettings = nil
         profileProblem = nil
@@ -169,14 +201,14 @@ final class AppModel {
         let read = await client.health()
         var scenarios: ScenarioList?
         var recent: [RecentEntry] = []
-        // The scenario list and the recent traffic belong to whichever profile answered, so they
-        // are read only when that is ours. Showing another profile's scenarios under this
+        var rulesRead: MockClient.RulesRead?
+        // The scenario list, the recent traffic and the rules belong to whichever profile answered,
+        // so they are read only when that is ours. Showing another profile's scenarios under this
         // profile's name is the same mistake as showing its health.
-        if case .up(let health) = read, health.proxyUp == true,
-            health.profileFingerprint == nil || health.profileFingerprint == expected
-        {
+        if case .up(let health) = read, Self.isOurs(health, expected: expected) {
             scenarios = await client.scenarios()
             recent = await client.recent()
+            if rulesWindowOpen { rulesRead = await client.rules() }
         }
 
         guard generation == refreshGeneration, configuration == configGeneration,
@@ -185,6 +217,9 @@ final class AppModel {
         self.healthRead = read
         self.scenarios = scenarios
         self.recent = recent
+        // Nil, not the previous snapshot: the gate above failing means this proxy is not ours to
+        // read, and last poll's rules would then be shown beside a header saying so.
+        self.rulesRead = rulesRead
     }
 
     var status: Status {
@@ -256,6 +291,24 @@ final class AppModel {
         }
     }
 
+    /// Why a write must not go out, or nil when it may.
+    ///
+    /// Not merely "is there a fingerprint" but "is it still this profile's". `@AppStorage` writes on
+    /// every keystroke, so between a Settings edit and the sheet closing the fingerprint on hand was
+    /// discovered under the profile that was configured a moment ago — `refresh` has refused to read
+    /// under it since profile scoping went in, but the writes only checked for nil, so a click on
+    /// Reset run or a scenario landed on the *old* profile's proxy and reported success. See
+    /// testAWriteRefusesWhileTheProfileInSettingsHasMovedOn.
+    private var writeRefusal: String? {
+        guard expectedFingerprint != nil else {
+            return "the app does not know which profile it is configured for — check the launcher path in Settings"
+        }
+        guard fingerprintSettings == Self.currentSettings else {
+            return "the profile in Settings has changed — close Settings so the app can re-read it"
+        }
+        return nil
+    }
+
     func toggle() async {
         guard !busy else { return }  // guard here, not only via .disabled: SwiftUI re-renders late
         busy = true
@@ -271,12 +324,10 @@ final class AppModel {
         guard !busy else { return }
         busy = true
         defer { busy = false }
-        guard expectedFingerprint != nil else {
-            // Without the header this write would be scoped to nothing and applied to whichever
-            // profile holds the port.
-            lastError =
-                "activate '\(name)': the app does not know which profile it is configured "
-                + "for — check the launcher path in Settings"
+        if let refusal = writeRefusal {
+            // Scoped to nothing, or scoped to the profile configured a keystroke ago: either way the
+            // PUT lands on a proxy this menu is not describing.
+            lastError = "activate '\(name)': \(refusal)"
             return
         }
         do {
@@ -290,6 +341,36 @@ final class AppModel {
         }
         // Refresh either way, so the stale list that produced the 404 is corrected in the same
         // tick the error appears.
+        await refresh()
+    }
+
+    /// The Rules window came on screen: start reading rules, and read them now rather than at the
+    /// next tick of a two-second poll, which is a visibly empty window for no reason.
+    func rulesWindowAppeared() async {
+        rulesWindowOpen = true
+        await refresh()
+    }
+
+    /// Start a fresh run — the one write the Rules window makes. Modelled on `activate`: the
+    /// failure is surfaced rather than swallowed, because a "Reset run" that quietly did nothing
+    /// leaves every later assertion bound to a boundary that was never drawn.
+    func resetRun() async {
+        guard !busy else { return }
+        busy = true
+        defer { busy = false }
+        if let refusal = writeRefusal {
+            // The same refusal `activate` makes, for the same reason: a reset applied to another
+            // profile's proxy rewinds a run nobody was watching and reports that it worked.
+            lastError = "reset run: \(refusal)"
+            return
+        }
+        do {
+            try await client.reset()
+            lastError = nil
+        } catch {
+            lastError = "reset run: \(error.localizedDescription)"
+        }
+        // Either way: the counts and cursors on screen describe the run that just ended.
         await refresh()
     }
 

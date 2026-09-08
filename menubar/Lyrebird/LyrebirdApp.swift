@@ -21,5 +21,12 @@ struct LyrebirdApp: App {
             StatusGlyph(status: model.status)
         }
         .menuBarExtraStyle(.window)
+
+        // A separate scene rather than a sheet on the menu: the menu closes the moment focus moves,
+        // and a rules table is something you keep open beside the app you are driving.
+        Window("Rules", id: RulesWindowView.sceneId) {
+            RulesWindowView(model: model)
+        }
+        .defaultSize(width: 900, height: 560)
     }
 }

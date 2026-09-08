@@ -4,6 +4,7 @@ import SwiftUI
 struct MenuContentView: View {
     let model: AppModel
     @State private var showSettings = false
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -119,9 +120,17 @@ struct MenuContentView: View {
     private var footer: some View {
         HStack {
             Button("Settings") { showSettings = true }
+            Button("Rules…") { showRules() }
             Spacer()
             Button("Quit") { NSApplication.shared.terminate(nil) }
         }
         .font(.caption)
+    }
+
+    /// The app is `LSUIElement`, so it is not a foreground app and `openWindow` alone puts the
+    /// window up behind whatever the user is looking at — which reads as a button that did nothing.
+    private func showRules() {
+        openWindow(id: RulesWindowView.sceneId)
+        NSApp.activate(ignoringOtherApps: true)
     }
 }

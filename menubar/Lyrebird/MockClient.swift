@@ -25,6 +25,17 @@ struct MockClient: Sendable {
         case unreadable(String)
     }
 
+    /// What a rules read found. Three claims, kept apart for the same reason `HealthRead`'s are:
+    /// `.unsupported` says this engine has no rules route at all and needs updating, `.unavailable`
+    /// says the read failed and carries what the server or the loader said, and only `.ok` is a
+    /// snapshot. There is deliberately no fourth case that means "no rules" — an empty list is a
+    /// scenario with no rules, and a refusal must never arrive spelled that way.
+    enum RulesRead: Sendable {
+        case ok(RulesSnapshot)
+        case unsupported
+        case unavailable(String)
+    }
+
     /// Why a write did not happen. Reads stay best-effort (see below), but a write that returns
     /// normally after a 404 tells the menu the scenario was activated when it was not.
     enum ClientError: LocalizedError {
@@ -106,13 +117,60 @@ struct MockClient: Sendable {
 
     func recent() async -> [RecentEntry] { await get("/__mock__/recent", as: [RecentEntry].self) ?? [] }
 
+    /// The rules of the active scenario. Not built on `get`, deliberately: that helper collapses
+    /// every failure into nil, and the window's caller would render a 409 from another profile's
+    /// proxy as a scenario with no rules — the rules window's version of the bug this whole file is
+    /// about. See testAScopingRefusalIsUnavailableRatherThanAnEmptyRuleList.
+    func rules() async -> RulesRead {
+        guard let request = request(for: "/__mock__/rules") else {
+            return .unavailable("could not build a control-API URL from '\(base)'")
+        }
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            return .unavailable(error.localizedDescription)
+        }
+
+        guard let http = response as? HTTPURLResponse else {
+            return .unavailable("the control API answered with something other than HTTP")
+        }
+        // The one status this route cannot mean anything else by: it never reports a missing
+        // scenario, so a 404 is the route itself not being there — an engine older than this view.
+        guard http.statusCode != 404 else { return .unsupported }
+        guard (200..<300).contains(http.statusCode) else {
+            return .unavailable(Self.message(status: http.statusCode, body: data))
+        }
+        do {
+            return .ok(try JSONDecoder().decode(RulesSnapshot.self, from: data))
+        } catch {
+            return .unavailable("the control API's rules snapshot could not be read: \(error.localizedDescription)")
+        }
+    }
+
     func activate(_ name: String) async throws {
         guard var request = request(for: "/__mock__/scenarios/active", method: "PUT") else {
             throw ClientError.transport("could not build a control-API URL from '\(base)'")
         }
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: ["name": name])
+        try await send(request)
+    }
 
+    /// Start a fresh run: rewind every sequence cursor and clear every answer count. No body, which
+    /// the control API reads as "all rules".
+    func reset() async throws {
+        guard var request = request(for: "/__mock__/reset", method: "POST") else {
+            throw ClientError.transport("could not build a control-API URL from '\(base)'")
+        }
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        try await send(request)
+    }
+
+    /// The one place a write's answer is judged, so a second write cannot be added that discards
+    /// it — which is exactly what `activate` used to do.
+    private func send(_ request: URLRequest) async throws {
         let data: Data
         let response: URLResponse
         do {
