@@ -13,9 +13,16 @@ import XCTest
 @MainActor
 final class RulesReadTests: XCTestCase {
 
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        // Never `UserDefaults.standard`: these tests run hosted inside Lyrebird.app, so that is the
+        // user's own Settings — see TestDefaults.
+        try TestDefaults.install()
+    }
+
     override func tearDown() {
         StubURLProtocol.reset()
-        UserDefaults.standard.removeObject(forKey: Config.profilePathKey)
+        TestDefaults.restore()
         super.tearDown()
     }
 
@@ -136,7 +143,7 @@ final class RulesReadTests: XCTestCase {
         // checked for nil, so Reset run posted to the old profile's proxy and reported success.
         StubURLProtocol.install { request in RulesFixture.serve(request) }
         let model = makeModel()
-        UserDefaults.standard.set("/tmp/another-profile", forKey: Config.profilePathKey)
+        Config.defaults.set("/tmp/another-profile", forKey: Config.profilePathKey)
 
         await model.resetRun()
 
@@ -151,7 +158,7 @@ final class RulesReadTests: XCTestCase {
         // both used to check only that it existed.
         StubURLProtocol.install { request in RulesFixture.serve(request) }
         let model = makeModel()
-        UserDefaults.standard.set("/tmp/another-profile", forKey: Config.profilePathKey)
+        Config.defaults.set("/tmp/another-profile", forKey: Config.profilePathKey)
 
         await model.activate("orders-outage")
 
@@ -270,7 +277,7 @@ final class RulesReadTests: XCTestCase {
         for _ in 0..<200 where !StubURLProtocol.requests.contains(where: { $0.url?.path == "/__mock__/rules" }) {
             try await Task.sleep(for: .milliseconds(5))
         }
-        UserDefaults.standard.set("/tmp/another-profile", forKey: Config.profilePathKey)
+        Config.defaults.set("/tmp/another-profile", forKey: Config.profilePathKey)
         gate.signal()
         await refresh.value
 
