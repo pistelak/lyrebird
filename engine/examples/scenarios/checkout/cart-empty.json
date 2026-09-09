@@ -1,0 +1,12 @@
+{
+  "notes": "An empty cart, for the screen that has to say so rather than show a spinner.",
+  "overrides": [
+    {
+      "id": "cart-empty",
+      "match": { "method": "GET", "path": "/api/v1/cart" },
+      "mode": "replace",
+      "status": 200,
+      "body": { "items": [], "total": "0.00", "currency": "EUR" }
+    }
+  ]
+}

@@ -119,6 +119,8 @@ working demo — `api.example.com` doesn't serve any of the example routes:
 - set `hosts` to the exact hostname your app calls
 - set `simBundleId` to your app's bundle identifier
 - point one of the files in `scenarios/` at a request your app actually makes
+  (they may sit in one level of folder — `scenarios/checkout/cart-empty.json` is the scenario
+  `checkout/cart-empty`)
 
 ```bash
 bin/lyrebird up --use orders-outage   # CA, host-scoped PAC, the scenario, then your app

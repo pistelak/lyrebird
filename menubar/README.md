@@ -87,6 +87,15 @@ Request and response bodies are not captured. **Clear** removes recent traffic o
 rules, sequence progress and answer counters intact. Clearing requires an engine that supports
 `DELETE /__mock__/recent`.
 
+Scenarios that live in a folder appear under it, one section per folder, rows showing the name
+without the folder and the full name in the tooltip. **Reload from disk** in the toolbar re-reads
+the scenario files, for a profile edited outside the app; it refuses whole if any file cannot be
+read, and it resets run evidence.
+
+The menu-bar popover lists only the folder the active scenario is in, because that is the set one
+run is about — this window is where the whole profile is. Switching to a scenario in another folder
+happens here, or with `lyrebird use <folder>/<name>`.
+
 The browser reads the engine's rule descriptions through `GET /__mock__/rules`. It distinguishes
 failed reads from empty results, preserves selection across polls, and does not edit rules.
 

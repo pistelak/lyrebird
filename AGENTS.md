@@ -248,8 +248,11 @@ rely on that as the normal path.
 
 Two options, and the second is usually the right one for an agent.
 
-**Edit a scenario file.** Scenarios are JSON in `<profile>/scenarios/`. `id` and `active` are
-optional — `id` is derived from the rule when omitted — so the minimum is:
+**Edit a scenario file.** Scenarios are JSON in `<profile>/scenarios/`, either there or in one
+folder below it — `scenarios/checkout/cart-empty.json` is the scenario `checkout/cart-empty`, and
+that qualified name is what `use`, `up --use`, `validate` and `scenario rm` take. The `name` inside
+the file is derived from the path and ignored. `id` and `active` are optional — `id` is derived from
+the rule when omitted — so the minimum is:
 
 ```json
 {
@@ -261,8 +264,12 @@ optional — `id` is derived from the rule when omitted — so the minimum is:
 }
 ```
 
-Files are picked up when the proxy starts, so a scenario file written while Lyrebird is running
-is not there yet: `lyrebird --profile PATH down && lyrebird --profile PATH up --use orders-outage`.
+Files are picked up when the proxy starts, so a scenario file written while Lyrebird is running is
+not there yet. `lyrebird --profile PATH scenario reload` re-reads them without a restart; it refuses
+whole if any file cannot be read, and **it resets run evidence**, so `lyrebird reset` and any
+`assert-answered --run` boundary come after it, not before. A restart
+(`down && up --use orders-outage`) is the other way, and is the lenient one: startup keeps the rules
+it can where reload refuses.
 
 **Check the file before you start anything.** A file the proxy cannot read whole does not stop it
 starting: it keeps the rules it can, reports the rest to its log, and runs. So a scenario can be

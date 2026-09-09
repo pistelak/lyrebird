@@ -25,6 +25,12 @@ these belong to is [AGENTS.md](AGENTS.md).
 | 409 `profile_mismatch` | Another profile's proxy holds the port. `lyrebird down` first, or pass the `--profile` that is running |
 | `path escapes …` when changing scenarios or overrides (API: 400 `invalid_name`) | A scenario file resolves outside `scenarios/` or outside the profile — usually a symlink. Symlink the whole profile instead |
 | A scenario file is on disk but the proxy does not have it | Same cause: reads are held to the same rule, so it is skipped at load. `lyrebird validate` names it |
+| A scenario file added or moved by hand is not in the list | The engine reads the files once. `lyrebird scenario reload` re-reads them — it resets run evidence, so `reset` after it, not before |
+| `scenarios nest one level deep` | `scenarios/a/b/c.json` is too deep to name. Scenarios live in `scenarios/` or one folder below it |
+| `directory symlinks under scenarios/ are not read` | A folder in `scenarios/` is a symlink. It would serve one folder's scenarios under two names, so it is refused even when it points inside the profile |
+| `names differ only by case` | Two siblings that a case-folding filesystem cannot tell apart. Neither loads; rename one |
+| 409 `reload_refused` | A file cannot be read whole, so nothing was published and the proxy still serves what it had. Fix the file it names, or `down && up` — startup is the lenient one |
+| `changed on disk since it was loaded` when moving | The file was edited after the engine read it. `lyrebird scenario reload`, then move |
 
 ## The proxy is gone but the network still points at it
 
