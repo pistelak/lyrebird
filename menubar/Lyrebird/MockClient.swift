@@ -220,11 +220,24 @@ struct MockClient: Sendable {
     }
 
     func activate(_ name: String) async throws {
-        guard var request = request(for: "/__mock__/scenarios/active", method: "PUT") else {
+        try await write("/__mock__/scenarios/active", method: "PUT", body: ["name": name])
+    }
+
+    /// Ask the engine to re-read the scenario files. It refuses with 409 `reload_refused` rather
+    /// than publishing a profile it could not read whole, and `send` turns that into a
+    /// `ClientError` carrying the engine's `detail`.
+    func reloadScenarios() async throws {
+        try await write("/__mock__/scenarios/reload", method: "POST", body: [:])
+    }
+
+    /// The one way a write is built and sent, so a new one cannot reach the network without going
+    /// through `send` — which is the check `activate` used to skip.
+    private func write(_ path: String, method: String, body: [String: Any]) async throws {
+        guard var request = request(for: path, method: method) else {
             throw ClientError.transport("could not build a control-API URL from '\(base)'")
         }
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONSerialization.data(withJSONObject: ["name": name])
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
         try await send(request)
     }
 

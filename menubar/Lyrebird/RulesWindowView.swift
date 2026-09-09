@@ -144,6 +144,15 @@ struct RulesWindowView: View {
             .help(model.statusLine)
         }
         ToolbarItem {
+            Button {
+                Task { await model.reloadScenarios() }
+            } label: {
+                Label("Reload from disk", systemImage: "arrow.triangle.2.circlepath")
+            }
+            .disabled(model.busy)
+            .help("Re-read the scenario files, picking up anything added or moved by hand")
+        }
+        ToolbarItem {
             HStack(spacing: RuleFormatting.Space.tight) {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
                 TextField(showsRecent ? "Search traffic" : "Search rules", text: showsRecent ? $recentQuery : $query)
