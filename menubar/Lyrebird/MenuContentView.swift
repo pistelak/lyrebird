@@ -88,13 +88,11 @@ private struct MenuScenarios: View {
         VStack(alignment: .leading, spacing: 4) {
             if let list = model.scenarios {
                 let shown = list.shownFolder()
+                // The caption carries the empty case on its own — it is the one that says the
+                // active scenario is not in this list. `scenariosPlaceholder` is not the sentence
+                // for it: that one explains why there is no list at all, so it would read "proxy
+                // not running" while the proxy is answering.
                 caption(shown.caption)
-                if shown.scenarios.isEmpty {
-                    // Never an empty stack: nothing rendered reads as "this profile has no
-                    // scenarios", which is a different claim from "the active one is not in the
-                    // list I was given".
-                    Text(model.scenariosPlaceholder).font(.caption).foregroundStyle(.secondary)
-                }
                 ForEach(shown.scenarios) { scenario in
                     Button {
                         Task { await model.activate(scenario.name) }
