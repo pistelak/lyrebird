@@ -222,16 +222,13 @@ def make_app(store: Store, meta_provider: MetaProvider) -> web.Application:
             name, overrides = requested, list(store.scenarios[requested].get("overrides") or [])
             sequences, answers = {}, {}
 
-        def advance_on_rule(override: dict) -> str | None:
-            """The id of the rule this sequence's trigger *is*, when the scenario holds one.
+        def advance_on_rule(matcher: dict | None) -> str | None:
+            """The id of the rule whose `match` is this trigger, or None when no rule's is.
 
-            Here rather than in `describe_rewrite`, which sees one rule at a time. The claim is
-            about the scenario as written, so an `active: false` rule counts — it is still the rule
-            that endpoint belongs to on screen — and the first in scenario order wins if two rules
-            share the matcher, which is a presentation order and not a claim about which of them
-            would answer (that is `find_override`'s specificity, a different question).
+            Here because it needs the whole scenario, which `describe_rewrite` does not receive.
+            Inactive rules count and the first in scenario order wins: this is trigger identity,
+            not which rule would answer.
             """
-            matcher = rules.advance_matcher(override)
             if matcher is None:
                 return None  # `self`: no request advances it, so there is no rule to name
             return next((o["id"] for o in overrides if rules.same_matcher(o.get("match"), matcher)), None)
@@ -239,7 +236,7 @@ def make_app(store: Store, meta_provider: MetaProvider) -> web.Application:
         def described(override: dict) -> dict:
             rewrite = rules.describe_rewrite(override)
             if rewrite["sequence"] is not None:
-                rewrite["sequence"]["advanceOnRule"] = advance_on_rule(override)
+                rewrite["sequence"]["advanceOnRule"] = advance_on_rule(rewrite["sequence"]["advanceOn"])
             return rewrite
 
         return web.json_response(

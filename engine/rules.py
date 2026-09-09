@@ -296,9 +296,12 @@ def _matcher_shape(matcher: Any) -> tuple:
     fields = matcher if is_plain_object(matcher) else {}
     method = fields.get("method")
     query = fields.get("query") or {}
+    # Collapse stars so equivalent triggers stay linked — see
+    # test_same_matcher_links_a_double_star_trigger_to_a_single_star_rule.
+    path = re.sub(r"\*+", "*", fields.get("path") or "") or None
     return (
         method.upper() if isinstance(method, str) and method else None,
-        fields.get("path") or None,
+        path,
         tuple(sorted((key, str(value)) for key, value in query.items())) if is_plain_object(query) else (),
         fields.get("bodyContains") or None,
     )

@@ -1083,6 +1083,14 @@ def test_same_matcher_compares_the_method_the_way_the_wire_does():
     )
 
 
+def test_same_matcher_links_a_double_star_trigger_to_a_single_star_rule():
+    """A sequence triggered by `**` lost its link to a rule written with `*`, although both
+    globs accept the same requests, leaving `/rules` to report `advanceOnRule: null`."""
+    trigger_rule = {"match": {"method": "DELETE", "path": "/api/v1/orders/*"}}
+    sequence = _sequenced(advanceOn={"method": "DELETE", "path": "/api/v1/orders/**"})
+    assert rules.same_matcher(trigger_rule["match"], rules.advance_matcher(sequence))
+
+
 def test_same_matcher_treats_an_absent_field_and_a_null_one_alike():
     """Both mean "this constrains nothing", which is how the wire reads them — so a rule spelling
     out the fields it does not use must not stop being the trigger it is."""
