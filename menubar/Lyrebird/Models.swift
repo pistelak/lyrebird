@@ -80,7 +80,7 @@ enum JSONValue: Codable, Sendable, Equatable {
     case null
     case bool(Bool)
     /// Avoid Double rounding integers above 2^53.
-    /// See testAnIntegerTooLargeForADoubleIsPrintedBackExactly.
+    /// See `RulesDecodingTests`.
     case int(Int)
     case number(Double)
     case string(String)
@@ -143,7 +143,7 @@ struct StepSummary: Codable, Sendable, Equatable {
     var headers: [String: String]? = nil
     /// Nil either because the answer carries no body or because it was too large to repeat once per
     /// step; `bodyOmitted` is what tells the two apart, and the pane must not show the second as
-    /// the first — see testAStepWhoseBodyWasOmittedShowsItsSizeAndNoBlock.
+    /// the first — see `StepResponseTests`.
     var body: JSONValue? = nil
     var bodyOmitted: Bool? = nil
     /// Always sent, for the reason `Rewrite.bodyKind` is.
@@ -177,7 +177,7 @@ struct Rewrite: Codable, Sendable, Equatable {
     /// a response that carries one.
     var bodyKind: String
     var bodyBytes: Int? = nil
-    /// Missing counts remain unknown, not zero. See testAPatchWithNoKeyCountSaysNothingRatherThanZero.
+    /// Missing counts remain unknown, not zero. See `RulesDecodingTests`.
     var patchKeys: Int? = nil
     var patchStrategy: String? = nil
     /// How long the proxy will actually hold a matched response — the engine caps it at 60 s and
@@ -203,7 +203,7 @@ struct RuleRow: Codable, Sendable, Equatable, Identifiable {
     // Display the effective steps in rewrite.sequence, not a second copy of stored step fields.
     var rewrite: Rewrite
     /// Whether the engine will consider this rule at all — its own reading, never the stored field
-    /// beside it. See testActivenessIsTheEnginesAnswerAndNotTheStoredField.
+    /// beside it. See `RulesDecodingTests`.
     var isActive: Bool { rewrite.active }
 }
 

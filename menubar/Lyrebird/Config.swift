@@ -14,7 +14,7 @@ enum Config {
     /// so `UserDefaults.standard` in a test is the user's real `com.lyrebird.Lyrebird` domain — a
     /// suite that set a path and tidied up after itself deleted the launcher and profile paths the
     /// user had typed into Settings, and the app came up "profile unknown" after every `make check`.
-    /// See testARunOfTheSuiteLeavesTheUsersOwnSettingsAlone.
+    /// See `TestDefaults`.
     static var defaults: UserDefaults = .standard
 
     private static func string(_ key: String, default fallback: String) -> String {

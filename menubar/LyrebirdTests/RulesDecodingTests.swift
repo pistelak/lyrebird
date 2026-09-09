@@ -1,4 +1,5 @@
-import XCTest
+import Foundation
+import Testing
 
 @testable import Lyrebird
 
@@ -7,68 +8,72 @@ import XCTest
 /// rule with no sequence, a sequenced one, a rule that omits `active`, a browsed scenario with no
 /// runtime at all — because a field silently lost in decoding does not look like a bug in a
 /// read-only window: it looks like a rule that does less than it does.
-final class RulesDecodingTests: XCTestCase {
+struct RulesDecodingTests {
 
     private func decoded() throws -> RulesSnapshot {
         try JSONDecoder().decode(RulesSnapshot.self, from: Data(RulesFixture.snapshot.utf8))
     }
 
-    func testASnapshotDecodesTheScenarioItsProblemsAndEveryRuleInOrder() throws {
+    @Test
+    func aSnapshotDecodesTheScenarioItsProblemsAndEveryRuleInOrder() throws {
         let snapshot = try decoded()
 
-        XCTAssertEqual(snapshot.scenario, "orders-outage")
-        XCTAssertEqual(snapshot.rules.map(\.id), ["ovr_orders", "ovr_flags", "ovr_items"])
+        #expect(snapshot.scenario == "orders-outage")
+        #expect(snapshot.rules.map(\.id) == ["ovr_orders", "ovr_flags", "ovr_items"])
         // The banner's whole purpose: a rule dropped at load time is invisible in the list of the
         // ones that survived, so the problem has to arrive beside them.
-        XCTAssertEqual(snapshot.notWhole.count, 1)
-        XCTAssertTrue(snapshot.notWhole[0].contains("statsu"), snapshot.notWhole[0])
+        #expect(snapshot.notWhole.count == 1)
+        #expect(snapshot.notWhole[0].contains("statsu"), Comment(rawValue: snapshot.notWhole[0]))
     }
 
-    func testAPlainRuleCarriesItsStoredFieldsAndTheEnginesDescriptionOfThem() throws {
-        let rule = try XCTUnwrap(decoded().rules.first)
+    @Test
+    func aPlainRuleCarriesItsStoredFieldsAndTheEngineSDescriptionOfThem() throws {
+        let rule = try #require(decoded().rules.first)
 
-        XCTAssertEqual(rule.match?.method, "GET")
-        XCTAssertEqual(rule.match?.path, "/api/v1/orders")
+        #expect(rule.match?.method == "GET")
+        #expect(rule.match?.path == "/api/v1/orders")
         // A query pin may be written as a number; the engine compares `str(value)`, so it is kept
         // as raw JSON rather than forced into a String and lost.
-        XCTAssertEqual(rule.match?.query?["page"], .int(2))
-        XCTAssertEqual(rule.headers?["Content-Type"], "application/json")
-        XCTAssertEqual(
-            rule.body,
-            .object(["error": .string("orders is down"), "retryAfterNanos": .int(9_007_199_254_740_993)]))
-        XCTAssertEqual(rule.notes, "what the app shows during the outage")
-        XCTAssertEqual(rule.rewrite.status, 503)
-        XCTAssertEqual(rule.rewrite.bodyKind, "json")
-        XCTAssertEqual(rule.rewrite.bodyBytes, 1229)
-        XCTAssertEqual(rule.rewrite.delayMs, 1000)
+        #expect(rule.match?.query?["page"] == .int(2))
+        #expect(rule.headers?["Content-Type"] == "application/json")
+        #expect(
+            rule.body == .object(["error": .string("orders is down"), "retryAfterNanos": .int(9_007_199_254_740_993)]))
+        #expect(rule.notes == "what the app shows during the outage")
+        #expect(rule.rewrite.status == 503)
+        #expect(rule.rewrite.bodyKind == "json")
+        #expect(rule.rewrite.bodyBytes == 1229)
+        #expect(rule.rewrite.delayMs == 1000)
     }
 
-    func testAPatchWithoutASequencePreservesItsResponseDescription() throws {
-        let rule = try XCTUnwrap(decoded().rules.first { $0.id == "ovr_flags" })
+    @Test
+    func aPatchWithoutASequencePreservesItsResponseDescription() throws {
+        let rule = try #require(decoded().rules.first { $0.id == "ovr_flags" })
 
-        XCTAssertNil(rule.rewrite.sequence)
-        XCTAssertEqual(rule.rewrite.patchKeys, 1)
-        XCTAssertNil(rule.rewrite.status, "a patch forcing no status keeps the real response's")
+        #expect(rule.rewrite.sequence == nil)
+        #expect(rule.rewrite.patchKeys == 1)
+        #expect(rule.rewrite.status == nil, "a patch forcing no status keeps the real response's")
     }
 
-    func testASequencedRuleCarriesEachStepAsTheWireAnswersIt() throws {
+    @Test
+    func aSequencedRuleCarriesEachStepAsTheWireAnswersIt() throws {
         // The steps arrive after inheritance and after `wire_response`: the status a step will
         // send, the headers it will send including the `Content-Type` a JSON body earns, and the
         // body itself. `inherited` names the fields it did not write — the second step's headers
         // are the rule's, so an edit aimed at the step would change nothing.
-        let rule = try XCTUnwrap(decoded().rules.first { $0.id == "ovr_items" })
+        let rule = try #require(decoded().rules.first { $0.id == "ovr_items" })
 
-        let described = try XCTUnwrap(rule.rewrite.sequence)
-        XCTAssertNil(described.advanceOn, "null is the implicit `self`, not a matcher this app invents")
-        XCTAssertEqual(described.onExhausted, "repeatLast")
-        XCTAssertEqual(described.steps.map(\.status), [201, 202])
-        XCTAssertEqual(described.steps[0].inherited, ["body", "headers"])
-        XCTAssertEqual(described.steps[1].headers, ["Content-Type": "application/json"])
-        XCTAssertEqual(described.steps[1].body, .object(["items": .array([])]))
-        XCTAssertEqual(described.steps[1].bodyKind, "json")
+        let described = try #require(rule.rewrite.sequence)
+        #expect(described.advanceOn == nil, "null is the implicit `self`, not a matcher this app invents")
+        #expect(described.onExhausted == "repeatLast")
+        #expect(described.steps.map(\.status) == [201, 202])
+        #expect(described.steps[0].inherited == ["body", "headers"])
+        #expect(described.steps[1].headers == ["Content-Type": "application/json"])
+        #expect(described.steps[1].body == .object(["items": .array([])]))
+        #expect(described.steps[1].bodyKind == "json")
     }
 
-    func testAnAdvanceMatcherArrivesAsTheRequestThatMovesTheCursor() throws {
+    @Test
+    func anAdvanceMatcherArrivesAsTheRequestThatMovesTheCursor() throws {
         // `advanceOn` in the runtime row is the word "match", which tells a reader that *something
         // else* moves this sequence on without saying what. The matcher itself is what the pane
         // shows, and it arrives in `rewrite`.
@@ -90,17 +95,18 @@ final class RulesDecodingTests: XCTestCase {
             }]}
             """#
 
-        let matcher = try XCTUnwrap(
+        let matcher = try #require(
             JSONDecoder().decode(RulesSnapshot.self, from: Data(payload.utf8))
                 .rules[0].rewrite.sequence?.advanceOn)
 
-        XCTAssertEqual(matcher.method, "POST")
-        XCTAssertEqual(matcher.path, "/api/orders")
-        XCTAssertEqual(matcher.query?["id"], .int(7))
-        XCTAssertEqual(matcher.bodyContains, "confirmed")
+        #expect(matcher.method == "POST")
+        #expect(matcher.path == "/api/orders")
+        #expect(matcher.query?["id"] == .int(7))
+        #expect(matcher.bodyContains == "confirmed")
     }
 
-    func testAStepWhoseBodyWasTooLargeToRepeatSaysSoRatherThanReadingAsNone() throws {
+    @Test
+    func aStepWhoseBodyWasTooLargeToRepeatSaysSoRatherThanReadingAsNone() throws {
         // The engine leaves a body over 256 KiB out and still reports its size, because every step
         // is described after inheritance and one large parent body would otherwise be repeated once
         // per step. A null body with no `bodyOmitted` means "answers with none"; these two facts
@@ -121,18 +127,18 @@ final class RulesDecodingTests: XCTestCase {
             }]}
             """#
 
-        let step = try XCTUnwrap(
+        let step = try #require(
             JSONDecoder().decode(RulesSnapshot.self, from: Data(payload.utf8))
                 .rules[0].rewrite.sequence?.steps.first)
 
-        XCTAssertEqual(step.bodyOmitted, true)
-        XCTAssertNil(step.body)
-        XCTAssertEqual(step.bodyBytes, 1_258_291)
-        XCTAssertEqual(
-            RuleFormatting.omittedBodyLine(bytes: step.bodyBytes), "body of 1.2 MB not included in the snapshot")
+        #expect(step.bodyOmitted == true)
+        #expect(step.body == nil)
+        #expect(step.bodyBytes == 1_258_291)
+        #expect(RuleFormatting.omittedBodyLine(bytes: step.bodyBytes) == "body of 1.2 MB not included in the snapshot")
     }
 
-    func testActivenessIsTheEnginesAnswerAndNotTheStoredField() throws {
+    @Test
+    func activenessIsTheEngineSAnswerAndNotTheStoredField() throws {
         // `rewrite.active` is `rules.is_active` applied by the engine, on every row of every
         // scenario. The stored `active` beside it is not decoded at all: its encoding is not
         // obvious — a missing key means active and only a literal `false` switches a rule off — and
@@ -149,24 +155,27 @@ final class RulesDecodingTests: XCTestCase {
             """#
         let snapshot = try JSONDecoder().decode(RulesSnapshot.self, from: Data(disagreeing.utf8))
 
-        XCTAssertFalse(
-            snapshot.rules[0].isActive,
+        #expect(
+            !(snapshot.rules[0].isActive),
             "the stored field, or the run row, was read in place of the engine's own reading")
-        XCTAssertEqual(RuleFormatting.grouped(snapshot.rules).inactive.map(\.id), ["ovr_orders"])
+        #expect(RuleFormatting.grouped(snapshot.rules).inactive.map(\.id) == ["ovr_orders"])
     }
 
-    func testABrowsedScenariosRulesCarryTheirActivenessToo() throws {
+    @Test func aBrowsedScenarioSRulesCarryTheirActivenessToo()
+        throws
+    {
         // The reason the field is on `rewrite` and not only on `answer`: a browsed scenario has no
         // run row, and reading activeness off one meant falling back to the stored field for every
         // rule the window shows while browsing — which was half of them.
         let browsed = try JSONDecoder().decode(RulesSnapshot.self, from: Data(RulesFixture.browsed.utf8))
 
-        XCTAssertTrue(browsed.rules[0].isActive)
-        XCTAssertFalse(browsed.rules[1].isActive)
-        XCTAssertEqual(RuleFormatting.grouped(browsed.rules).inactive.map(\.id), ["ovr_cart_off"])
+        #expect(browsed.rules[0].isActive)
+        #expect(!(browsed.rules[1].isActive))
+        #expect(RuleFormatting.grouped(browsed.rules).inactive.map(\.id) == ["ovr_cart_off"])
     }
 
-    func testAPatchWithNoKeyCountSaysNothingRatherThanZero() throws {
+    @Test
+    func aPatchWithNoKeyCountSaysNothingRatherThanZero() throws {
         // The engine sends `patchKeys` for every patch, so a row without one is a summary this app
         // does not understand — and "merge 0 keys" describes a patch that changes nothing, which is
         // a claim about the rule rather than a gap in the line.
@@ -181,39 +190,42 @@ final class RulesDecodingTests: XCTestCase {
             """#
         let rule = try JSONDecoder().decode(RulesSnapshot.self, from: Data(payload.utf8)).rules[0]
 
-        XCTAssertNil(rule.rewrite.patchKeys)
-        XCTAssertEqual(RuleFormatting.behaviourLine(rule.rewrite), "Patches the real response")
-        XCTAssertEqual(RuleFormatting.clauseLine(rule.rewrite), "JSON responses only")
+        #expect(rule.rewrite.patchKeys == nil)
+        #expect(RuleFormatting.behaviourLine(rule.rewrite) == "Patches the real response")
+        #expect(RuleFormatting.clauseLine(rule.rewrite) == "JSON responses only")
     }
 
-    func testABrowsedScenarioDecodesItsRulesWithNoRuntimeAtAll() throws {
+    @Test
+    func aBrowsedScenarioDecodesItsRulesWithNoRuntimeAtAll() throws {
         // `?scenario=NAME` sends the rules and the engine's description of them, and null for every
         // cursor and count: those belong to the scenario the proxy is serving. Null and not zero —
         // "this rule answered nothing" is a claim about a run that happened.
         let snapshot = try JSONDecoder().decode(
             RulesSnapshot.self, from: Data(RulesFixture.browsed.utf8))
 
-        XCTAssertEqual(snapshot.scenario, "checkout")
-        XCTAssertEqual(snapshot.rules[0].rewrite.status, 200, "the rule's shape is still fully described")
+        #expect(snapshot.scenario == "checkout")
+        #expect(snapshot.rules[0].rewrite.status == 200, "the rule's shape is still fully described")
     }
 
-    func testAnIntegerTooLargeForADoubleIsPrintedBackExactly() throws {
+    @Test
+    func anIntegerTooLargeForADoubleIsPrintedBackExactly() throws {
         // Every number used to arrive through `Double`, which cannot hold an integer above 2^53:
         // 9007199254740993 came back as ...992, and the pane whose whole claim is "this is what the
         // scenario file says" showed a body the file does not contain.
-        let rule = try XCTUnwrap(decoded().rules.first)
-        let body = try XCTUnwrap(rule.body)
+        let rule = try #require(decoded().rules.first)
+        let body = try #require(rule.body)
 
-        XCTAssertTrue(
-            RuleFormatting.jsonText(body).contains("9007199254740993"),
-            RuleFormatting.jsonText(body))
+        #expect(
+            RuleFormatting.jsonText(body).contains("9007199254740993"), Comment(rawValue: RuleFormatting.jsonText(body))
+        )
     }
 
-    func testRuntimeCounterChangesDoNotChangeTheConfiguredSnapshot() throws {
+    @Test
+    func runtimeCounterChangesDoNotChangeTheConfiguredSnapshot() throws {
         let original = try decoded()
-        var payload = try XCTUnwrap(
+        var payload = try #require(
             JSONSerialization.jsonObject(with: Data(RulesFixture.snapshot.utf8)) as? [String: Any])
-        var rules = try XCTUnwrap(payload["rules"] as? [[String: Any]])
+        var rules = try #require(payload["rules"] as? [[String: Any]])
         for index in rules.indices {
             rules[index]["answer"] = ["active": true, "count": 900, "runId": "new-run"]
             rules[index]["sequenceState"] = ["nextStep": 1, "runId": "new-run", "serves": ["1": 900]]
@@ -221,22 +233,23 @@ final class RulesDecodingTests: XCTestCase {
         payload["rules"] = rules
         let updated = try JSONDecoder().decode(
             RulesSnapshot.self, from: JSONSerialization.data(withJSONObject: payload))
-        XCTAssertEqual(original, updated)
+        #expect(original == updated)
     }
 
-    func testFieldsThisAppDoesNotRenderAreIgnoredRatherThanFailingTheWholeSnapshot() throws {
+    @Test
+    func fieldsThisAppDoesNotRenderAreIgnoredRatherThanFailingTheWholeSnapshot() throws {
         // The fixture carries keys no version of this window reads. A newer engine adding one must
         // not turn the rules read into `.unavailable`, which is what a strict decode would do.
-        XCTAssertEqual(try decoded().rules.count, 3)
+        #expect(try decoded().rules.count == 3)
     }
 
-    func testAStepsBodyPrintsAsTheJsonItWasWrittenAs() throws {
+    @Test func aStepSBodyPrintsAsTheJSONItWasWrittenAs() throws {
         // The pane prints the step's body verbatim, so an empty array must not come back as `[ ]`
         // or a number as `202.0`: what is on screen has to paste back into the scenario file.
-        let rule = try XCTUnwrap(decoded().rules.first { $0.id == "ovr_items" })
-        let body = try XCTUnwrap(rule.rewrite.sequence?.steps[1].body)
+        let rule = try #require(decoded().rules.first { $0.id == "ovr_items" })
+        let body = try #require(rule.rewrite.sequence?.steps[1].body)
 
-        XCTAssertEqual(RuleFormatting.jsonText(body), "{\n  \"items\": []\n}")
+        #expect(RuleFormatting.jsonText(body) == "{\n  \"items\": []\n}")
     }
 }
 

@@ -53,7 +53,7 @@ enum RuleFormatting {
     static func path(of match: RuleMatch?) -> String { match?.path ?? "*" }
 
     /// The toolbar's status item: `intercepting · orders-outage`.
-    /// See testTheToolbarNamesTheActiveScenarioAndNotTheBrowsedOne.
+    /// See `RuleFormattingTests`.
     static func statusItem(status: AppModel.Status, activeScenario: String?) -> String {
         ([status.word] + (activeScenario.map { [$0] } ?? [])).joined(separator: " · ")
     }
@@ -128,14 +128,14 @@ enum RuleFormatting {
     // AppKit's system colours rather than SwiftUI's `.red` / `.green` / `.orange`: those are fixed
     // sRGB values that look the same in both appearances, and the red one sits at 3.0:1 on a dark
     // pane. The system ones are resolved against the appearance the view is drawn in, so they also
-    // follow Increase Contrast — see testEveryTintTheWindowUsesIsOneTheAppearanceResolves.
+    // follow Increase Contrast — see `RuleFormattingTests`.
     static let danger = Color(nsColor: .systemRed)
     static let success = Color(nsColor: .systemGreen)
     static let warning = Color(nsColor: .systemOrange)
 
     /// Green below 400, red at or above — the menu's reading of what happened to a request. The
     /// configured rules use neutral status badges; Recent colours observed outcomes.
-    /// See testARequestThatNeverGotAResponseIsNotAGreenZero.
+    /// See `RuleFormattingTests`.
     static func statusColor(_ status: Int) -> Color {
         guard status > 0 else { return .secondary }
         return status < 400 ? success : danger
@@ -158,7 +158,7 @@ enum RuleFormatting {
 
     /// Substring over the fields someone would search by: the id they wrote in a test, the path they
     /// are debugging, the method, and the notes they left themselves.
-    /// See testSearchIgnoresAccentsTheReaderDidNotType.
+    /// See `RuleFormattingTests`.
     static func matches(_ rule: RuleRow, query: String) -> Bool {
         let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !needle.isEmpty else { return true }
@@ -213,7 +213,7 @@ enum RuleFormatting {
     /// A rule's body, patch or step exactly as stored: two-space indent, keys sorted so two reads of
     /// the same rule look the same, one space after a colon and none before, and empty containers on
     /// one line.
-    /// See testThePrintedJsonParsesBackToTheValueItCameFrom.
+    /// See `JSONPrinterTests`.
     static func attributedJSON(_ value: JSONValue) -> AttributedString {
         var out = AttributedString()
         append(value, to: &out, indent: 0)
@@ -276,7 +276,7 @@ enum RuleFormatting {
 
     /// JSON string escaping: the six named escapes, `\u00XX` for any other control character, and
     /// every other scalar literal. A body copied out of this pane has to paste back into the
-    /// scenario file it came from — see testThePrintedJsonParsesBackToTheValueItCameFrom.
+    /// scenario file it came from — see `JSONPrinterTests`.
     private static func quoted(_ text: String) -> String {
         var out = "\""
         for scalar in text.unicodeScalars {
@@ -308,7 +308,7 @@ enum RuleFormatting {
 
     /// The load problems recorded against the scenario on screen, whatever else the window is
     /// showing.
-    /// See testAScenarioWhoseRulesWereAllDroppedStillNamesWhatWentWrong.
+    /// See `RuleFormattingTests`.
     static func problems(in read: MockClient.RulesRead?) -> [String] {
         if case .ok(let snapshot) = read { return snapshot.notWhole }
         return []
@@ -324,7 +324,7 @@ enum RuleFormatting {
     }
 
     /// Why there is no proxy of ours to read, or nil when there is one.
-    /// See testAForeignProxysRefusalIsNeverReportedAsAnEngineTooOld.
+    /// See `RuleFormattingTests`.
     static func proxyVacancy(status: AppModel.Status, controlPort: Int?) -> Vacancy? {
         switch status {
         case .down:
@@ -384,7 +384,7 @@ enum RuleFormatting {
     }
 
     /// What a failed action left behind, or nil when there is nothing to say.
-    /// See testAWriteTheProxyRefusedLeavesSomethingTheWindowCanShow.
+    /// See `RuleFormattingTests`.
     static func actionFailure(_ lastError: String?) -> String? {
         let message = (lastError ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         return message.isEmpty ? nil : message

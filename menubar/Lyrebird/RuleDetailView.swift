@@ -149,7 +149,7 @@ struct RuleDetailView: View {
 
     static let responseSectionId = "step-response"
 
-    // Keep the changed response visible; see testPickingAStepBringsItsResponseIntoView.
+    // Keep the changed response visible; see `RuleDetailViewTests`.
     func pickStep(_ number: Int, of rule: RuleRow, scrollTo: (String) -> Void) {
         pickedStep = RuleFormatting.StepPick(
             scenario: snapshot?.scenario ?? "", rule: rule.id, step: number)

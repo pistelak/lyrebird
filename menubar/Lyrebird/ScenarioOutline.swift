@@ -77,7 +77,7 @@ extension RuleFormatting {
     }
 
     /// What the matcher pins beyond its method and path, one labelled line each.
-    /// See testConditionsAreListedInFullHoweverManyThereAre.
+    /// See `ScenarioOutlineTests`.
     static func conditionLines(_ match: RuleMatch?) -> [Fact] {
         var lines: [Fact] = []
         let query = (match?.query ?? [:]).keys.sorted()
@@ -93,7 +93,7 @@ extension RuleFormatting {
 
     /// What the rule does, in one line: `Returns 200 after 1 s`, `Patches the real response ·
     /// 3 keys after 1 s`, `Sequence · 2 steps after 250 ms`.
-    /// See testEveryModeSaysTheDelayItWaits.
+    /// See `ScenarioOutlineTests`.
     static func behaviourLine(_ rewrite: Rewrite) -> String {
         let head: String
         if let sequence = rewrite.sequence {
@@ -147,7 +147,7 @@ extension RuleFormatting {
     }
 
     /// `JSON · 251 B`, `Text · 12 B`, `No body` — the quietest line, and the last.
-    /// See testAPatchHasNoBodyOfItsOwnToDescribe.
+    /// See `ScenarioOutlineTests`.
     static func metaLine(_ rewrite: Rewrite) -> String? {
         guard rewrite.mode != "patch" else { return nil }
         return metaLine(kind: rewrite.bodyKind, bytes: rewrite.bodyBytes)
@@ -204,7 +204,7 @@ extension RuleFormatting {
     }
 
     /// Group by explicit method and path only; show every candidate's conditions without predicting
-    /// a winner. See testATriggerIncludesItsConditionalResponseWithoutNarrowingAdvancement.
+    /// a winner. See `ScenarioOutlineTests`.
     private static func relatedResponses(_ matcher: RuleMatch, in rules: [RuleRow]) -> [ScenarioOutline
         .RuleSummary]
     {
@@ -218,7 +218,7 @@ extension RuleFormatting {
     /// What happens to requests that arrive after the last state. Nil when the engine sent no
     /// policy: it always sends the one that will actually apply, so a missing one is a snapshot this
     /// app does not understand, and naming a behaviour would promise what the proxy has not agreed
-    /// to. See testASequenceWithNoPolicyPromisesNothingAboutWhatFollows.
+    /// to. See `ScenarioOutlineTests`.
     static func exhaustionFooter(_ sequence: RewriteSequence) -> String? {
         guard let policy = sequence.onExhausted else { return nil }
         switch policy {
@@ -247,7 +247,7 @@ extension RuleFormatting {
     }
 
     /// Which step of which rule the reader is looking at.
-    /// See testAStepPickBelongsToTheScenarioAndTheRuleItWasMadeOn.
+    /// See `ScenarioOutlineTests`.
     struct StepPick: Equatable {
         var scenario: String
         var rule: String

@@ -1,128 +1,110 @@
 import AppKit
-import XCTest
+import Testing
 
 @testable import Lyrebird
 
-/// Test Dock policy with isolated preferences and no process-level side effects.
-@MainActor
-final class DockPresenceTests: XCTestCase {
+extension AppTests {
+    @MainActor
+    struct DockPresenceTests {
+        @Test(arguments: [0, 1, 2, 5])
+        func dockPolicyFollowsThePreferenceAndOpenWindowCount(count: Int) {
+            #expect(DockPresence.policy(forOpenWindows: count, dockOnlyWhileWindowOpen: false) == .regular)
+            #expect(
+                DockPresence.policy(forOpenWindows: count, dockOnlyWhileWindowOpen: true)
+                    == (count > 0 ? .regular : .accessory))
+        }
 
-    private var applied: [NSApplication.ActivationPolicy] = []
+        @Test
+        func closingTheLastWindowKeepsTheDockIconByDefault() async throws {
+            try await withAppTestEnvironment {
+                var applied: [NSApplication.ActivationPolicy] = []
+                DockPresence.apply = { applied.append($0) }
+                DockPresence.windowOpened()
+                DockPresence.windowClosed()
+                #expect(applied == [.regular, .regular])
+            }
+        }
 
-    private var originalApply: ((NSApplication.ActivationPolicy) -> Void)?
+        @Test func menuBarModeFollowsWindowOpeningAndClosing()
+            async throws
+        {
+            try await withAppTestEnvironment {
+                Config.defaults.set(true, forKey: Config.dockOnlyWhileWindowOpenKey)
+                var applied: [NSApplication.ActivationPolicy] = []
+                DockPresence.apply = { applied.append($0) }
+                DockPresence.windowOpened()
+                #expect(applied == [.regular])
+                DockPresence.windowClosed()
+                #expect(applied == [.regular, .accessory])
+            }
+        }
 
-    override func setUpWithError() throws {
-        try super.setUpWithError()
-        try TestDefaults.install()
-        originalApply = DockPresence.apply
-        DockPresence.reset()
-        applied = []
-        DockPresence.apply = { [self] policy in applied.append(policy) }
-    }
+        @Test func closingOneOfTwoWindowsPreservesTheDockIcon()
+            async throws
+        {
+            try await withAppTestEnvironment {
+                Config.defaults.set(true, forKey: Config.dockOnlyWhileWindowOpenKey)
+                var applied: [NSApplication.ActivationPolicy] = []
+                DockPresence.apply = { applied.append($0) }
+                DockPresence.windowOpened()
+                DockPresence.windowOpened()
+                applied = []
+                DockPresence.windowClosed()
+                #expect(applied == [.regular])
+                #expect(DockPresence.openWindows == 1)
+            }
+        }
 
-    override func tearDown() {
-        if let originalApply { DockPresence.apply = originalApply }
-        DockPresence.reset()
-        TestDefaults.restore()
-        super.tearDown()
-    }
+        @Test
+        func closingAnUncountedWindowDoesNotDelayTheNextDockAppearance() async throws {
+            try await withAppTestEnvironment {
+                Config.defaults.set(true, forKey: Config.dockOnlyWhileWindowOpenKey)
+                var applied: [NSApplication.ActivationPolicy] = []
+                DockPresence.apply = { applied.append($0) }
+                DockPresence.windowClosed()
+                applied = []
+                DockPresence.windowOpened()
+                #expect(applied == [.regular])
+                #expect(DockPresence.openWindows == 1)
+            }
+        }
 
-    private func menuBarOnly(_ on: Bool) {
-        Config.defaults.set(on, forKey: Config.dockOnlyWhileWindowOpenKey)
-    }
+        @Test
+        func enablingMenuBarModeWithNoWindowsHidesTheDockIcon() async throws {
+            try await withAppTestEnvironment {
+                var applied: [NSApplication.ActivationPolicy] = []
+                DockPresence.apply = { applied.append($0) }
+                Config.defaults.set(true, forKey: Config.dockOnlyWhileWindowOpenKey)
+                DockPresence.settingChanged()
+                #expect(applied == [.accessory])
+            }
+        }
 
-    // MARK: - The default: a Dock icon whatever the windows do
+        @Test func disablingMenuBarModeRestoresTheDockIcon()
+            async throws
+        {
+            try await withAppTestEnvironment {
+                Config.defaults.set(true, forKey: Config.dockOnlyWhileWindowOpenKey)
+                var applied: [NSApplication.ActivationPolicy] = []
+                DockPresence.apply = { applied.append($0) }
+                DockPresence.settingChanged()
+                applied = []
+                Config.defaults.set(false, forKey: Config.dockOnlyWhileWindowOpenKey)
+                DockPresence.settingChanged()
+                #expect(applied == [.regular])
+            }
+        }
 
-    func testTheAppStaysInTheDockWithNoWindowOpenAndWithTwo() {
-        // The default, and the reason it is the default: a menu bar extra is easy to miss, and the
-        // HIG asks for the app to be reachable some other way as well.
-        XCTAssertEqual(DockPresence.policy(forOpenWindows: 0, dockOnlyWhileWindowOpen: false), .regular)
-        XCTAssertEqual(DockPresence.policy(forOpenWindows: 2, dockOnlyWhileWindowOpen: false), .regular)
-    }
-
-    func testOpeningAndClosingWindowsNeverLeavesTheDockByDefault() {
-        DockPresence.windowOpened()
-        DockPresence.windowClosed()
-
-        XCTAssertEqual(applied, [.regular, .regular], "the last close took the Dock icon away")
-    }
-
-    // MARK: - The setting: the menu bar, with the Dock following the windows
-
-    func testWithTheSettingOnTheDockFollowsTheWindows() {
-        XCTAssertEqual(DockPresence.policy(forOpenWindows: 0, dockOnlyWhileWindowOpen: true), .accessory)
-        XCTAssertEqual(DockPresence.policy(forOpenWindows: 1, dockOnlyWhileWindowOpen: true), .regular)
-        XCTAssertEqual(DockPresence.policy(forOpenWindows: 5, dockOnlyWhileWindowOpen: true), .regular)
-    }
-
-    func testAWindowMakesTheAppRegularAndTheLastCloseMakesItAnAccessoryAgain() {
-        menuBarOnly(true)
-
-        DockPresence.windowOpened()
-        XCTAssertEqual(applied, [.regular])
-
-        DockPresence.windowClosed()
-        XCTAssertEqual(applied, [.regular, .accessory], "the icon has to leave the Dock again")
-    }
-
-    func testOneCloseOfTwoWindowsLeavesTheAppInTheDock() {
-        // Counting rather than toggling: a policy flipped per close would drop the surviving window
-        // out of the Dock, and with it the menu bar carrying its shortcuts.
-        menuBarOnly(true)
-        DockPresence.windowOpened()
-        DockPresence.windowOpened()
-        applied = []
-
-        DockPresence.windowClosed()
-
-        XCTAssertEqual(applied, [.regular])
-        XCTAssertEqual(DockPresence.openWindows, 1)
-    }
-
-    func testACloseWithNothingOpenDoesNotLeaveTheAppInTheDock() {
-        // `onDisappear` can arrive for a window that never counted — a scene rebuilt under it, say —
-        // and a count allowed below zero would need two opens before the next window showed up.
-        menuBarOnly(true)
-        DockPresence.windowClosed()
-        applied = []
-
-        DockPresence.windowOpened()
-
-        XCTAssertEqual(applied, [.regular])
-        XCTAssertEqual(DockPresence.openWindows, 1)
-    }
-
-    // MARK: - Editing the setting
-
-    func testTurningTheSettingOnWithNoWindowOpenDropsToTheMenuBarAtOnce() {
-        // Without this the change would not take effect until the next window opened and closed,
-        // which reads as a setting that did nothing.
-        menuBarOnly(true)
-
-        DockPresence.settingChanged()
-
-        XCTAssertEqual(applied, [.accessory])
-    }
-
-    func testTurningTheSettingOffBringsTheDockIconBackAtOnce() {
-        menuBarOnly(true)
-        DockPresence.settingChanged()
-        applied = []
-
-        menuBarOnly(false)
-        DockPresence.settingChanged()
-
-        XCTAssertEqual(applied, [.regular])
-    }
-
-    func testTurningTheSettingOnWithAWindowOpenKeepsTheDockIcon() {
-        // The window is still on screen, and it is what the Dock icon is for while the setting is on.
-        menuBarOnly(true)
-        DockPresence.windowOpened()
-        applied = []
-
-        DockPresence.settingChanged()
-
-        XCTAssertEqual(applied, [.regular])
+        @Test
+        func enablingMenuBarModeKeepsAnOpenWindowInTheDock() async throws {
+            try await withAppTestEnvironment {
+                DockPresence.windowOpened()
+                var applied: [NSApplication.ActivationPolicy] = []
+                DockPresence.apply = { applied.append($0) }
+                Config.defaults.set(true, forKey: Config.dockOnlyWhileWindowOpenKey)
+                DockPresence.settingChanged()
+                #expect(applied == [.regular])
+            }
+        }
     }
 }

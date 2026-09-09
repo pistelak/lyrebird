@@ -28,7 +28,7 @@ struct MockClient: Sendable {
     /// What a rules read found. `.unsupported` is an engine with no such route, which needs
     /// updating; `.unavailable` is a read that failed, carrying what said so. An empty snapshot is a
     /// scenario with no rules, so no failure may arrive spelled that way — see
-    /// testAScopingRefusalIsUnavailableCarryingBothProfilesRatherThanAnEmptyRuleList.
+    /// `RulesReadTests`.
     enum RulesRead: Sendable, Equatable {
         case ok(RulesSnapshot)
         case unsupported
@@ -36,7 +36,7 @@ struct MockClient: Sendable {
     }
 
     /// What a recent-traffic read found, on the same rule: an empty list is a proxy that has seen no
-    /// traffic — see testARecentReadThatFailedIsNotAnEmptyList.
+    /// traffic — see `RulesReadTests`.
     enum RecentRead: Sendable, Equatable {
         case ok([RecentEntry])
         case unavailable(String)
@@ -145,7 +145,7 @@ struct MockClient: Sendable {
 
     /// Names the field a decode tripped on, because Foundation's own sentence does not: "The data
     /// couldn't be read because it is missing" sent the user looking at the network when the answer
-    /// was a proxy older than the app — see testAMissingFieldIsNamedSoAnOlderEngineIsRecognised.
+    /// was a proxy older than the app — see `RulesReadTests`.
     static func describe(decoding error: Error) -> String {
         func path(_ context: DecodingError.Context, plus key: CodingKey? = nil) -> String {
             let keys = (context.codingPath + [key].compactMap { $0 }).map {
@@ -202,7 +202,7 @@ struct MockClient: Sendable {
             // Two 404s share this route: the engine's `unknown_scenario`, and an engine too old to
             // have the route at all. Reporting the first as the second sends the reader to update
             // software over a scenario somebody deleted — see
-            // testAScenarioThatWentAwayIsNotReportedAsAnEngineTooOld.
+            // `RulesReadTests`.
             let slug = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any]
             return slug?["error"] == nil ? .unsupported : .unavailable(Self.message(status: 404, body: body))
         case .failure(.http(let status, let body)):

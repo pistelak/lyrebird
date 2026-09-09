@@ -31,14 +31,14 @@ final class AppModel {
     /// Nil means rules were not requested; `status` explains whether the proxy can be read.
     var rulesRead: MockClient.RulesRead?
     /// Read saved bodies only while a window is open. Count windows so closing one does not
-    /// blank another; see testASecondWindowClosingIsWhatStopsTheRead.
+    /// blank another; see `RulesReadTests`.
     private(set) var openWindows = 0
 
     var rulesWindowOpen: Bool { openWindows > 0 }
     /// Nil follows the active scenario instead of pinning the last active name.
     private(set) var browsedScenario: String?
     /// Retain the sidebar during failed reads, scoped to its profile.
-    /// See testAnotherProfilesSidebarListIsNotKeptForThisOne.
+    /// See `RulesReadTests`.
     private var remembered: RememberedScenarios?
 
     private struct RememberedScenarios: Equatable {
@@ -55,7 +55,7 @@ final class AppModel {
 
     /// Bumped when the window stops wanting the rules it asked for — it closed, or moved to another
     /// scenario — so that a read in flight cannot commit one scenario's rules under another's name.
-    /// See testASnapshotThatArrivesAfterTheWindowMovesOnIsDropped.
+    /// See `RulesReadTests`.
     private var rulesGeneration = 0
     /// Last action failure, shown until dismissed or a later action succeeds.
     var lastError: String?
@@ -69,7 +69,7 @@ final class AppModel {
     }
 
     /// Hide foreign profile contents; `health` is retained only to explain the connection status.
-    /// See testAForeignProxysScenarioIsNotShownAsThoughItWereOurs.
+    /// See `RulesReadTests`.
     var ownHealth: Health? {
         guard let expected = expectedFingerprint, let health, Self.isOurs(health, expected: expected) else {
             return nil
@@ -238,7 +238,7 @@ final class AppModel {
         self.scenarios = scenarios
         self.recentRead = recentRead
         // Every list that arrives, not only one that renamed the active scenario — see
-        // testTheSidebarKeepsTheNewestListItWasSentAndNotTheFirst.
+        // `RulesReadTests`.
         if let scenarios { remembered = RememberedScenarios(fingerprint: expected, list: scenarios) }
 
         guard rulesRun == rulesGeneration else { return }  // see `rulesGeneration`
@@ -257,7 +257,7 @@ final class AppModel {
     }
 
     /// Stop reading rules when the last window closes; ignore duplicate close notifications.
-    /// See testACloseWithNoWindowOpenCannotDriveTheCountBelowZero.
+    /// See `RulesReadTests`.
     func windowClosed() {
         openWindows = max(0, openWindows - 1)  // `onDisappear` can arrive for a window that never counted
         guard openWindows == 0 else { return }
@@ -270,7 +270,7 @@ final class AppModel {
     func dismissError() { lastError = nil }
 
     /// Browse without activating. Discard an unrelated snapshot while the new read is in flight.
-    /// See testMovingToAnotherScenarioBlanksTheOneOnScreenWhileTheReadIsInFlight.
+    /// See `RulesReadTests`.
     func browse(_ scenario: String?) async {
         guard scenario != browsedScenario else { return }
         browsedScenario = scenario
@@ -380,7 +380,6 @@ final class AppModel {
     }
 
     /// Settings write on each keystroke, before profile rediscovery. Refuse writes in that gap.
-    /// See testAWriteRefusesWhileTheProfileInSettingsHasMovedOn.
     private var writeRefusal: String? {
         guard expectedFingerprint != nil else {
             return "the app does not know which profile it is configured for — check the launcher path in Settings"
