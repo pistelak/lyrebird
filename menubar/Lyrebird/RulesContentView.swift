@@ -114,6 +114,10 @@ private struct FlowRowView: View {
                             .padding(.horizontal, 5).padding(.vertical, 2)
                             .background(.quaternary.opacity(0.5), in: Capsule())
                     }
+                    // Beside the status, because both are facts about the response this row
+                    // answers with — and a rule that waits three seconds is the first thing
+                    // someone watching a screen not update is looking for.
+                    if let delay = row.delay { DelayBadge(delay: delay) }
                     Text(row.request.path).font(.body.monospaced())
                         .lineLimit(2).truncationMode(.middle)
                 }
@@ -126,6 +130,26 @@ private struct FlowRowView: View {
             }
         }
         .padding(.vertical, RuleFormatting.Space.tight)
+    }
+}
+
+/// A clock and `3 s`, the wait a row's response is held for. The glyph is what keeps the number from
+/// reading as another part of the request line; the badge is spoken whole, so VoiceOver says
+/// "after 3 s" rather than naming the clock.
+private struct DelayBadge: View {
+    let delay: String
+
+    var body: some View {
+        HStack(spacing: 2) {
+            Image(systemName: "clock")
+            Text(delay)
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 5).padding(.vertical, 2)
+        .background(.quaternary.opacity(0.5), in: Capsule())
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("after \(delay)")
     }
 }
 

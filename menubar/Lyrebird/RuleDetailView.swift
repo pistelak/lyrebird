@@ -77,7 +77,7 @@ struct RuleDetailView: View {
                         openRule(RuleFormatting.destination(rule: rule.id, drawnFrom: snapshot?.scenario ?? ""))
                     } label: {
                         HStack {
-                            Text(rule.behaviour.isEmpty ? "Open response rule" : rule.behaviour)
+                            Text(rule.line.isEmpty ? "Open response rule" : rule.line)
                             if rule.inactive {
                                 Text("Inactive").font(.caption).foregroundStyle(.secondary)
                             }
@@ -230,7 +230,7 @@ private struct RuleResponseSection: View {
             VStack(alignment: .leading, spacing: RuleFormatting.Space.step) {
                 ResponseKindHeader(kind: RuleFormatting.responseKind(rule.rewrite))
                 ResponseBehaviourView(
-                    behaviour: RuleFormatting.behaviourLine(rule.rewrite),
+                    behaviour: RuleFormatting.behaviourSentence(rule.rewrite),
                     clauses: RuleFormatting.clauseLine(rule.rewrite), meta: RuleFormatting.metaLine(rule.rewrite))
             }
             ForEach(RuleFormatting.headerRows(rule.headers)) { header in

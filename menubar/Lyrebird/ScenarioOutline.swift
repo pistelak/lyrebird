@@ -17,6 +17,15 @@ struct ScenarioOutline: Equatable {
         var behaviour: String
         var inactive: Bool
         var status: Int?
+        /// `3 s`, drawn as a badge of its own where a rule is listed. Nil when nothing waits.
+        var delay: String?
+
+        /// The behaviour and its delay in one line, for the places that draw a sentence where a row
+        /// draws a badge. Empty behaviour stays empty: `" after 3 s"` names no rule — see
+        /// `aCandidateResponseInTheDetailPaneStillReadsAsOneSentence`.
+        var line: String {
+            behaviour.isEmpty ? "" : behaviour + RuleFormatting.delaySuffix(delay)
+        }
     }
 
     struct Sequence: Equatable, Identifiable {
@@ -27,6 +36,9 @@ struct ScenarioOutline: Equatable {
         var inactive: Bool
         var states: [State]
         var footer: String?
+        /// The rule's delay, which every one of its steps waits: the engine refuses a `delayMs` on a
+        /// step precisely so one rule cannot hold two different answers for two different times.
+        var delay: String?
 
         var flow: [FlowItem] {
             states.flatMap { state -> [FlowItem] in
@@ -91,9 +103,11 @@ extension RuleFormatting {
         return lines
     }
 
-    /// What the rule does, in one line: `Returns 200 after 1 s`, `Patches the real response ·
-    /// 3 keys after 1 s`, `Sequence · 2 steps after 250 ms`.
-    /// See `ScenarioOutlineTests`.
+    /// What the rule does, in one line: `Returns 200`, `Patches the real response · 3 keys`,
+    /// `Sequence · 2 steps`. The delay is left out because every list that shows a rule draws
+    /// `delayLabel` beside it, and a row carrying it in both places says it twice — see
+    /// `theBehaviourLineLeavesTheDelayToTheBadgeBesideIt`. A pane that draws no badge wants
+    /// `behaviourSentence`.
     static func behaviourLine(_ rewrite: Rewrite) -> String {
         let head: String
         if let sequence = rewrite.sequence {
@@ -106,14 +120,31 @@ extension RuleFormatting {
         } else {
             return ""
         }
-        return head + delayPhrase(rewrite)
+        return head
     }
 
-    /// ` after 60 s (capped)` — how long the proxy holds a matched response, and whether that is
-    /// less than the rule asked for.
-    static func delayPhrase(_ rewrite: Rewrite) -> String {
-        guard let delay = rewrite.delayMs, delay > 0 else { return "" }
-        return " after " + seconds(delay) + (rewrite.delayCapped == true ? " (capped)" : "")
+    /// `60 s (capped)` — how long the proxy holds a matched response, and whether that is less than
+    /// the rule asked for. Nil rather than `0 ms` when nothing waits: a badge over a rule that
+    /// answers at once would name a delay the proxy does not apply.
+    /// See `ScenarioOutlineTests`.
+    static func delayLabel(_ rewrite: Rewrite) -> String? {
+        guard let delay = rewrite.delayMs, delay > 0 else { return nil }
+        return seconds(delay) + (rewrite.delayCapped == true ? " (capped)" : "")
+    }
+
+    /// ` after 3 s`, the delay spelled into a sentence rather than drawn as a badge. One
+    /// construction, so the response pane, the candidate button and the text a search reads cannot
+    /// come to word the same wait differently.
+    static func delaySuffix(_ label: String?) -> String { label.map { " after \($0)" } ?? "" }
+
+    static func delayPhrase(_ rewrite: Rewrite) -> String { delaySuffix(delayLabel(rewrite)) }
+
+    /// What the rule does *and* how long it is held, for a pane that draws a line of text where a
+    /// row draws a badge. The detail pane lost the delay entirely when it was split out of
+    /// `behaviourLine` — see `theResponsePaneStillSaysTheWaitTheRowShowsAsABadge`.
+    static func behaviourSentence(_ rewrite: Rewrite) -> String {
+        let line = behaviourLine(rewrite)
+        return line.isEmpty ? line : line + delayPhrase(rewrite)
     }
 
     /// What one step of a sequence returns. The same words a rule's own behaviour line uses, so a
@@ -177,7 +208,8 @@ extension RuleFormatting {
         ScenarioOutline.RuleSummary(
             id: rule.id, request: requestLine(rule.match), conditions: conditionLines(rule.match),
             behaviour: behaviourLine(rule.rewrite), inactive: !rule.isActive,
-            status: rule.rewrite.mode == "replace" ? rule.rewrite.status : nil)
+            status: rule.rewrite.mode == "replace" ? rule.rewrite.status : nil,
+            delay: delayLabel(rule.rewrite))
     }
 
     private static func sequenceBlock(
@@ -191,7 +223,8 @@ extension RuleFormatting {
         return ScenarioOutline.Sequence(
             id: rule.id, request: requestLine(rule.match), conditions: conditionLines(rule.match),
             advanceNote: sequence.advanceOn == nil ? "Advances after each answer" : nil,
-            inactive: !rule.isActive, states: states, footer: exhaustionFooter(sequence))
+            inactive: !rule.isActive, states: states, footer: exhaustionFooter(sequence),
+            delay: delayLabel(rule.rewrite))
     }
 
     private static func transition(
