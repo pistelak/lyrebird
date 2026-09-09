@@ -11,14 +11,17 @@ Write then publish: a mutator writes the file that records a change *before* the
 visible in memory, so a write that fails (full disk, read-only profile) leaves live state, runtime
 slots and the file exactly as they were and the OSError reaches the caller. Otherwise the proxy
 would answer with a rule no profile contains — a divergence nothing later reports. This covers
-scenario content and the active-scenario pointer; `delete_scenario` is the deliberate exception, as
-it drops the live scenario first and reports a failed unlink through `_problem` and False.
+scenario content and the active-scenario pointer. `delete_scenario` follows it too: the file is
+unlinked first and the scenario leaves memory only once it is gone, so a failed unlink reports
+through `_problem` and False with memory and disk still agreeing.
 """
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import json
+import os
 import re
 import secrets
 import shlex
@@ -35,6 +38,18 @@ _SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 class UnsafeName(ValueError):
     pass
+
+
+class ScenarioRefused(RuntimeError):
+    """An operation this store will not perform on this scenario, with the sentence saying why."""
+
+
+class ReloadRefused(RuntimeError):
+    """A reload that published nothing. `problems` is why, one line each."""
+
+    def __init__(self, problems: list[str]) -> None:
+        super().__init__("; ".join(problems))
+        self.problems = problems
 
 
 class LegacyProfileLayout(RuntimeError):
@@ -100,13 +115,179 @@ def _contained(parent: Path, *parts: str) -> Path:
     return candidate
 
 
+def scenario_parts(name: object) -> tuple[str, str]:
+    """Split a scenario identity into `(group, leaf)`, validating both as path components.
+
+    Scenarios nest exactly one level: `orders-outage` is `("", "orders-outage")` and
+    `checkout/orders-outage` is `("checkout", "orders-outage")`. Every component still goes through
+    `safe_component`; the separator is never handed to it, because loosening that pattern to accept
+    one would loosen it for every other caller too.
+
+    The depth refusal keeps the words "invalid scenario name": `../../etc/passwd` reaches this
+    branch rather than `safe_component`, and the CLI tests assert that wording — see
+    test_qualified_names_refuse_traversal_separators_and_depth.
+    """
+    value = str(name or "")
+    group, separator, leaf = value.partition("/")
+    if not separator:
+        return "", safe_component(value, "scenario name")
+    if "/" in leaf:
+        raise UnsafeName(f"invalid scenario name {value!r} — scenarios nest one level deep (group/name)")
+    return safe_component(group, "scenario group"), safe_component(leaf, "scenario name")
+
+
+def scenario_group(name: object) -> str:
+    """The group a scenario identity names, or `""` for one at the root of `scenarios/`."""
+    return scenario_parts(name)[0]
+
+
+def _refuse_dir_symlink(directory: Path) -> None:
+    """Refuse a symlinked group directory, even one pointing inside the profile.
+
+    `_contained` resolves *through* a link and passes it when the target is inside, so containment
+    alone cannot see this: `scenarios/alias -> scenarios/checkout` would list one group's scenarios
+    under two identities, and a write through either name would land on the same file. See
+    test_a_directory_symlink_inside_scenarios_is_refused_even_when_it_points_inside.
+    """
+    if directory.is_symlink():
+        raise UnsafeName(f"{directory.name}/ is a symlink — directory symlinks under scenarios/ are not read")
+
+
 def scenario_path(name: str) -> Path:
     """Where the scenario called `name` lives. Resolves only — it creates nothing."""
-    return _contained(config.SCENARIOS_DIR, f"{safe_component(name, 'scenario name')}.json")
+    group, leaf = scenario_parts(name)
+    if not group:
+        return _contained(config.SCENARIOS_DIR, f"{leaf}.json")
+    _refuse_dir_symlink(config.SCENARIOS_DIR / group)
+    return _contained(config.SCENARIOS_DIR, group, f"{leaf}.json")
 
 
-def scenario_files() -> list[Path]:
-    """Every scenario file in the profile, in the order startup reads them.
+def scenario_identity(file: Path) -> str:
+    """The identity a discovered file carries: `name`, or `group/name` one level down.
+
+    Raises `UnsafeName` for anything else — a third level, or a component that could not be one.
+    """
+    parent = file.parent
+    if parent == config.SCENARIOS_DIR:
+        return scenario_parts(file.stem)[1]
+    if parent.parent == config.SCENARIOS_DIR:
+        group, leaf = scenario_parts(f"{parent.name}/{file.stem}")
+        return f"{group}/{leaf}"
+    raise UnsafeName(f"invalid scenario name {file.stem!r} — scenarios nest one level deep (group/name)")
+
+
+def _relative_label(file: Path) -> str:
+    """How a problem line names a file: `broken.json`, or `checkout/broken.json` inside a group.
+
+    Never raises, because it labels the files that could *not* be identified as well as the ones
+    that could — a `.hidden.json` has to produce a verdict, not a traceback. Root labels are
+    unchanged, so the existing `skipped broken.json:` assertions still hold.
+    """
+    try:
+        return file.relative_to(config.SCENARIOS_DIR).as_posix()
+    except ValueError:
+        return file.name
+
+
+def _case_sibling(directory: Path, name: str) -> str | None:
+    """The entry in `directory` differing from `name` only by case, or None.
+
+    An *exact* match is not a collision: creating a scenario over a malformed file under its exact
+    name is the documented recovery, and refusing it here would take that away — see
+    test_creating_over_a_malformed_file_under_its_exact_name_still_recovers.
+    """
+    folded = name.lower()
+    try:
+        entries = list(directory.iterdir())
+    except OSError:
+        return None
+    return next((e.name for e in entries if e.name != name and e.name.lower() == folded), None)
+
+
+def _case_collisions(names: list[str]) -> dict[str, list[str]]:
+    """Sibling names that differ only by case, keyed by every member of the collision."""
+    folded: dict[str, list[str]] = {}
+    for name in names:
+        folded.setdefault(name.lower(), []).append(name)
+    return {name: members for members in folded.values() if len(members) > 1 for name in members}
+
+
+def _entries(directory: Path) -> tuple[list[Path], str | None]:
+    """What is in `directory`, or the message saying it could not be read.
+
+    A directory that cannot be listed is a reported problem, never an empty one: "there is nothing
+    here" is a different claim from "I could not look" — see
+    test_an_unreadable_group_is_a_reported_problem_not_an_empty_group.
+    """
+    try:
+        return list(directory.iterdir()), None
+    except OSError as error:
+        return [], f"cannot read {_relative_label(directory)}/: {error}"
+
+
+def _candidate_files(entries: list[Path]) -> list[Path]:
+    """The entries that are a scenario file's business to explain, sorted.
+
+    `not is_dir()` rather than `is_file()`: both follow the link, and a self-referencing or dangling
+    `foo.json` answers False to `is_file()`. Filtering on that dropped it from discovery entirely,
+    so the file stopped being reported at all — where the loader has a verdict for it ("cannot
+    resolve path") and an operator hand-editing this directory needs to read it. See
+    test_a_scenario_file_that_points_at_itself_does_not_stop_the_proxy_starting.
+    """
+    return sorted(entry for entry in entries if entry.suffix == ".json" and not entry.is_dir())
+
+
+def _owner(file: Path) -> str | None:
+    """The identity a problem about `file` belongs to, or None when it could not have one."""
+    try:
+        return scenario_identity(file)
+    except UnsafeName:
+        return None
+
+
+def _group_files(directory: Path, colliding: list[str] | None, problems: list[tuple[str | None, str]]) -> list[Path]:
+    """The scenario files one group holds, appending whatever stopped one from being read."""
+    label = directory.name
+    if directory.is_symlink():
+        problems.append((None, f"skipped {label}/: directory symlinks under scenarios/ are not read"))
+        return []
+    if colliding:
+        problems.append((None, f"skipped {'/, '.join(sorted(colliding))}/: names differ only by case"))
+        return []
+    try:
+        safe_component(label, "scenario group")
+    except UnsafeName as error:
+        problems.append((None, f"skipped {label}/: {error}"))
+        return []
+
+    entries, failure = _entries(directory)
+    if failure is not None:
+        problems.append((None, failure))
+        return []
+
+    for nested in sorted(entry for entry in entries if entry.is_dir()):
+        problems.append((None, f"skipped {label}/{nested.name}/: scenarios nest one level deep (group/name)"))
+
+    group_files = _candidate_files(entries)
+    collisions = _case_collisions([file.name for file in group_files])
+    kept: list[Path] = []
+    for file in group_files:
+        if members := collisions.get(file.name):
+            names = ", ".join(f"{label}/{member}" for member in sorted(members))
+            problems.append((_owner(file), f"skipped {names}: names differ only by case"))
+            continue
+        kept.append(file)
+    return kept
+
+
+def scenario_files() -> tuple[list[Path], list[tuple[str | None, str]]]:
+    """Every scenario file in the profile, and what could not be read, in startup's order.
+
+    Returns `(files, problems)`. Each problem carries the identity it belongs to, or None when it
+    belongs to no single scenario: `up --use NAME` reads `scenariosNotWhole[NAME]` to decide whether
+    the scenario it was asked for loaded whole, so a problem filed under no name would let a
+    synthesised `default` pass as whole while its own file was being skipped — see
+    test_sibling_names_that_differ_only_by_case_are_refused_and_blamed_on_each.
 
     Shared with the offline commands so "which files are a profile's scenarios" has one answer:
     a file the loader would read but an inspection command would not is a file whose problems
@@ -117,7 +298,26 @@ def scenario_files() -> list[Path]:
     see test_validate_refuses_a_legacy_sessions_layout.
     """
     refuse_legacy_layout(config.PROFILE_DIR)
-    return sorted(config.SCENARIOS_DIR.glob("*.json"))
+    entries, failure = _entries(config.SCENARIOS_DIR)
+    if failure is not None:
+        return [], [(None, failure)]
+
+    root_files = _candidate_files(entries)
+    directories = sorted(entry for entry in entries if entry.is_dir())
+    problems: list[tuple[str | None, str]] = []
+
+    files: list[Path] = []
+    collisions = _case_collisions([file.name for file in root_files])
+    for file in root_files:
+        if members := collisions.get(file.name):
+            problems.append((_owner(file), f"skipped {', '.join(sorted(members))}: names differ only by case"))
+            continue
+        files.append(file)
+
+    group_collisions = _case_collisions([directory.name for directory in directories])
+    for directory in directories:
+        files.extend(_group_files(directory, group_collisions.get(directory.name), problems))
+    return files, problems
 
 
 def _intended_scenario_name(file: Path) -> str | None:
@@ -127,10 +327,7 @@ def _intended_scenario_name(file: Path) -> str | None:
     files and have no use for this, and widening that function's contract to carry a name it does
     not use in its own verdict would put the two callers' needs in one return value.
     """
-    try:
-        return safe_component(file.stem, "scenario name")
-    except UnsafeName:
-        return None
+    return _owner(file)
 
 
 def load_scenario_file(file: Path) -> tuple[dict | None, list[str]]:
@@ -148,28 +345,30 @@ def load_scenario_file(file: Path) -> tuple[dict | None, list[str]]:
     `default` scenario and reads the active-scenario pointer, none of which an inspection may do.
     `Store._load` is a loop around this function, so an offline answer cannot drift from startup's.
     """
+    label = _relative_label(file)
     try:
-        name = safe_component(file.stem, "scenario name")
-        # Containment on the file about to be *read*, not only on the ones written and unlinked.
-        # Startup reaches its files through a glob, so nothing used to check them: a scenario file
+        name = scenario_identity(file)
+        # Containment on the file about to be *read*, not only on the ones written and unlinked, and
+        # resolved through `scenario_path` so one identity cannot get two verdicts: a scenario file
         # symlinked out of `scenarios/` loaded into the proxy while `scenario_path` refused that very
-        # scenario by name — one file, two verdicts, and the permissive one was the one that ran. It
-        # is the same rule either way now, so a scenario the proxy serves is one it can also save.
-        _contained(file.parent, file.name)
+        # scenario by name, and the permissive verdict was the one that ran. Checking `file.parent`
+        # would only prove the file sits in its own directory, which says nothing about where that
+        # directory is — see test_a_grouped_file_is_held_to_the_same_containment_as_saving_it.
+        scenario_path(name)
     except UnsafeName as error:
-        return None, [f"skipped {file.name}: {error}"]
+        return None, [f"skipped {label}: {error}"]
     try:
         raw = json.loads(file.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, UnicodeDecodeError, OSError) as error:
         # UnicodeDecodeError is a ValueError and not a JSONDecodeError — it is raised by the decode,
         # before json sees anything — so without it a file of binary junk escaped all three arms and
         # took the proxy down at startup, from the one directory operators are told to hand-edit.
-        return None, [f"skipped {file.name}: {error}"]
+        return None, [f"skipped {label}: {error}"]
     try:
         scenario = rules.normalise_scenario(raw, name)
     except rules.ValidationError as error:
-        return None, [f"skipped {file.name}: {error}"]
-    return scenario, [f"{file.name}: {problem}" for problem in scenario.pop("_problems", [])]
+        return None, [f"skipped {label}: {error}"]
+    return scenario, [f"{label}: {problem}" for problem in scenario.pop("_problems", [])]
 
 
 def _clone(source: dict, name: str) -> dict:
@@ -295,18 +494,31 @@ class Store:
         # A file whose *name* was rejected is deliberately absent: it could never have become a
         # scenario, so there is no scenario for it to be reported against.
         self.scenarios_not_whole: dict[str, list[str]] = {}
+        # Which identities actually came from a file. `scenarios` alone cannot say: it holds a
+        # synthesised `default` whether or not one was ever written.
+        self._disk_names: set[str] = set()
         self._load()
 
     # MARK: - Loading / persistence
 
-    def _load(self) -> None:
-        # Before the mkdir, which would otherwise create an empty `scenarios/` beside the profile's
-        # real `sessions/` and start the proxy carrying only `default` — see
-        # test_store_refuses_a_legacy_sessions_layout.
-        refuse_legacy_layout(config.PROFILE_DIR)
-        config.SCENARIOS_DIR.mkdir(parents=True, exist_ok=True)
-        for file in scenario_files():
-            scenario, problems = load_scenario_file(file)
+    @staticmethod
+    def _read_snapshot() -> tuple[dict[str, dict], list[tuple[str | None, str]], set[str]]:
+        """Read every scenario file: `(scenarios, problems, on_disk)`. Publishes nothing.
+
+        `on_disk` is the set of identities that came from a file, which is not the same as the keys
+        of `scenarios`: `default` is synthesised when no file provides it, and `reload_scenarios`
+        has to tell "the file is gone" from "there never was one" — see
+        test_reload_keeps_serving_a_virtual_default_that_was_never_on_disk.
+
+        A static reader rather than part of `_load`, so a reload can build a candidate snapshot and
+        throw it away without any of it having been visible.
+        """
+        scenarios: dict[str, dict] = {}
+        files, problems = scenario_files()
+        problems = list(problems)
+        on_disk: set[str] = set()
+        for file in files:
+            scenario, file_problems = load_scenario_file(file)
             # Which scenario these problems belong to. `load_scenario_file` reports the *file*,
             # because that is what an offline command is looking at; a running proxy is asked
             # about scenarios instead — `up --use NAME` has to know whether NAME loaded whole.
@@ -317,11 +529,22 @@ class Store:
             # whole map exists to prevent. Only a file that could not have named a scenario at all
             # is recorded against none.
             owner = scenario["name"] if scenario else _intended_scenario_name(file)
-            for problem in problems:
-                self._problem(problem, owner)
+            problems.extend((owner, problem) for problem in file_problems)
             if scenario is None:
                 continue
-            self.scenarios[scenario["name"]] = scenario
+            scenarios[scenario["name"]] = scenario
+            on_disk.add(scenario["name"])
+        return scenarios, problems, on_disk
+
+    def _load(self) -> None:
+        # Before the mkdir, which would otherwise create an empty `scenarios/` beside the profile's
+        # real `sessions/` and start the proxy carrying only `default` — see
+        # test_store_refuses_a_legacy_sessions_layout.
+        refuse_legacy_layout(config.PROFILE_DIR)
+        config.SCENARIOS_DIR.mkdir(parents=True, exist_ok=True)
+        self.scenarios, problems, self._disk_names = self._read_snapshot()
+        for owner, problem in problems:
+            self._problem(problem, owner)
 
         if "default" not in self.scenarios:
             # In memory only. Writing it would dirty a profile kept in git the first time the
@@ -331,11 +554,24 @@ class Store:
         if config.STATE_FILE.exists():
             try:
                 state = json.loads(config.STATE_FILE.read_text(encoding="utf-8"))
-                if isinstance(state, dict) and state.get("active") in self.scenarios:
-                    # persist=False: reading the pointer must not rewrite it.
-                    self._activate(state["active"], persist=False)
             except (json.JSONDecodeError, OSError):
-                pass
+                state = None
+            if isinstance(state, dict):
+                active = state.get("active")
+                if active in self.scenarios:
+                    # persist=False: reading the pointer must not rewrite it.
+                    self._activate(active, persist=False)
+                elif isinstance(active, str):
+                    # Reported, not silently swallowed: the pointer names a scenario this profile
+                    # does not have — usually a file moved into a group by hand — and starting on
+                    # `default` while saying nothing is "substituted a default for what the caller
+                    # asked for". The pointer itself is left alone, because startup does not write.
+                    # See test_a_stale_active_pointer_is_reported_at_startup.
+                    self._problem(
+                        f"active scenario {active!r} in {config.STATE_FILE} is not in this profile — "
+                        f"serving 'default'; `lyrebird use NAME` or `lyrebird scenario reload --use NAME` "
+                        f"selects the replacement"
+                    )
         # Scenarios are NOT rewritten on startup: a profile kept in git must stay clean until
         # something actually changes.
 
@@ -603,6 +839,9 @@ class Store:
             "scenarios": [
                 {
                     "name": scenario["name"],
+                    # Derived from the name, never stored: the folder a file sits in *is* the group,
+                    # and a second copy in the JSON would be one a hand-moved file could contradict.
+                    "group": scenario_group(scenario["name"]),
                     "overrideCount": len(scenario.get("overrides", [])),
                     "verified": scenario.get("verified", False),
                     "notes": scenario.get("notes", ""),
@@ -614,10 +853,22 @@ class Store:
     def create_scenario(self, name: str, clone_from: str | None = None) -> None:
         """Raises KeyError if clone_from names a scenario that does not exist — silently handing
         back an empty scenario instead is a false success the caller cannot see."""
-        name = safe_component(name, "scenario name")
+        group, leaf = scenario_parts(name)
+        name = f"{group}/{leaf}" if group else leaf
         if name in self.scenarios:
             raise FileExistsError(name)
+        # A name differing only by case is refused rather than written: on a case-insensitive
+        # filesystem the new file would *be* the old one under a second identity, and on a
+        # case-sensitive one discovery would then skip both. An exact match is not a collision — a
+        # scenario written over a malformed file under its own name is the documented recovery. See
+        # test_creating_beside_a_case_colliding_sibling_is_refused.
+        directory = config.SCENARIOS_DIR / group if group else config.SCENARIOS_DIR
+        if colliding := _case_sibling(directory, f"{leaf}.json"):
+            raise FileExistsError(f"{group}/{colliding}" if group else colliding)
+        if group and (colliding := _case_sibling(config.SCENARIOS_DIR, group)):
+            raise FileExistsError(f"{colliding}/{leaf}.json")
         if clone_from:
+            clone_from = "/".join(part for part in scenario_parts(clone_from) if part)
             if clone_from not in self.scenarios:
                 raise KeyError(clone_from)
             base = _clone(self.scenarios[clone_from], name)
@@ -628,6 +879,10 @@ class Store:
         self._forget_load_problems(name)
 
     def set_active(self, name: str) -> dict | None:
+        # Validated before the membership test, so a name that could never be one is a refusal the
+        # caller can act on rather than "not found" — see
+        # test_activating_browsing_and_deleting_an_unsafe_qualified_name_is_a_400.
+        scenario_parts(name)
         if name not in self.scenarios:
             return None
         previous = {"name": self.active_name, "overrideCount": len(self.active_overrides())}
@@ -635,24 +890,151 @@ class Store:
         return previous
 
     def delete_scenario(self, name: str) -> bool:
+        scenario_parts(name)
         if name == "default" or name not in self.scenarios:
             return False
         path = scenario_path(name)
         # Switch away BEFORE removing: set_active reads the outgoing scenario's override count.
         if self.active_name == name:
             self._activate("default")
-        del self.scenarios[name]
-        # Before the unlink, which may fail: the scenario is already out of memory either way, and
-        # an entry left behind would be inherited by the next scenario created under this name.
-        self._forget_load_problems(name)
         try:
             path.unlink()
         except FileNotFoundError:
             pass
         except (OSError, RuntimeError) as error:
-            self._problem(f"could not delete {path.name}: {error}")
+            # Dropped from memory only once the file is actually gone. Removing it first made a
+            # failed unlink report False while the proxy had already stopped serving the scenario —
+            # a store describing a profile that still holds the file, and the next `create` under
+            # that name landing on it. See
+            # test_a_failed_unlink_leaves_the_scenario_in_memory_and_on_disk.
+            self._problem(f"could not delete {_relative_label(path)}: {error}", name)
             return False
+        del self.scenarios[name]
+        self._disk_names.discard(name)
+        # After the unlink: an entry left behind would be inherited by the next scenario created
+        # under this name.
+        self._forget_load_problems(name)
         return True
+
+    def move_scenario(self, name: str, to: str) -> None:
+        """Move a scenario to another identity, file and all.
+
+        Refuses rather than repairs: the active scenario (the proxy is answering from it), `default`
+        (the one name the store synthesises), a symlinked source (the link, not the scenario, is what
+        would move), an occupied destination, and a source whose file no longer matches what was
+        loaded. Each raises, because a move that quietly did something else is a move the caller
+        cannot see — see the move tests in test_store.py.
+        """
+        name = "/".join(part for part in scenario_parts(name) if part)
+        to = "/".join(part for part in scenario_parts(to) if part)
+        if name not in self.scenarios:
+            raise KeyError(name)
+        if name == "default":
+            raise ScenarioRefused("'default' is the scenario every profile falls back to — it cannot be moved")
+        if name == self.active_name:
+            raise ScenarioRefused(
+                f"{name!r} is the active scenario — `lyrebird use NAME` selects another one first"
+            )
+        source, dest = scenario_path(name), scenario_path(to)
+        if source.is_symlink():
+            raise ScenarioRefused(f"{name!r} is a symlink — moving it would move the link, not the scenario")
+        if to in self.scenarios or dest.exists() or dest.is_symlink():
+            raise FileExistsError(to)
+        group, leaf = scenario_parts(to)
+        directory = config.SCENARIOS_DIR / group if group else config.SCENARIOS_DIR
+        if colliding := _case_sibling(directory, f"{leaf}.json"):
+            raise FileExistsError(f"{group}/{colliding}" if group else colliding)
+        if group and (colliding := _case_sibling(config.SCENARIOS_DIR, group)):
+            raise FileExistsError(f"{colliding}/{leaf}.json")
+
+        # What is about to be moved must still be what this store loaded. Otherwise a file edited by
+        # hand since startup would be relocated under an identity describing the *old* contents, and
+        # the store would go on serving rules no file holds — see
+        # test_moving_a_scenario_edited_on_disk_since_loading_is_refused.
+        on_disk, _problems = load_scenario_file(source)
+        if on_disk is None or _persistable(on_disk) != _persistable(self.scenarios[name]):
+            raise ScenarioRefused(
+                f"{name!r} changed on disk since it was loaded — `lyrebird scenario reload` first"
+            )
+
+        directory.mkdir(parents=True, exist_ok=True)
+        # `os.link` then unlink, not `Path.rename`: rename replaces the destination silently, and
+        # nothing in this store's single-loop guarantee covers a file another process wrote between
+        # the check above and this line. `link` fails with EEXIST instead — see
+        # test_a_destination_created_between_the_check_and_the_link_is_a_conflict_and_moves_nothing.
+        os.link(source, dest)
+        try:
+            source.unlink()
+        except OSError as error:
+            with contextlib.suppress(OSError):
+                dest.unlink()
+            raise OSError(
+                f"could not move {name!r} to {to!r}: {source} survived the move ({error}); "
+                f"the profile is unchanged"
+            ) from error
+        if not dest.is_file() or source.exists():
+            raise OSError(f"could not move {name!r} to {to!r}: the files did not end up where they should")
+
+        scenario = self.scenarios.pop(name)
+        scenario["name"] = to
+        # A run's evidence belongs to the identity that was serving it; the moved scenario is a new
+        # one to every client that polls by name.
+        _runtime(scenario).clear()
+        self.scenarios[to] = scenario
+        self._disk_names.discard(name)
+        self._disk_names.add(to)
+        # The rules dropped when this file loaded are still dropped: the move relocated the file, it
+        # did not fix it.
+        if problems := self.scenarios_not_whole.pop(name, None):
+            self.scenarios_not_whole[to] = problems
+
+    def reload_scenarios(self, use: str | None = None) -> dict:
+        """Re-read every scenario file, all or nothing.
+
+        The engine serves a snapshot, so a file added or moved by hand is invisible until this runs.
+        Refuses on *any* discovery or load problem and publishes nothing: a reload that silently
+        dropped the one scenario somebody had just edited would be indistinguishable from one that
+        worked. Startup stays lenient by contrast — it has no earlier state to keep, and refusing
+        there would mean a profile with one bad file could not be served at all.
+
+        Prior run evidence does not survive: the new scenarios carry no runtime slots, so
+        `answer_states` reports `runId: None` and a slot captured before the reload credits nobody.
+        """
+        scenarios, problems, on_disk = self._read_snapshot()
+        if problems:
+            raise ReloadRefused([problem for _owner, problem in problems])
+
+        target = self.active_name if use is None else "/".join(p for p in scenario_parts(use) if p)
+        # Checked against what is on disk *before* the virtual `default` is put back, so a
+        # `default.json` that was there and is now gone is a refusal rather than a silent fallback
+        # to an empty scenario. A `default` that was never on disk is the ordinary case — the
+        # bundled examples ship no `default.json` — and stays reloadable.
+        if target not in on_disk and not (target == "default" and "default" not in self._disk_names):
+            raise ReloadRefused(
+                [
+                    f"scenario {target!r} is not in this profile any more — "
+                    f"`lyrebird scenario reload --use NAME` selects the replacement"
+                ]
+            )
+        if "default" not in scenarios:
+            scenarios["default"] = _empty_scenario("default")
+
+        # Write before publish, as every mutator here does. An explicit `use` is persisted even when
+        # it equals the current name, because that is how a stale pointer left by a hand-moved file
+        # gets repaired — see test_reload_use_of_the_current_name_still_repairs_a_stale_pointer.
+        if use is not None:
+            self._persist_state(target)
+
+        self.scenarios = scenarios
+        self._disk_names = on_disk
+        self.load_problems = []
+        self.scenarios_not_whole = {}
+        self._activate(target, persist=False)
+        return {
+            "active": self.active_name,
+            "reloaded": len(self.scenarios),
+            "scenarios": self.list_scenarios()["scenarios"],
+        }
 
     # MARK: - Recent
 
