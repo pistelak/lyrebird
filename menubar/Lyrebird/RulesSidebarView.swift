@@ -5,30 +5,42 @@ struct RulesSidebarView: View {
     @Binding var selection: String?
     @Binding var showsRecent: Bool
 
-    private enum Destination: Hashable {
+    enum Destination: Hashable {
         case recent
         case scenario(String)
+
+        static func binding(selection: Binding<String?>, showsRecent: Binding<Bool>) -> Binding<Self?> {
+            Binding(
+                get: { showsRecent.wrappedValue ? .recent : selection.wrappedValue.map(Self.scenario) },
+                set: { value in
+                    switch value {
+                    case .recent: showsRecent.wrappedValue = true
+                    case .scenario(let name):
+                        showsRecent.wrappedValue = false
+                        selection.wrappedValue = name
+                    // The list deselects before it selects, and taking that literally sent the window
+                    // back to the active scenario between every pair of clicks — see
+                    // destinationBindingKeepsTheBrowsedScenarioThroughADeselect.
+                    case nil: break
+                    }
+                })
+        }
     }
 
     private var destination: Binding<Destination?> {
-        Binding(
-            get: { showsRecent ? .recent : selection.map(Destination.scenario) },
-            set: { value in
-                switch value {
-                case .recent: showsRecent = true
-                case .scenario(let name):
-                    showsRecent = false
-                    selection = name
-                case nil: break
-                }
-            })
+        Destination.binding(selection: $selection, showsRecent: $showsRecent)
     }
 
     private var scenarios: ScenarioList? { model.scenarios ?? model.lastScenarios }
 
     var body: some View {
         List(selection: destination) {
-            Label("Recent", systemImage: "clock").tag(Destination.recent)
+            Label("Recent", systemImage: "clock")
+                // A row selects only where its content has a hit shape, so give the label one that
+                // spans the row rather than only the words.
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+                .tag(Destination.recent)
             Section("Scenarios") {
                 ForEach(scenarios?.scenarios ?? []) { scenario in
                     ScenarioSidebarRow(
@@ -89,6 +101,10 @@ private struct ScenarioSidebarRow: View {
             }
             Spacer(minLength: RuleFormatting.Space.tight)
         }
+        // The spacer is empty space with no hit shape of its own, so a click to the right of the
+        // name landed on nothing and the row stayed unselected; this gives the whole row one shape.
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
         .help(isActive ? "Active scenario" : "Double-click to activate")
         .accessibilityAction(named: "Activate scenario") { activate() }
     }
