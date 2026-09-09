@@ -43,6 +43,19 @@ struct ScenarioOutlineTests {
                     steps: (1...steps).map { StepSummary(status: 199 + $0, bodyKind: "json", bodyBytes: 250 + $0) })))
     }
 
+    /// A sequence that waits 250 ms, the PATCH that advances it waiting 3 s, and two standalone
+    /// rules — one delayed, one not — so a row's delay can only come from the rule it belongs to.
+    private var delayedScenario: RulesSnapshot {
+        snapshot([
+            sequenceRule(
+                id: "ovr_orders", steps: 2, advanceOn: RuleMatch(method: "PATCH", path: "/api/orders"),
+                delayMs: 250),
+            replaceRule(id: "ovr_update", method: "PATCH", path: "/api/orders", status: 204, delayMs: 3000),
+            replaceRule(id: "ovr_read", method: "GET", path: "/api/items", status: 200),
+            replaceRule(id: "ovr_slow", method: "GET", path: "/api/slow", status: 200, delayMs: 3000),
+        ])
+    }
+
     private func snapshot(_ rules: [RuleRow], scenario: String = "orders-outage") -> RulesSnapshot {
         RulesSnapshot(scenario: scenario, notWhole: [], rules: rules)
     }
@@ -54,7 +67,8 @@ struct ScenarioOutlineTests {
         let rule = replaceRule(status: 200, delayMs: 1000)
 
         #expect(RuleFormatting.requestLine(rule.match) == RequestLine(method: "GET", path: "/api/v1/orders"))
-        #expect(RuleFormatting.behaviourLine(rule.rewrite) == "Returns 200 after 1 s")
+        #expect(RuleFormatting.behaviourLine(rule.rewrite) == "Returns 200")
+        #expect(RuleFormatting.delayLabel(rule.rewrite) == "1 s")
         #expect(RuleFormatting.clauseLine(rule.rewrite) == "", "only a patch has clauses")
         #expect(RuleFormatting.metaLine(rule.rewrite) == "JSON · 251 B")
     }
@@ -71,14 +85,36 @@ struct ScenarioOutlineTests {
     @Test func everyModeSaysTheDelayItWaits() {
         // The proxy applies the delay before it looks at the mode, so a patch and a sequenced rule
         // wait exactly as a `replace` does; two of the three branches used to drop it.
+        #expect(RuleFormatting.delayLabel(replaceRule(status: 200, delayMs: 1000).rewrite) == "1 s")
+        #expect(RuleFormatting.delayLabel(patchRule(delayMs: 1000).rewrite) == "1 s")
+        #expect(RuleFormatting.delayLabel(sequenceRule(steps: 2, delayMs: 250).rewrite) == "250 ms")
+    }
+
+    @Test func theResponsePaneStillSaysTheWaitTheRowShowsAsABadge() {
+        // The pane draws no badge. Splitting the delay out of `behaviourLine` for the list took it
+        // out of the pane as well, and `Returns 200` there described a rule that answers a second
+        // later.
         #expect(
-            RuleFormatting.behaviourLine(replaceRule(status: 200, delayMs: 1000).rewrite) == "Returns 200 after 1 s")
+            RuleFormatting.behaviourSentence(replaceRule(status: 200, delayMs: 1000).rewrite)
+                == "Returns 200 after 1 s")
         #expect(
-            RuleFormatting.behaviourLine(patchRule(delayMs: 1000).rewrite)
+            RuleFormatting.behaviourSentence(patchRule(delayMs: 1000).rewrite)
                 == "Patches the real response · 3 keys after 1 s")
         #expect(
-            RuleFormatting.behaviourLine(sequenceRule(steps: 2, delayMs: 250).rewrite)
-                == "Sequence · 2 steps after 250 ms")
+            RuleFormatting.behaviourSentence(replaceRule(status: 200).rewrite) == "Returns 200",
+            "no delay, nothing to append")
+        #expect(
+            RuleFormatting.behaviourSentence(replaceRule(status: nil, delayMs: 1000).rewrite) == "",
+            "a rule with nothing to say is not described by its delay alone")
+    }
+
+    @Test func theBehaviourLineLeavesTheDelayToTheBadgeBesideIt() {
+        // Both are shown on one row now. A line that also spelled the delay out read `Returns 200
+        // after 1 s` next to a badge saying `1 s`, which is one wait described as two.
+        #expect(RuleFormatting.behaviourLine(replaceRule(status: 200, delayMs: 1000).rewrite) == "Returns 200")
+        #expect(
+            RuleFormatting.behaviourLine(patchRule(delayMs: 1000).rewrite) == "Patches the real response · 3 keys")
+        #expect(RuleFormatting.behaviourLine(sequenceRule(steps: 2, delayMs: 250).rewrite) == "Sequence · 2 steps")
     }
 
     @Test
@@ -87,11 +123,10 @@ struct ScenarioOutlineTests {
         // flag is the only thing that says the two differ, and without it a rule configured for two
         // minutes reads as one configured for exactly a minute.
         #expect(
-            RuleFormatting.behaviourLine(
-                replaceRule(status: 200, delayMs: 60000, delayCapped: true).rewrite)
-                == "Returns 200 after 60 s (capped)")
+            RuleFormatting.delayLabel(replaceRule(status: 200, delayMs: 60000, delayCapped: true).rewrite)
+                == "60 s (capped)")
         #expect(
-            RuleFormatting.behaviourLine(replaceRule(status: 200, delayMs: 60000).rewrite) == "Returns 200 after 60 s",
+            RuleFormatting.delayLabel(replaceRule(status: 200, delayMs: 60000).rewrite) == "60 s",
             "a rule that asked for exactly the ceiling was not capped")
     }
 
@@ -100,8 +135,9 @@ struct ScenarioOutlineTests {
         #expect(RuleFormatting.seconds(1500) == "1.5 s")
         #expect(RuleFormatting.seconds(250) == "250 ms")
         #expect(
-            RuleFormatting.behaviourLine(replaceRule(status: 204, delayMs: 0).rewrite) == "Returns 204",
+            RuleFormatting.delayLabel(replaceRule(status: 204, delayMs: 0).rewrite) == nil,
             "a delay of nothing is not a delay")
+        #expect(RuleFormatting.delayLabel(replaceRule(status: 204).rewrite) == nil)
     }
 
     @Test func aBodylessAnswerSaysSoRatherThanSizingNothing() {
@@ -308,6 +344,70 @@ struct ScenarioOutlineTests {
     }
 
     @Test
+    func everyRowThatAnswersSaysHowLongItIsHeld() {
+        // The delay lived only in the detail pane, so a list of rules said nothing about the one
+        // fact that explains a screen sitting still. A sequence's own delay is every step's — the
+        // engine refuses a `delayMs` on a step — and a trigger's is its response rule's, which is
+        // also where the trigger row's status comes from.
+        let rows = RuleFormatting.flowSections(delayedScenario).flatMap(\.rows)
+
+        #expect(rows.map(\.delay) == ["250 ms", "3 s", "250 ms", nil, "3 s"])
+        // Exact subtitles, because `subtitle: rule.line` would pass an assertion that only looked
+        // for the absence of a duplicate on rows that have no delay to duplicate.
+        #expect(rows[3].subtitle == "Returns 200")
+        #expect(rows[4].subtitle == "Returns 200", "the badge carries the wait; the subtitle says it once")
+        #expect(
+            rows.allSatisfy { row in row.delay.map { !row.subtitle.contains($0) } ?? true },
+            "a subtitle repeating the badge states one wait twice")
+    }
+
+    @Test
+    func aSearchStillFindsARowByTheDelayItUsedToSpellOut() {
+        // `after 3 s` was part of the subtitle before the badge existed, so a search for it found
+        // the row. Matching the badge's bare `3 s` alone would have quietly narrowed that.
+        let found = RuleFormatting.flowSections(delayedScenario, query: "after 3 s").flatMap(\.rows)
+
+        #expect(found.map(\.ruleId) == ["ovr_update", "ovr_slow"])
+        #expect(
+            RuleFormatting.flowSections(delayedScenario, query: "250 ms").flatMap(\.rows).map(\.step) == [1, 2],
+            "the sequence's own wait names its steps")
+    }
+
+    @Test
+    func aTriggerWithNoIdentifiedResponseNamesNoDelay() {
+        // The wait belongs to the rule that answers the trigger. With none identified there is no
+        // rule to read one off, and the sequence's own delay is a different rule's wait.
+        let shot = snapshot([
+            sequenceRule(
+                id: "ovr_orders", steps: 2, advanceOn: RuleMatch(method: "PATCH", path: "/api/orders"),
+                delayMs: 250)
+        ])
+        let rows = RuleFormatting.flowSections(shot).flatMap(\.rows)
+
+        #expect(rows[1].ruleId == nil)
+        #expect(rows[1].delay == nil)
+    }
+
+    @Test
+    func aCandidateResponseInTheDetailPaneStillReadsAsOneSentence() {
+        // The pane draws a line of text where the list draws a badge, so the delay has to go back
+        // into the words there — otherwise splitting it out quietly dropped it from that button.
+        let outline = RuleFormatting.outline(
+            snapshot([
+                sequenceRule(steps: 2, advanceOn: RuleMatch(method: "PATCH", path: "/api/orders")),
+                replaceRule(id: "ovr_update", method: "PATCH", path: "/api/orders", status: 204, delayMs: 3000),
+            ]))
+        let candidate = outline.sequences[0].states[0].transition?.relatedResponses.first
+
+        #expect(candidate?.line == "Returns 204 after 3 s")
+        #expect(
+            ScenarioOutline.RuleSummary(
+                id: "ovr_x", request: RequestLine(method: "GET", path: "/"), conditions: [], behaviour: "",
+                inactive: false, status: nil, delay: "3 s"
+            ).line == "", "a rule with nothing to say is not described by its delay alone")
+    }
+
+    @Test
     func sequenceIDsCannotCollideWithTheOtherResponsesSection() {
         let sections = RuleFormatting.flowSections(
             snapshot([
@@ -425,6 +525,7 @@ struct ScenarioOutlineTests {
         #expect(transition.relatedResponses.map(\.id) == ["ovr_update"])
         #expect(transition.relatedResponses[0].conditions == [.init("Query", "id = 42")])
         #expect(transition.relatedResponses[0].behaviour == "Returns 204")
+        #expect(transition.relatedResponses[0].line == "Returns 204", "no delay, nothing to append")
         #expect(outline.otherRules.contains { $0.id == "ovr_update" })
         #expect(outline.sequences[0].states[1].transition == transition)
     }

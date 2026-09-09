@@ -7,6 +7,10 @@ extension RuleFormatting {
         var request: RequestLine
         var status: Int?
         var subtitle: String
+        /// How long the proxy holds this response, as a badge reads it. Nil where nothing waits —
+        /// and on a trigger whose response rule was not identified, whose delay is not this app's
+        /// to guess.
+        var delay: String?
         var conditions: [Fact]
         var inactive: Bool
         var ruleId: String?
@@ -15,6 +19,11 @@ extension RuleFormatting {
         var endingTransition: ScenarioOutline.Transition? = nil
         var responseKind: ResponseKind? = nil
         var id: ListSelection { selection }
+
+        /// What a search reads: the subtitle with the delay spelled back into it. The delay used to
+        /// be part of the subtitle, and a search for `after 3 s` has to keep finding the row that
+        /// waits it — see `aSearchStillFindsARowByTheDelayItUsedToSpellOut`.
+        var searchText: String { subtitle + RuleFormatting.delaySuffix(delay) }
     }
 
     struct FlowListSection: Identifiable {
@@ -43,7 +52,7 @@ extension RuleFormatting {
                         selection: .flow(sequence.id, item.id), number: index + 1,
                         request: sequence.request, status: state.status,
                         subtitle: state.number == 1 ? "Initial response" : "Response after advancement",
-                        conditions: sequence.conditions, inactive: sequence.inactive,
+                        delay: sequence.delay, conditions: sequence.conditions, inactive: sequence.inactive,
                         ruleId: sequence.id, step: state.number,
                         endingTransition: state.number == sequence.states.last?.number ? state.transition : nil,
                         responseKind: kinds[sequence.id])
@@ -65,7 +74,8 @@ extension RuleFormatting {
                     return FlowListRow(
                         selection: .flow(sequence.id, item.id), number: index + 1,
                         request: transition.request, status: response?.status,
-                        subtitle: subtitle, conditions: response?.conditions ?? transition.conditions,
+                        subtitle: subtitle, delay: response?.delay,
+                        conditions: response?.conditions ?? transition.conditions,
                         inactive: sequence.inactive,
                         ruleId: response?.id, transition: transition, responseKind: response.flatMap { kinds[$0.id] })
                 }
@@ -89,7 +99,8 @@ extension RuleFormatting {
         let others = outline.otherRules.filter { !embedded.contains($0.id) }.map { rule in
             FlowListRow(
                 selection: .rule(rule.id), request: rule.request, status: rule.status,
-                subtitle: rule.behaviour, conditions: rule.conditions, inactive: rule.inactive, ruleId: rule.id,
+                subtitle: rule.behaviour, delay: rule.delay, conditions: rule.conditions,
+                inactive: rule.inactive, ruleId: rule.id,
                 responseKind: kinds[rule.id])
         }
         if !others.isEmpty {
@@ -104,8 +115,11 @@ extension RuleFormatting {
             var section = section
             section.rows = section.rows.filter { row in
                 row.ruleId.map { matchingRules.contains($0) } == true
-                    || [row.request.method, row.request.path, row.subtitle, row.status.map(String.init) ?? ""]
-                        .contains { $0.localizedCaseInsensitiveContains(needle) }
+                    || [
+                        row.request.method, row.request.path, row.searchText,
+                        row.status.map(String.init) ?? "",
+                    ]
+                    .contains { $0.localizedCaseInsensitiveContains(needle) }
             }
             return section.rows.isEmpty ? nil : section
         }
