@@ -151,12 +151,10 @@ and what the PAC advertises — those are deliberately separate settings.
 - `GET /health` (reports `intercepting` / `proxyUp` / `pacEnabled` / `simBundleId` / `scenarios` /
   `sequences` / `answers` / `loadProblems` / `scenariosNotWhole`, and `pacError` when the PAC could
   not be read — `intercepting` is then unproven, not off) · `GET /recent`
-  - Each `/recent` entry carries an `id` (`evt-1`, `evt-2`, …) so a client polling the list can keep
-    a selection on the row the user picked: position moves as entries arrive, and two identical
-    requests are indistinguishable by content. The engine assigns it — an id in a recorded entry is
-    always the engine's, never a caller's, so two rows can never share one. The numbering belongs to
-    the running proxy and restarts with it: nothing persists it, and the list does not outlive the
-    process.
+  - Each `/recent` entry carries an engine-assigned `id` (`evt-1`, `evt-2`, …) so a client polling
+    the list can keep a selection on the row the user picked, including across repeats of the same
+    request. Ids replace any caller-supplied value, stay unique across the list's rollover, and
+    restart with the proxy.
   - The PAC is read in a worker thread, one observation at a time, and health answers within a
     second whether or not it has finished, so a hung `networksetup` shows up as a `pacError`
     instead of stalling health and the proxy's traffic together.
@@ -176,12 +174,12 @@ and what the PAC advertises — those are deliberately separate settings.
   `null` on every row, because cursors and counts belong to the scenario the proxy is actually
   serving. `active` says which of the two you are reading, and browsing never switches the proxy —
   that is `PUT /scenarios/active`. Naming the active scenario returns exactly the parameterless
-  snapshot; an unknown name is **404** `unknown_scenario` and an empty one **400** `name_required`. It exists so a client can
-  show what a scenario rewrites without reimplementing rule semantics: `rewrite` is the *engine's*
-  description of what that rule answers with — `active` (its own reading of the field, where a
-  missing key means active and only a literal `false` switches a rule off; it is here as well as in
-  `answers` because a browsed scenario's rows have no run to carry it), `mode`, the `status` that
-  will actually be sent (200
+  snapshot; an unknown name is **404** `unknown_scenario` and an empty one **400** `name_required`.
+  A rejected `default.json` is the exception: `default` always exists in memory, so browsing it
+  returns **200** with empty `rules` and the file's problems in `notWhole`.
+  It exists so a client can show what a scenario rewrites without reimplementing rule semantics:
+  `rewrite` is the *engine's* description of what that rule answers with — `active` (true unless
+  the stored value is literal `false`), `mode`, the `status` that will actually be sent (200
   for a `replace` naming none; `null` for a patch forcing none, which keeps the real response's),
   `bodyKind`/`bodyBytes` sized as the payload is encoded (utf-8 or JSON, before any `Content-Encoding` the rule's headers ask for) and reported as none for a bodyless 204/304,
   `patchKeys`/`patchStrategy`, `delayMs` as it will actually be applied (with `delayCapped: true`

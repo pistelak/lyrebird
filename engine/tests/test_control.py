@@ -831,28 +831,10 @@ def test_browsing_a_scenario_reports_its_rules_with_no_run(profile):
     assert live["active"] is True
     assert live_rules["ovr_orders"]["answer"]["count"] == 1, "the run is still reported where it exists"
     assert live_rules["ovr_seq"]["sequenceState"]["nextStep"] == 2
-
-
-def test_browsing_a_scenario_does_not_switch_the_proxy_to_it(profile):
-    """The failure this closes is the whole reason the parameter exists: a read that activated what
-    it was asked about would repoint the running proxy at every scenario a pointer moved over."""
-    seed_browsable(profile)
-    (profile / "profile.json").write_text('{"hosts": []}', encoding="utf-8")
-    config.reload_profile()
-    subject = store.Store()
-    app = control.make_app(subject, _meta)
-
-    async def main():
-        async with TestClient(TestServer(app)) as client:
-            headers = {"Host": config.CONTROL_HOST_HEADER}
-            browsed = await (await client.get("/__mock__/rules?scenario=orders-outage", headers=headers)).json()
-            after = await (await client.get("/__mock__/rules", headers=headers)).json()
-            return browsed, after
-
-    browsed, after = asyncio.run(main())
-    assert browsed["scenario"] == "orders-outage"
-    assert after["scenario"] == "default" and after["active"] is True
-    assert subject.active_name == "default", "and the store itself never moved"
+    # The failure this closes is the whole reason the parameter exists: a read that activated what
+    # it was asked about would repoint the running proxy at every scenario a pointer moved over.
+    assert live["scenario"] == "default", "browsing must not switch the proxy"
+    assert subject.active_name == "default", "browsing must not switch the proxy"
 
 
 def test_naming_the_active_scenario_returns_the_parameterless_snapshot(profile):
@@ -970,12 +952,20 @@ def test_browsing_a_scenario_whose_file_was_rejected_is_unknown(profile):
     assert health["loadProblems"] and "broken" in health["loadProblems"][0]
 
 
+def test_browsing_default_whose_file_was_rejected_reports_the_empty_fallback(profile):
+    """Default must always exist, so its rejected file leaves an empty active scenario whose
+    `notWhole` must still expose the parse failure instead of presenting it as a valid empty file."""
+    (profile / "scenarios").mkdir(parents=True, exist_ok=True)
+    (profile / "scenarios" / "default.json").write_text("{ not json", encoding="utf-8")
+
+    status, _, body = call(profile, "GET", "/__mock__/rules?scenario=default")
+    assert status == 200
+    assert body["rules"] == []
+    assert body["active"] is True
+    assert len(body["notWhole"]) == 1 and "default.json" in body["notWhole"][0]
+
+
 # MARK: - When a sequence's trigger is another rule
-#
-# A scenario reads as a story: the steps of a sequence with the request that moves it on between
-# them, and where that request is one the scenario answers itself, the rule that answers it drawn in
-# the trigger's place. Whether a trigger *is* another rule is the engine's statement — a client
-# comparing matchers would be comparing them by rules of its own.
 
 STORY_OVERRIDES = [
     {

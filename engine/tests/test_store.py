@@ -1095,7 +1095,6 @@ def test_recent_entries_get_increasing_ids(profile):
         subject.record_recent({"method": "GET", "path": "/api/v1/orders"})
     ids = [entry["id"] for entry in subject.recent_list()]
     assert ids == ["evt-3", "evt-2", "evt-1"], "newest first, as the list itself is"
-    assert len(set(ids)) == 3
 
 
 def test_a_supplied_id_does_not_collide_with_the_counter(profile):
@@ -1107,7 +1106,6 @@ def test_a_supplied_id_does_not_collide_with_the_counter(profile):
     subject.record_recent({"method": "GET", "path": "/api/v1/orders"})
     ids = [entry["id"] for entry in subject.recent_list()]
     assert ids == ["evt-2", "evt-1"], "the counter's own numbering, not the caller's"
-    assert len(set(ids)) == 2
 
 
 @pytest.mark.parametrize("supplied", [None, 7, {"nested": True}])
