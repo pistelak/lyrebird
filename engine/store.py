@@ -932,9 +932,7 @@ class Store:
         if name == "default":
             raise ScenarioRefused("'default' is the scenario every profile falls back to — it cannot be moved")
         if name == self.active_name:
-            raise ScenarioRefused(
-                f"{name!r} is the active scenario — `lyrebird use NAME` selects another one first"
-            )
+            raise ScenarioRefused(f"{name!r} is the active scenario — `lyrebird use NAME` selects another one first")
         source, dest = scenario_path(name), scenario_path(to)
         if source.is_symlink():
             raise ScenarioRefused(f"{name!r} is a symlink — moving it would move the link, not the scenario")
@@ -953,9 +951,7 @@ class Store:
         # test_moving_a_scenario_edited_on_disk_since_loading_is_refused.
         on_disk, _problems = load_scenario_file(source)
         if on_disk is None or _persistable(on_disk) != _persistable(self.scenarios[name]):
-            raise ScenarioRefused(
-                f"{name!r} changed on disk since it was loaded — `lyrebird scenario reload` first"
-            )
+            raise ScenarioRefused(f"{name!r} changed on disk since it was loaded — `lyrebird scenario reload` first")
 
         directory.mkdir(parents=True, exist_ok=True)
         # `os.link` then unlink, not `Path.rename`: rename replaces the destination silently, and
@@ -969,8 +965,7 @@ class Store:
             with contextlib.suppress(OSError):
                 dest.unlink()
             raise OSError(
-                f"could not move {name!r} to {to!r}: {source} survived the move ({error}); "
-                f"the profile is unchanged"
+                f"could not move {name!r} to {to!r}: {source} survived the move ({error}); the profile is unchanged"
             ) from error
         if not dest.is_file() or source.exists():
             raise OSError(f"could not move {name!r} to {to!r}: the files did not end up where they should")

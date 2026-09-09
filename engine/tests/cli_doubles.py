@@ -217,7 +217,7 @@ def _status_network(monkeypatch):
     monkeypatch.setattr(netproxy, "pac_status", lambda service: netproxy.PacStatus(netproxy.pac_url(), True, True))
 
 
-_SCENARIOS = {"default": 200, "orders-outage": 500}
+_SCENARIOS = {"default": 200, "orders-outage": 500, "checkout/orders-outage": 503}
 
 
 def _fake_proxy(

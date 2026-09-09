@@ -1309,7 +1309,7 @@ def test_a_case_colliding_pair_is_skipped_and_blamed_on_both_identities(profile,
 
 
 def test_an_unreadable_group_is_a_reported_problem_not_an_empty_group(profile, monkeypatch):
-    """"There is nothing here" is a different claim from "I could not look". Returning an empty
+    """ "There is nothing here" is a different claim from "I could not look". Returning an empty
     listing for a directory that raised would report a profile as whole while part of it was
     unreadable. Monkeypatched rather than chmod-ed: root ignores the mode bits."""
     _group_file(profile, "checkout", "orders-outage")
@@ -1545,9 +1545,7 @@ def test_moving_a_scenario_edited_on_disk_since_loading_is_refused(profile):
     assert (profile / "scenarios" / "scratch.json").is_file()
 
 
-def test_a_destination_created_between_the_check_and_the_link_is_a_conflict_and_moves_nothing(
-    profile, monkeypatch
-):
+def test_a_destination_created_between_the_check_and_the_link_is_a_conflict_and_moves_nothing(profile, monkeypatch):
     """`Path.rename` would replace it silently, and nothing in this store's single-loop guarantee
     covers a file another process wrote in that window. `os.link` fails with EEXIST instead."""
     subject = make_store(profile)
@@ -1706,9 +1704,7 @@ def test_reload_with_use_selects_the_replacement_and_writes_the_pointer(profile)
     subject = make_store(profile)
     subject.set_active("orders-outage")
     (profile / "scenarios" / "checkout").mkdir()
-    (profile / "scenarios" / "orders-outage.json").rename(
-        profile / "scenarios" / "checkout" / "orders-outage.json"
-    )
+    (profile / "scenarios" / "orders-outage.json").rename(profile / "scenarios" / "checkout" / "orders-outage.json")
 
     result = subject.reload_scenarios(use="checkout/orders-outage")
 

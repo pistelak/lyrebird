@@ -12,7 +12,10 @@
     lyrebird explain-match <method> <path>  which rule would be selected, and why the rest were not
                                           (--scenario NAME reads a file instead of the proxy)
     lyrebird assert-answered <id> [--run R]  exit non-zero unless that rule answered in that run
+    lyrebird scenario list [--json]       list scenarios, by folder
     lyrebird scenario new <name>          create a scratch scenario (--clone-from X)
+    lyrebird scenario mv <name> <to>      move a scenario, file and all (folders are names)
+    lyrebird scenario reload [--use N]    re-read the scenario files after editing them by hand
     lyrebird reset [id] [--json]          start a fresh run: rewind sequences, clear answer counts
     lyrebird sequence wait <id> --step N  block until a sequence serves a given step
     lyrebird status [--json]              show intercept state (honest about PAC on/off)

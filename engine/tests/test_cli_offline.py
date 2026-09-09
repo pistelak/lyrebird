@@ -10,6 +10,7 @@ import json
 import api
 import cli
 import config
+import store
 
 _RULES = [
     {"id": "ovr_broad", "mode": "replace", "match": {"method": "GET", "path": "/api/items"}},
@@ -439,3 +440,139 @@ def test_explain_match_json_stays_json_for_a_legacy_sessions_layout(profile, run
     payload = json.loads(result.output)
     assert payload["selected"] is None and payload["candidates"] == []
     assert any(f"mv {legacy / 'sessions'}" in problem for problem in payload["problems"])
+
+
+# MARK: - Grouped scenarios, offline
+#
+# `validate` is the command an operator reaches for after hand-editing the directory, which is
+# exactly when a file has just been moved into a folder. These pin that it reports the identity the
+# proxy would use, and that it never blesses a name the proxy would refuse.
+
+
+def write_grouped(profile, group, name, payload):
+    directory = profile / "scenarios" / group
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{name}.json"
+    path.write_text(payload if isinstance(payload, str) else json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def test_validate_reports_grouped_scenarios_under_their_qualified_names(profile, runner, offline):
+    """The stem alone would name two scenarios the same thing: `checkout/retry` and `archive/retry`
+    are different files, and a report that called both `retry` would identify neither."""
+    write_grouped(profile, "checkout", "retry", _WHOLE)
+    write_grouped(profile, "archive", "retry", _WHOLE)
+
+    result = runner.invoke(cli.cli, ["validate", "--json"])
+
+    payload = json.loads(result.output)
+    assert {report["name"] for report in payload["scenarios"]} == {"checkout/retry", "archive/retry"}
+    assert result.exit_code == 0
+
+
+def test_validate_accepts_a_qualified_name(profile, runner, offline):
+    write_grouped(profile, "checkout", "whole", _WHOLE)
+
+    result = runner.invoke(cli.cli, ["validate", "checkout/whole"])
+
+    assert result.exit_code == 0
+    assert "checkout/whole" in result.output
+
+
+def test_validate_lists_qualified_names_when_the_one_asked_for_is_missing(profile, runner, offline):
+    write_grouped(profile, "checkout", "whole", _WHOLE)
+
+    result = runner.invoke(cli.cli, ["validate", "whole"])
+
+    assert result.exit_code == 1
+    assert "checkout/whole" in result.output, "the hint must name what `use` would take"
+
+
+def test_validate_refuses_a_name_nested_too_deep(profile, runner, offline):
+    result = runner.invoke(cli.cli, ["validate", "a/b/c"])
+
+    assert result.exit_code == 1
+    assert "nest one level deep" in result.output
+
+
+def test_validate_fails_on_an_over_nested_subtree_and_stays_json(profile, runner, offline):
+    """A file too deep to name is the run's problem, not a file quietly left out: `validate` that
+    reported ok while skipping a subtree would be exactly the green tick this command exists to
+    withhold."""
+    nested = profile / "scenarios" / "checkout" / "retries"
+    nested.mkdir(parents=True)
+    (nested / "slow.json").write_text(json.dumps(_WHOLE), encoding="utf-8")
+    write_scenario(profile, "whole", _WHOLE)
+
+    result = runner.invoke(cli.cli, ["validate", "--json"])
+
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert payload["ok"] is False
+    assert any("nest one level deep" in problem for problem in payload["problems"])
+
+
+def test_validate_reports_an_unreadable_group_rather_than_skipping_it(profile, runner, offline, monkeypatch):
+    write_grouped(profile, "checkout", "whole", _WHOLE)
+    real = store.Path.iterdir
+
+    def refuse(self):
+        if self.name == "checkout":
+            raise PermissionError(13, "Permission denied")
+        return real(self)
+
+    monkeypatch.setattr(store.Path, "iterdir", refuse)
+
+    result = runner.invoke(cli.cli, ["validate", "--json"])
+
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert any("cannot read checkout/" in problem for problem in payload["problems"])
+
+
+def test_validate_reports_a_dotfile_as_a_verdict_not_a_traceback(profile, runner, offline):
+    """A name that could never be a scenario still has to come back in the `--json` shape. Deriving
+    the report's name through a throwing helper turned this into a traceback."""
+    (profile / "scenarios" / ".hidden.json").write_text(json.dumps(_WHOLE), encoding="utf-8")
+
+    result = runner.invoke(cli.cli, ["validate", "--json"])
+
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert payload["scenarios"], "the file gets a verdict"
+    assert payload["scenarios"][0]["loaded"] is False
+
+
+def test_validate_by_name_refuses_an_identity_discovery_skipped(profile, runner, offline, monkeypatch):
+    """A file discovery skipped must not validate cleanly under the name nothing serves. Resolving
+    by `is_file()` blessed exactly that — and, on a case-folding filesystem, blessed a mis-cased
+    name the proxy would refuse as well."""
+    write_scenario(profile, "whole", _WHOLE)
+    scenarios = profile / "scenarios"
+    real = store.Path.iterdir
+
+    def listing(self):
+        if self == scenarios:
+            return iter([scenarios / "whole.json", scenarios / "Whole.json"])
+        return real(self)
+
+    monkeypatch.setattr(store.Path, "iterdir", listing)
+
+    result = runner.invoke(cli.cli, ["validate", "whole", "--json"])
+
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert any("differ only by case" in problem for problem in payload["problems"])
+
+
+def test_explain_match_accepts_a_qualified_name(profile, runner, offline):
+    write_grouped(profile, "checkout", "whole", _WHOLE)
+
+    result = runner.invoke(
+        cli.cli, ["explain-match", "GET", "/api/v1/orders/7", "--scenario", "checkout/whole", "--json"]
+    )
+
+    assert result.exit_code == 0, "the grouped file is read, not reported as a name that is not there"
+    payload = json.loads(result.output)
+    assert payload["selected"] == "ovr_orders"
+    assert payload["problems"] == []
