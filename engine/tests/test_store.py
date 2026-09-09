@@ -1151,3 +1151,610 @@ def test_recent_ids_are_per_store(profile):
     second = make_store(profile)
     second.record_recent({"method": "GET", "path": "/api/v1/orders"})
     assert first.recent_list()[0]["id"] == second.recent_list()[0]["id"] == "evt-1"
+
+
+# MARK: - Scenario groups
+#
+# One level of folder under `scenarios/`, and the path is the name. Everything here is a failure
+# path: the ways a grouped profile can be misread, and the ways a move or a reload can half-happen.
+
+
+def _group_file(profile, group, name, payload=None):
+    directory = profile / "scenarios" / group
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{name}.json"
+    path.write_text(json.dumps(payload if payload is not None else {"overrides": []}))
+    return path
+
+
+def _folds_case(profile):
+    """Whether the filesystem under `profile` folds case, which decides what a collision even is."""
+    probe = profile / "scenarios" / "CaseProbe.tmp"
+    probe.parent.mkdir(parents=True, exist_ok=True)
+    probe.write_text("")
+    folded = (probe.parent / "caseprobe.tmp").exists()
+    probe.unlink()
+    return folded
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["../x", "a/../b", "a//b", "a/b/c", "a\\b", "/a", "a/", "", "%2e%2e/x", ".hidden/x", "a/.hidden"],
+)
+def test_qualified_names_refuse_traversal_separators_and_depth(profile, name):
+    """Every component of a qualified name is still a path component, and nesting stops at one level.
+
+    `scenario_parts` cannot delegate the whole string to `safe_component` — that pattern has no `/`
+    in it — so the split is the one place a separator is ever accepted, and it has to refuse
+    everything else itself. `scenario_path` is checked alongside it because a name that got past
+    parsing but not containment would be a name the loader and a write disagreed about.
+    """
+    make_store(profile)
+    with pytest.raises(store.UnsafeName):
+        store.scenario_parts(name)
+    with pytest.raises(store.UnsafeName):
+        store.scenario_path(name)
+
+
+def test_two_groups_may_each_hold_a_scenario_with_the_same_stem(profile):
+    """The point of grouping. Keying scenarios by `file.stem` would let one silently replace the
+    other, leaving a profile that lists one scenario where its author put two."""
+    _group_file(profile, "checkout", "retry", {"overrides": [{"id": "a", "mode": "replace", "status": 200}]})
+    _group_file(profile, "archive", "retry", {"overrides": [{"id": "b", "mode": "replace", "status": 500}]})
+
+    subject = make_store(profile)
+
+    assert "checkout/retry" in subject.scenarios and "archive/retry" in subject.scenarios
+    assert [o["id"] for o in subject.scenarios["checkout/retry"]["overrides"]] == ["a"]
+    assert [o["id"] for o in subject.scenarios["archive/retry"]["overrides"]] == ["b"]
+
+
+def test_a_third_level_is_a_reported_load_problem_not_a_skipped_file(profile):
+    """A file too deep to name is reported, never quietly absent: an operator who put it there is
+    looking for it, and "no such scenario" would send them to the wrong question."""
+    nested = profile / "scenarios" / "checkout" / "retries"
+    nested.mkdir(parents=True)
+    (nested / "slow.json").write_text(json.dumps({"overrides": []}))
+
+    subject = make_store(profile)
+
+    assert not any(name.startswith("checkout") for name in subject.scenarios)
+    assert any("nest one level deep" in problem for problem in subject.load_problems)
+    assert any("checkout/retries" in problem for problem in subject.load_problems)
+
+
+def test_a_directory_symlink_inside_scenarios_is_refused_even_when_it_points_inside(profile):
+    """`_contained` resolves *through* a link and passes one whose target is inside the profile, so
+    containment alone cannot see this. An alias would list one group's scenarios under two
+    identities, and a write through either name would land on the same file."""
+    _group_file(profile, "checkout", "orders-outage")
+    (profile / "scenarios" / "alias").symlink_to(profile / "scenarios" / "checkout")
+
+    subject = make_store(profile)
+
+    assert "checkout/orders-outage" in subject.scenarios
+    assert not any(name.startswith("alias/") for name in subject.scenarios)
+    assert any("directory symlinks under scenarios/ are not read" in p for p in subject.load_problems)
+    with pytest.raises(store.UnsafeName):
+        store.scenario_path("alias/orders-outage")
+    with pytest.raises(store.UnsafeName):
+        subject.create_scenario("alias/new")
+    assert not (profile / "scenarios" / "checkout" / "new.json").exists()
+
+
+def test_sibling_names_that_differ_only_by_case_are_refused_and_blamed_on_each(profile):
+    """Neither file loads, and every identity involved is told why.
+
+    The blame matters as much as the refusal: `up --use default` asks `scenariosNotWhole['default']`
+    whether the scenario it was handed loaded whole, and a problem recorded against no name would
+    let the synthesised `default` pass as whole while its own file was being skipped.
+    """
+    if _folds_case(profile):
+        pytest.skip("the filesystem folds case, so the two files are one")
+    _write(profile, "default", {"overrides": []})
+    _write(profile, "Default", {"overrides": []})
+
+    subject = make_store(profile)
+
+    assert "Default" not in subject.scenarios
+    assert subject.scenarios_not_whole.get("default"), "the name `up --use` would ask about"
+    assert subject.scenarios_not_whole.get("Default")
+    assert all("differ only by case" in p for p in subject.scenarios_not_whole["default"])
+
+
+def test_group_names_that_differ_only_by_case_are_refused(profile):
+    if _folds_case(profile):
+        pytest.skip("the filesystem folds case, so the two directories are one")
+    _group_file(profile, "checkout", "a")
+    _group_file(profile, "Checkout", "b")
+
+    subject = make_store(profile)
+
+    assert not any("/" in name for name in subject.scenarios)
+    assert any("differ only by case" in problem for problem in subject.load_problems)
+
+
+def test_case_collisions_name_every_member(profile):
+    """The pure half of the collision rule, so it is checked on a case-folding filesystem too — where
+    the two files cannot both exist and the integration tests below skip."""
+    assert store._case_collisions(["a.json", "A.json", "b.json"]) == {
+        "a.json": ["a.json", "A.json"],
+        "A.json": ["a.json", "A.json"],
+    }
+    assert store._case_collisions(["a.json", "b.json"]) == {}
+
+
+def test_a_case_colliding_pair_is_skipped_and_blamed_on_both_identities(profile, monkeypatch):
+    """The discovery path itself, driven without needing a case-sensitive filesystem: macOS folds
+    case by default, so the pair below cannot be created there — but a profile synced from a
+    case-sensitive machine can hold one, and then neither file may load."""
+    make_store(profile)
+    scenarios = config.SCENARIOS_DIR
+    real = store.Path.iterdir
+
+    def listing(self):
+        if self == scenarios:
+            return iter([scenarios / "orders-outage.json", scenarios / "Orders-Outage.json"])
+        return real(self)
+
+    monkeypatch.setattr(store.Path, "iterdir", listing)
+    (scenarios / "orders-outage.json").write_text(json.dumps({"overrides": []}))
+
+    files, problems = store.scenario_files()
+
+    assert files == [], "neither file may load: nothing can say which one a name means"
+    owners = {owner for owner, _problem in problems}
+    assert owners == {"orders-outage", "Orders-Outage"}, "both identities are told why"
+    assert all("differ only by case" in problem for _owner, problem in problems)
+
+
+def test_an_unreadable_group_is_a_reported_problem_not_an_empty_group(profile, monkeypatch):
+    """"There is nothing here" is a different claim from "I could not look". Returning an empty
+    listing for a directory that raised would report a profile as whole while part of it was
+    unreadable. Monkeypatched rather than chmod-ed: root ignores the mode bits."""
+    _group_file(profile, "checkout", "orders-outage")
+    real = store.Path.iterdir
+
+    def refuse(self):
+        if self.name == "checkout":
+            raise PermissionError(errno.EACCES, "Permission denied")
+        return real(self)
+
+    monkeypatch.setattr(store.Path, "iterdir", refuse)
+
+    subject = make_store(profile)
+
+    assert not any(name.startswith("checkout/") for name in subject.scenarios)
+    assert any("cannot read checkout/" in problem for problem in subject.load_problems)
+
+
+def test_an_unreadable_scenarios_directory_is_reported_rather_than_read_as_empty(profile, monkeypatch):
+    real = store.Path.iterdir
+
+    def refuse(self):
+        if self.name == "scenarios":
+            raise PermissionError(errno.EACCES, "Permission denied")
+        return real(self)
+
+    monkeypatch.setattr(store.Path, "iterdir", refuse)
+
+    files, problems = store.scenario_files()
+
+    assert files == []
+    assert problems and "cannot read" in problems[0][1]
+
+
+@pytest.mark.parametrize("target", ["same-group", "other-group", "root", "outside"])
+def test_a_grouped_file_is_held_to_the_same_containment_as_saving_it(profile, target, tmp_path):
+    """One identity, one verdict. Checking the file against its own parent would only prove it sits
+    in the directory it sits in; the rule that matters is where that directory is. A grouped file
+    linked out of the profile used to load while `scenario_path` refused the very same name."""
+    _group_file(profile, "checkout", "real")
+    _group_file(profile, "archive", "elsewhere")
+    _write(profile, "root", {"overrides": []})
+    outside = tmp_path / "outside.json"
+    outside.write_text(json.dumps({"overrides": []}))
+    destinations = {
+        "same-group": profile / "scenarios" / "checkout" / "real.json",
+        "other-group": profile / "scenarios" / "archive" / "elsewhere.json",
+        "root": profile / "scenarios" / "root.json",
+        "outside": outside,
+    }
+    link = profile / "scenarios" / "checkout" / "link.json"
+    link.symlink_to(destinations[target])
+
+    make_store(profile)
+    scenario, problems = store.load_scenario_file(link)
+    refused_by_path = False
+    try:
+        store.scenario_path("checkout/link")
+    except store.UnsafeName:
+        refused_by_path = True
+
+    assert (scenario is None) == refused_by_path, "load and save must agree about one identity"
+    if refused_by_path:
+        assert problems and "checkout/link.json" in problems[0]
+
+
+def _point_state_at(profile, name):
+    """Write the active-scenario pointer the way a previous run would have left it."""
+    (profile / "profile.json").write_text('{"hosts": []}')
+    config.reload_profile()
+    config.STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    config.STATE_FILE.write_text(json.dumps({"active": name}))
+
+
+def _pointed_at():
+    return json.loads(config.STATE_FILE.read_text())["active"]
+
+
+def test_a_stale_active_pointer_is_reported_at_startup(profile):
+    """Serving `default` while saying nothing is "substituted a default for what the caller asked
+    for" — the usual cause is a file moved into a group by hand, and the operator is owed the
+    sentence that says so. The pointer itself is left alone, because startup does not write."""
+    _write(profile, "orders-outage", {"overrides": []})
+    _point_state_at(profile, "checkout/orders-outage")
+
+    subject = make_store(profile)
+
+    assert subject.active_name == "default"
+    assert any("is not in this profile" in problem for problem in subject.load_problems)
+    assert _pointed_at() == "checkout/orders-outage", "startup does not write"
+
+
+# MARK: - Creating and deleting in a group
+
+
+def test_creating_in_a_group_writes_one_level_down(profile):
+    subject = make_store(profile)
+    subject.create_scenario("checkout/scratch")
+
+    assert (profile / "scenarios" / "checkout" / "scratch.json").is_file()
+    assert "checkout/scratch" in subject.scenarios
+    assert subject.list_scenarios()["scenarios"][-1]["group"] == "checkout"
+
+
+def test_creating_beside_a_case_colliding_sibling_is_refused(profile):
+    """The new file would either *be* the old one under a second identity, or make a pair discovery
+    then skips — a create that took a profile from one working scenario to none."""
+    if _folds_case(profile):
+        pytest.skip("the filesystem folds case, so the write would land on the same file")
+    _write(profile, "Scratch", {"overrides": []})
+    subject = make_store(profile)
+
+    with pytest.raises(FileExistsError):
+        subject.create_scenario("scratch")
+    assert not (profile / "scenarios" / "scratch.json").exists()
+
+
+def test_creating_over_a_malformed_file_under_its_exact_name_still_recovers(profile):
+    """The documented way out of a file that will not load. An exact name is not a case collision,
+    and refusing it here would take the recovery away."""
+    _write(profile, "broken", "{not json")
+    subject = make_store(profile)
+
+    subject.create_scenario("broken")
+
+    assert "broken" in subject.scenarios
+    assert subject.scenarios_not_whole.get("broken") is None
+
+
+def test_a_failed_unlink_leaves_the_scenario_in_memory_and_on_disk(profile, monkeypatch):
+    """Memory and disk must agree after a refusal. Dropping the scenario first reported False while
+    the proxy had already stopped serving a scenario whose file was still there — and the next
+    `create` under that name would then land on it."""
+    subject = make_store(profile)
+    subject.create_scenario("scratch")
+    subject.set_active("default")
+
+    def refuse(self, missing_ok=False):
+        raise PermissionError(errno.EACCES, "Permission denied")
+
+    monkeypatch.setattr(store.Path, "unlink", refuse)
+
+    assert subject.delete_scenario("scratch") is False
+    assert "scratch" in subject.scenarios
+    assert (profile / "scenarios" / "scratch.json").is_file()
+    assert any("could not delete" in problem for problem in subject.load_problems)
+
+
+# MARK: - Moving
+
+
+def test_moving_a_scenario_relocates_the_file_and_the_name(profile):
+    subject = make_store(profile)
+    subject.create_scenario("scratch")
+    subject.set_active("default")
+
+    subject.move_scenario("scratch", "archive/scratch")
+
+    assert not (profile / "scenarios" / "scratch.json").exists()
+    assert (profile / "scenarios" / "archive" / "scratch.json").is_file()
+    assert "scratch" not in subject.scenarios and "archive/scratch" in subject.scenarios
+    assert subject.scenarios["archive/scratch"]["name"] == "archive/scratch"
+
+
+@pytest.mark.parametrize("name", ["default", "active"])
+def test_moving_the_active_scenario_or_default_is_refused(profile, name):
+    """`default` is the one name the store synthesises, and the active scenario is the one the proxy
+    is answering from — moving either would rename something out from under a live answer."""
+    subject = make_store(profile)
+    subject.create_scenario("scratch")
+    subject.set_active("scratch")
+
+    with pytest.raises(store.ScenarioRefused):
+        subject.move_scenario("scratch" if name == "active" else "default", "archive/x")
+
+
+def test_moving_onto_an_occupied_destination_is_refused(profile):
+    subject = make_store(profile)
+    subject.create_scenario("scratch")
+    subject.create_scenario("archive/taken")
+    subject.set_active("default")
+
+    with pytest.raises(FileExistsError):
+        subject.move_scenario("scratch", "archive/taken")
+    assert (profile / "scenarios" / "scratch.json").is_file()
+
+
+def test_moving_onto_a_malformed_file_absent_from_memory_is_refused(profile):
+    """The destination is occupied by a file this store never loaded. Overwriting it would destroy
+    the very file an operator is about to repair."""
+    _write(profile, "scratch", {"overrides": []})
+    _group_file(profile, "archive", "taken")
+    (profile / "scenarios" / "archive" / "taken.json").write_text("{not json")
+    subject = make_store(profile)
+
+    with pytest.raises(FileExistsError):
+        subject.move_scenario("scratch", "archive/taken")
+    assert (profile / "scenarios" / "archive" / "taken.json").read_text() == "{not json"
+
+
+def test_moving_a_symlinked_scenario_is_refused(profile):
+    """Moving the link would move the link, leaving the scenario where it was under a name that no
+    longer points at it."""
+    _write(profile, "real", {"overrides": []})
+    (profile / "scenarios" / "link.json").symlink_to(profile / "scenarios" / "real.json")
+    subject = make_store(profile)
+
+    with pytest.raises(store.ScenarioRefused):
+        subject.move_scenario("link", "archive/link")
+    assert (profile / "scenarios" / "link.json").is_symlink()
+
+
+def test_moving_an_unknown_scenario_is_a_key_error(profile):
+    subject = make_store(profile)
+    with pytest.raises(KeyError):
+        subject.move_scenario("nope", "archive/nope")
+
+
+def test_moving_a_scenario_edited_on_disk_since_loading_is_refused(profile):
+    """Otherwise the file is relocated under an identity describing contents nobody has read, and
+    the store goes on serving rules no file holds."""
+    subject = make_store(profile)
+    subject.create_scenario("scratch")
+    subject.set_active("default")
+    (profile / "scenarios" / "scratch.json").write_text(
+        json.dumps({"overrides": [{"id": "added-by-hand", "mode": "replace", "status": 200}]})
+    )
+
+    with pytest.raises(store.ScenarioRefused) as refusal:
+        subject.move_scenario("scratch", "archive/scratch")
+
+    assert "changed on disk" in str(refusal.value)
+    assert (profile / "scenarios" / "scratch.json").is_file()
+
+
+def test_a_destination_created_between_the_check_and_the_link_is_a_conflict_and_moves_nothing(
+    profile, monkeypatch
+):
+    """`Path.rename` would replace it silently, and nothing in this store's single-loop guarantee
+    covers a file another process wrote in that window. `os.link` fails with EEXIST instead."""
+    subject = make_store(profile)
+    subject.create_scenario("scratch")
+    subject.set_active("default")
+
+    def occupied(source, dest):
+        raise FileExistsError(errno.EEXIST, "File exists")
+
+    monkeypatch.setattr(store.os, "link", occupied)
+
+    with pytest.raises(FileExistsError):
+        subject.move_scenario("scratch", "archive/scratch")
+    assert (profile / "scenarios" / "scratch.json").is_file()
+    assert "scratch" in subject.scenarios
+
+
+def test_a_move_whose_unlink_fails_removes_the_link_and_leaves_memory_unchanged(profile, monkeypatch):
+    """Half a move is two files under one identity. The new link goes away again, so what the store
+    describes is what is on disk."""
+    subject = make_store(profile)
+    subject.create_scenario("scratch")
+    subject.set_active("default")
+
+    def refuse(self, missing_ok=False):
+        if self.name == "scratch.json" and self.parent.name == "scenarios":
+            raise PermissionError(errno.EACCES, "Permission denied")
+        return store.Path.unlink.__wrapped__(self) if False else None
+
+    monkeypatch.setattr(store.Path, "unlink", refuse)
+
+    with pytest.raises(OSError):
+        subject.move_scenario("scratch", "archive/scratch")
+
+    assert "scratch" in subject.scenarios and "archive/scratch" not in subject.scenarios
+    assert (profile / "scenarios" / "scratch.json").is_file()
+
+
+def test_a_move_whose_primitive_returns_without_its_postcondition_raises(profile, monkeypatch):
+    """A function named for an outcome must fail when it does not achieve it. If `link` reports
+    success without producing the file, the move must not go on to rename it in memory."""
+    subject = make_store(profile)
+    subject.create_scenario("scratch")
+    subject.set_active("default")
+
+    monkeypatch.setattr(store.os, "link", lambda source, dest: None)
+    monkeypatch.setattr(store.Path, "unlink", lambda self, missing_ok=False: None)
+
+    with pytest.raises(OSError):
+        subject.move_scenario("scratch", "archive/scratch")
+    assert "archive/scratch" not in subject.scenarios
+
+
+def test_a_move_carries_load_problems_and_drops_run_state(profile):
+    """The rules dropped when the file loaded are still dropped — the move relocated it, it did not
+    repair it — and the run evidence belonged to the identity that was serving it."""
+    _write(
+        profile,
+        "partial",
+        {"overrides": [{"id": "ok", "mode": "replace", "status": 200}, {"id": "bad", "mode": "nonsense"}]},
+    )
+    subject = make_store(profile)
+    assert subject.scenarios_not_whole.get("partial")
+
+    subject.move_scenario("partial", "archive/partial")
+
+    assert subject.scenarios_not_whole.get("archive/partial")
+    assert "partial" not in subject.scenarios_not_whole
+    assert not store._runtime(subject.scenarios["archive/partial"])
+
+
+# MARK: - Reloading
+
+
+def test_reload_picks_up_a_hand_added_group(profile):
+    subject = make_store(profile)
+    _group_file(profile, "checkout", "orders-outage")
+
+    result = subject.reload_scenarios()
+
+    assert "checkout/orders-outage" in subject.scenarios
+    assert result["active"] == "default"
+
+
+@pytest.mark.parametrize("breakage", ["malformed", "dropped-rule", "over-nested", "dir-symlink"])
+def test_reload_keeps_the_old_snapshot_on_any_problem(profile, breakage):
+    """All or nothing. A reload that silently dropped the one file somebody had just edited would be
+    indistinguishable from one that worked, and the proxy would answer from a profile nobody has."""
+    subject = make_store(profile)
+    subject.create_scenario("keeper")
+    subject.set_active("keeper")
+    before = dict(subject.scenarios)
+
+    if breakage == "malformed":
+        _write(profile, "broken", "{not json")
+    elif breakage == "dropped-rule":
+        _write(profile, "partial", {"overrides": [{"id": "bad", "mode": "nonsense"}]})
+    elif breakage == "over-nested":
+        nested = profile / "scenarios" / "checkout" / "retries"
+        nested.mkdir(parents=True)
+        (nested / "slow.json").write_text(json.dumps({"overrides": []}))
+    else:
+        _group_file(profile, "checkout", "orders-outage")
+        (profile / "scenarios" / "alias").symlink_to(profile / "scenarios" / "checkout")
+
+    with pytest.raises(store.ReloadRefused) as refusal:
+        subject.reload_scenarios()
+
+    assert refusal.value.problems
+    assert subject.scenarios.keys() == before.keys()
+    assert subject.active_name == "keeper"
+
+
+def test_reload_refuses_when_the_active_scenario_left_the_disk(profile):
+    """Falling back to `default` would answer a request to re-read the profile by quietly changing
+    which scenario is live."""
+    _write(profile, "orders-outage", {"overrides": []})
+    subject = make_store(profile)
+    subject.set_active("orders-outage")
+    (profile / "scenarios" / "orders-outage.json").unlink()
+
+    with pytest.raises(store.ReloadRefused) as refusal:
+        subject.reload_scenarios()
+
+    assert "not in this profile any more" in str(refusal.value)
+    assert subject.active_name == "orders-outage"
+
+
+def test_reload_refuses_when_a_real_default_file_is_gone(profile):
+    """A `default.json` that was there and is now gone is a deletion, not the virtual default."""
+    _write(profile, "default", {"overrides": []})
+    subject = make_store(profile)
+    (profile / "scenarios" / "default.json").unlink()
+
+    with pytest.raises(store.ReloadRefused):
+        subject.reload_scenarios()
+
+
+def test_reload_keeps_serving_a_virtual_default_that_was_never_on_disk(profile):
+    """The bundled examples ship no `default.json`, so this is the ordinary case — refusing it would
+    make reload unusable in the profile `lyrebird init` writes."""
+    _write(profile, "orders-outage", {"overrides": []})
+    subject = make_store(profile)
+    assert "default" not in subject._disk_names
+
+    result = subject.reload_scenarios()
+
+    assert result["active"] == "default"
+    assert "default" in subject.scenarios
+
+
+def test_reload_with_use_selects_the_replacement_and_writes_the_pointer(profile):
+    """The hand-move a reload exists for: the file went into a group, so the name it had is gone and
+    `--use` is how the operator says which scenario replaced it."""
+    _write(profile, "orders-outage", {"overrides": []})
+    subject = make_store(profile)
+    subject.set_active("orders-outage")
+    (profile / "scenarios" / "checkout").mkdir()
+    (profile / "scenarios" / "orders-outage.json").rename(
+        profile / "scenarios" / "checkout" / "orders-outage.json"
+    )
+
+    result = subject.reload_scenarios(use="checkout/orders-outage")
+
+    assert result["active"] == "checkout/orders-outage"
+    assert _pointed_at() == "checkout/orders-outage"
+
+
+def test_reload_use_of_the_current_name_still_repairs_a_stale_pointer(profile):
+    """An explicit selection is persisted even when it equals the live one: that is how a pointer
+    left behind by a hand-moved file gets written back."""
+    _write(profile, "orders-outage", {"overrides": []})
+    _point_state_at(profile, "gone")
+    subject = make_store(profile)
+    assert subject.active_name == "default"
+
+    subject.reload_scenarios(use="default")
+
+    assert _pointed_at() == "default", "an explicit selection is written even when it is the live one"
+
+
+def test_reload_whose_pointer_write_fails_changes_nothing(profile, monkeypatch):
+    """Write before publish: a pointer that did not reach the disk must not leave the store serving
+    a scenario the next start would not."""
+    _write(profile, "orders-outage", {"overrides": []})
+    subject = make_store(profile)
+    before = dict(subject.scenarios)
+    _refuse_writes(monkeypatch)
+
+    with pytest.raises(OSError):
+        subject.reload_scenarios(use="orders-outage")
+
+    assert subject.active_name == "default"
+    assert subject.scenarios.keys() == before.keys()
+
+
+def test_reload_invalidates_prior_run_evidence(profile):
+    """The scenarios are new objects with no runtime slots, so a slot captured before the reload
+    credits nobody — the same rule `reset_runtime` relies on."""
+    subject = make_store(profile)
+    subject.add_override({"id": "rule", "mode": "replace", "status": 200})
+    slot = store._rule_runtime(subject.active_scenario(), "rule")
+    before = slot["runId"]
+
+    subject.reload_scenarios()
+
+    after = store._rule_runtime(subject.active_scenario(), "rule")
+    assert after["runId"] != before, "a fresh scenario carries a fresh run"
+    store.credit(slot)
+    assert after["serves"] == {}, "a slot captured before the reload credits nobody"
