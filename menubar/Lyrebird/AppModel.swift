@@ -431,6 +431,31 @@ final class AppModel {
         await refresh()
     }
 
+    /// Re-read the scenario files, for a profile edited outside the app.
+    ///
+    /// Mirrors `activate`, including the early return: a write this app cannot scope to a profile
+    /// sends nothing and refreshes nothing, because there is no proxy it is entitled to ask. On
+    /// every other path it refreshes, so a refusal and the list that produced it are corrected in
+    /// the same tick.
+    func reloadScenarios() async {
+        guard !busy else { return }
+        busy = true
+        defer { busy = false }
+        if let refusal = writeRefusal {
+            lastError = "reload scenarios: \(refusal)"
+            return
+        }
+        do {
+            try await client.reloadScenarios()
+            lastError = nil
+        } catch {
+            // The engine's own sentence: a refused reload names the file that could not be read,
+            // and "reload failed" without it sends the reader nowhere.
+            lastError = "reload scenarios: \(error.localizedDescription)"
+        }
+        await refresh()
+    }
+
     func relaunchApp() async {
         guard !busy else { return }
         busy = true

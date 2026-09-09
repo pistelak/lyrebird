@@ -41,14 +41,15 @@ struct RulesSidebarView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
                 .tag(Destination.recent)
+            let folders = (scenarios ?? ScenarioList(active: "", scenarios: [])).folders()
             Section("Scenarios") {
-                ForEach(scenarios?.scenarios ?? []) { scenario in
-                    ScenarioSidebarRow(
-                        name: scenario.name, isActive: scenario.name == scenarios?.active,
-                        problems: notWhole(scenario.name), activate: { activate(scenario.name) }
-                    )
-                    .tag(Destination.scenario(scenario.name))
-                    .opacity(model.scenarios == nil ? 0.5 : 1)
+                rows(folders.root)
+            }
+            // One section per folder, so the window shows the whole tree: it is the place to move
+            // between folders, and the menu deliberately shows only the active one's.
+            ForEach(folders.groups, id: \.name) { group in
+                Section(group.name) {
+                    rows(group.scenarios)
                 }
             }
         }
@@ -66,6 +67,23 @@ struct RulesSidebarView: View {
 
     }
 
+    /// One row per scenario, tagged individually.
+    ///
+    /// The tag stays on the row rather than moving to the section: `List(selection:)` matches a tag
+    /// wherever it sits, and a section that carried one would make the folder itself selectable —
+    /// selecting something that is not a scenario.
+    @ViewBuilder
+    private func rows(_ shown: [ScenarioSummary]) -> some View {
+        ForEach(shown) { scenario in
+            ScenarioSidebarRow(
+                name: scenario.name, leaf: scenario.leaf, isActive: scenario.name == scenarios?.active,
+                problems: notWhole(scenario.name), activate: { activate(scenario.name) }
+            )
+            .tag(Destination.scenario(scenario.name))
+            .opacity(model.scenarios == nil ? 0.5 : 1)
+        }
+    }
+
     private func activate(_ name: String) {
         guard !model.busy, name != scenarios?.active else { return }
         Task { await model.activate(name) }
@@ -79,6 +97,10 @@ struct RulesSidebarView: View {
 
 private struct ScenarioSidebarRow: View {
     let name: String
+    /// What the row shows: the name without its folder, which is already the heading above it.
+    /// Taken from the model rather than split again here — two implementations of "the leaf" is one
+    /// more than the tree has.
+    let leaf: String
     let isActive: Bool
     let problems: String?
     let activate: () -> Void
@@ -90,7 +112,7 @@ private struct ScenarioSidebarRow: View {
                 // Reserve the checkmark width to keep scenario names aligned.
                 .opacity(isActive ? 1 : 0)
                 .accessibilityHidden(!isActive)
-            Text(name)
+            Text(leaf)
                 .fontWeight(isActive ? .semibold : .regular)
                 .lineLimit(1).truncationMode(.middle)
             if let problems {
@@ -105,7 +127,10 @@ private struct ScenarioSidebarRow: View {
         // name landed on nothing and the row stayed unselected; this gives the whole row one shape.
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
-        .help(isActive ? "Active scenario" : "Double-click to activate")
+        // The qualified name as well as the instruction: the row shows a leaf, and two folders may
+        // each hold one with the same leaf, so the tooltip is where the name a command would take
+        // is readable.
+        .help(isActive ? "\(name) — active scenario" : "\(name) — double-click to activate")
         .accessibilityAction(named: "Activate scenario") { activate() }
     }
 }

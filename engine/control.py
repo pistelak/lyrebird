@@ -26,7 +26,7 @@ from aiohttp.typedefs import Handler
 
 import config
 import rules
-from store import Store, UnsafeName
+from store import ReloadRefused, ScenarioRefused, Store, UnsafeName, scenario_parts
 
 _CSP = "default-src 'none'; frame-ancestors 'none'"
 _BODY_METHODS = ("POST", "PUT", "PATCH", "DELETE")
@@ -188,6 +188,11 @@ def make_app(store: Store, meta_provider: MetaProvider) -> web.Application:
             # sent nothing, not a client asking after a scenario called "".
             if not requested:
                 return web.json_response({"error": "name_required"}, status=400)
+            # Validated here rather than left to the membership test: this handler looks the
+            # scenario up itself, so without it a name that could never be one — `../x`, three
+            # levels deep — reads as a scenario somebody deleted. Every other route validates
+            # inside the store method it calls.
+            scenario_parts(requested)
             if requested not in store.scenarios:
                 # `detail` as well as the slug, the same shape activating an unknown scenario uses.
                 return web.json_response(
@@ -344,12 +349,63 @@ def make_app(store: Store, meta_provider: MetaProvider) -> web.Application:
             )
         return web.json_response({"active": store.active_name, "previous": previous})
 
-    @routes.delete("/__mock__/scenarios/{name}")
-    async def scenarios_delete(request: web.Request) -> web.StreamResponse:
-        name = request.match_info["name"]
+    def _delete(name: str) -> web.StreamResponse:
+        """One implementation for both delete routes, so they cannot answer differently."""
         if not store.delete_scenario(name):
             return web.json_response({"error": "cannot_delete", "name": name}, status=400)
         return web.json_response({"deleted": name})
+
+    @routes.delete("/__mock__/scenarios")
+    async def scenarios_delete_by_query(request: web.Request) -> web.StreamResponse:
+        # A grouped name contains `/`, which no path parameter can carry: `.../scenarios/checkout/x`
+        # matches no route at all, so the CLI would report "not found" for a scenario that is right
+        # there. The query carries it percent-encoded instead.
+        name = request.query.get("name")
+        if not name:
+            return web.json_response({"error": "name_required"}, status=400)
+        return _delete(name)
+
+    @routes.delete("/__mock__/scenarios/{name}")
+    async def scenarios_delete(request: web.Request) -> web.StreamResponse:
+        # Kept for clients that predate the query form; a root name still works through it.
+        return _delete(request.match_info["name"])
+
+    @routes.post("/__mock__/scenarios/move")
+    async def scenarios_move(request: web.Request) -> web.StreamResponse:
+        body = await _safe_json(request)
+        name, to = body.get("name"), body.get("to")
+        if not isinstance(name, str) or not name:
+            return web.json_response({"error": "name_required"}, status=400)
+        if not isinstance(to, str) or not to:
+            return web.json_response({"error": "to_required"}, status=400)
+        try:
+            store.move_scenario(name, to)
+        except KeyError:
+            return web.json_response(
+                {"error": "unknown_scenario", "name": name, "detail": f"no scenario named '{name}' in this profile"},
+                status=404,
+            )
+        except FileExistsError as error:
+            return web.json_response({"error": "scenario_exists", "name": str(error)}, status=409)
+        except ScenarioRefused as error:
+            return web.json_response({"error": "cannot_move", "detail": str(error)}, status=409)
+        return web.json_response({"moved": name, "to": to})
+
+    @routes.post("/__mock__/scenarios/reload")
+    async def scenarios_reload(request: web.Request) -> web.StreamResponse:
+        body = await _safe_json(request)
+        use = body.get("use")
+        if use is not None and (not isinstance(use, str) or not use):
+            return web.json_response({"error": "name_required"}, status=400)
+        try:
+            return web.json_response(store.reload_scenarios(use))
+        except ReloadRefused as error:
+            # 409 with the problems listed: the profile on disk is not one this engine will serve,
+            # and the caller has to fix a file. `detail` is what the CLI prints.
+            return web.json_response(
+                {"error": "reload_refused", "detail": "; ".join(error.problems), "problems": error.problems},
+                status=409,
+            )
 
     app.add_routes(routes)
     return app

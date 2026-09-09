@@ -26,8 +26,23 @@ A **profile** is a directory holding everything specific to your API:
 ```
 my-app/
 ├── profile.json     # { "schemaVersion": 1, "hosts": [...], "simBundleId": "com.example.Store" }
-└── scenarios/*.json
+└── scenarios/
+    ├── default.json          # -> the scenario `default`
+    ├── orders-outage.json    # -> `orders-outage`
+    └── checkout/
+        └── cart-empty.json   # -> `checkout/cart-empty`
 ```
+
+**A scenario is named by its path.** Files may sit in `scenarios/` or in one folder below it, and
+the folder is part of the name every command takes: `lyrebird use checkout/cart-empty`,
+`up --use checkout/cart-empty`, `validate checkout/cart-empty`. The name in the JSON is derived
+from the path and ignored, so moving a file in Finder renames the scenario with nothing left to
+contradict it. Two folders may each hold a `retry.json`; they are two scenarios.
+
+Grouping stops at one level. A file deeper than that, a folder that is a symlink, sibling names
+differing only by case, and a folder that cannot be listed are all **reported** rather than skipped
+quietly — they appear in `loadProblems`, in `validate`, and against the scenario they belong to in
+`scenariosNotWhole`, which is what `up --use NAME` reads before it launches anything.
 
 Select one with `--profile PATH` (wins) or `LYREBIRD_PROFILE`; the default is
 `~/.config/lyrebird` (honouring `XDG_CONFIG_HOME`). `lyrebird init PATH` creates one from
@@ -46,7 +61,8 @@ link: a scenario file must resolve under the resolved `scenarios/` directory *an
 resolved profile. A `scenarios/` linked out of the profile therefore fails every write that touches
 a scenario file — including `scenario new`, `scenario rm`, `override add` and `override clear` —
 with `path escapes …`; a single file linked out, or into a sibling directory inside the profile,
-fails only the writes to that scenario.
+fails only the writes to that scenario. A grouped file is held to exactly the same rule, so a
+scenario the proxy serves is one it can also save.
 
 Reads are held to the same rule, so such a file is not loaded at all: startup skips it with
 `path escapes …` in its load problems, and `lyrebird validate` names it. That is the point — a
@@ -202,7 +218,22 @@ and what the PAC advertises — those are deliberately separate settings.
 - `GET|POST /overrides` — act on the **active scenario**
 - `DELETE /overrides` — **destructive**: deletes every override in the active scenario and rewrites
   its file. The only endpoint that does this.
-- `GET /scenarios` · `POST /scenarios` · `PUT /scenarios/active` · `DELETE /scenarios/{name}`
+- `GET /scenarios` · `POST /scenarios` · `PUT /scenarios/active` ·
+  `DELETE /scenarios?name=<url-encoded>`
+  - Each listed scenario carries `group` — its folder, or `""` at the root of `scenarios/`. It is
+    derived from the name, never stored: the folder a file sits in *is* the group.
+  - Delete takes the name in the **query**, percent-encoded, because a grouped name contains `/` and
+    no path segment can carry one. `DELETE /scenarios/{name}` still works for a root name.
+- `POST /scenarios/move` `{"name": …, "to": …}` — move a scenario, file and all. Refuses (**409**
+  `cannot_move`) the active scenario, `default`, a symlinked source, and a source whose file changed
+  since it was loaded; an occupied destination is **409** `scenario_exists`.
+- `POST /scenarios/reload` `{"use": …}` (optional) — re-read every scenario file, for a profile
+  edited outside the engine. All or nothing: any problem is **409**
+  `{"error": "reload_refused", "problems": [...]}` and the proxy goes on serving what it already
+  had. Stricter than startup, which is lenient because it has no earlier state to keep. **Run
+  evidence does not survive it** — the scenarios are read fresh, so answer counts, cursors and run
+  ids from before the reload belong to nothing. If the active scenario is no longer on disk the
+  reload refuses rather than falling back to `default`; `use` names its replacement.
 
 `POST /overrides` refuses (**400**) a rule that fails validation and installs nothing. A scenario
 *file* is instead reported-and-dropped at startup, because the file is in front of you and the
@@ -212,7 +243,10 @@ A write whose scenario file resolves outside `scenarios/` or outside the profile
 **400** `{"error": "invalid_name", "detail": "path escapes …"}` before anything live changes —
 [Profiles](#profiles) has the layouts that cause it. A name that could not be a path component is a
 separate refusal, reported per endpoint: creating with one is the same **400** with a `detail` of
-`invalid scenario name …`, while activating or deleting it is simply a scenario that is not there.
+`invalid scenario name …`, and so is activating, browsing or deleting with one — a string that could
+never be a scenario is refused rather than reported as one that is merely absent. (Deleting already
+answered 400; what changed is the slug, from `cannot_delete` to `invalid_name`.) A name nested more
+than one level deep is refused the same way.
 
 A `POST`, `PUT`, `PATCH` or `DELETE` carrying a body must send `Content-Type: application/json`,
 and the `Host` header must be a loopback name with the control port. Cross-origin requests are

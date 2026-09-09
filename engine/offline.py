@@ -36,12 +36,16 @@ def _resolve_scenario(name: str) -> tuple[Path | None, list[str]]:
     A name that names nothing is an error, never an empty scenario: a typo and a scenario with no
     rules in it need completely different fixes, and only one of them is worth a hint listing the
     names that *do* exist. Shared by both commands so a name is looked up, and refused, one way.
+
+    Resolved against the identities discovery found, not by asking whether a path `is_file()`: on a
+    case-insensitive filesystem `validate Orders-Outage` used to open `orders-outage.json` and bless
+    a name the running proxy would refuse, and a file that discovery *skipped* — one of a pair
+    differing only by case — used to validate cleanly under a name nothing serves. See
+    test_validate_by_name_refuses_a_colliding_or_miscased_identity.
     """
     try:
-        path = store.scenario_path(name)
-        if not path.is_file():
-            known = ", ".join(file.stem for file in store.scenario_files()) or "none"
-            return None, [f"no scenario {name!r} in {config.SCENARIOS_DIR} (found: {known})"]
+        store.scenario_parts(name)
+        files, discovery = store.scenario_files()
     except store.UnsafeName as error:
         return None, [str(error)]
     except store.LegacyProfileLayout as error:
@@ -49,13 +53,28 @@ def _resolve_scenario(name: str) -> tuple[Path | None, list[str]]:
         # `--json` envelope, and a profile whose scenarios are all under the old name must not read
         # as one that simply lacks the name asked for — see test_validate_refuses_a_legacy_sessions_layout.
         return None, [str(error)]
-    return path, []
+    # The non-throwing form: `scenario_files` returns every file worth explaining, including ones
+    # whose name could never be an identity (`.hidden.json`). Calling the throwing one here turned
+    # an unrelated file in the directory into a traceback out of `validate NAME` — see
+    # test_an_unnameable_file_does_not_break_a_lookup_by_name.
+    identities = {identity: file for file in files if (identity := store._owner(file)) is not None}
+    if name not in identities:
+        known = ", ".join(sorted(identities)) or "none"
+        # The problems recorded against this identity travel with the refusal: a file discovery
+        # skipped is why the name is not here, and reporting only "not found" would send someone
+        # looking for a file that is sitting right there.
+        blamed = [problem for owner, problem in discovery if owner == name]
+        return None, [f"no scenario {name!r} in {config.SCENARIOS_DIR} (found: {known})", *blamed]
+    return identities[name], []
 
 
 def _offline_scenario(name: str) -> tuple[dict | None, list[str]]:
     """Load the saved scenario called `name` from its file: `(scenario, problems)`."""
     path, problems = _resolve_scenario(name)
-    return store.load_scenario_file(path) if path is not None else (None, problems)
+    if path is None:
+        return None, problems
+    scenario, file_problems = store.load_scenario_file(path)
+    return scenario, [*problems, *file_problems]
 
 
 def _validation_report(file: Path) -> dict:
@@ -63,7 +82,11 @@ def _validation_report(file: Path) -> dict:
     and still be missing the rule you came for, and `problems` says which."""
     scenario, problems = store.load_scenario_file(file)
     return {
-        "name": file.stem,
+        # The identity, not the stem: two groups may each hold a `retry.json`, and a report that
+        # called both `retry` would name neither. `_relative_label` never raises, so a file that
+        # could not be an identity at all still gets a verdict rather than a traceback — see
+        # test_validate_reports_a_dotfile_as_a_verdict_not_a_traceback.
+        "name": store._relative_label(file).removesuffix(".json"),
         "file": str(file),
         "loaded": scenario is not None,
         "ok": scenario is not None and not problems,
@@ -101,13 +124,20 @@ def validate(name: str | None, as_json: bool) -> None:
         files = [path] if path is not None else []
     else:
         try:
-            files, problems = store.scenario_files(), []
+            files, discovery = store.scenario_files()
         except store.LegacyProfileLayout as error:
             files, problems = [], [str(error)]
         else:
-            if not files:
+            # Discovery problems are the run's problems: a subtree that could not be read, or a pair
+            # of files colliding by case, means this command checked fewer scenarios than the profile
+            # holds. Dropping them would let `validate` report "ok" for a profile it could not see.
+            problems = [problem for _owner, problem in discovery]
+            if not files and not problems:
                 # Not a green "nothing wrong": a command named for checking scenarios that checked
-                # none has not validated anything, and the usual cause is the wrong --profile.
+                # none has not validated anything, and the usual cause is the wrong --profile. Only
+                # when discovery itself had nothing to say — a profile whose every file was skipped
+                # has already been told why, and adding "no scenario files" would send the reader
+                # to --profile over files that are sitting right there.
                 problems = [
                     f"no scenario files in {config.SCENARIOS_DIR} — check --profile, or create "
                     f"a profile with `lyrebird init {config.PROFILE_DIR}`"

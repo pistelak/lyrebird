@@ -75,14 +75,25 @@ private struct MenuControls: View {
     }
 }
 
+/// The scenarios in the *active* scenario's folder, and nothing else.
+///
+/// A profile can hold more scenarios than a menu can show, and this menu is for switching between
+/// the ones a run is about — which is what a folder groups. The whole tree is the window's job
+/// (`RulesSidebarView`), reached from Scenarios below. Switching folder is `lyrebird use group/name`
+/// or a click in that window; the menu follows once the engine reports the new active scenario.
 private struct MenuScenarios: View {
     let model: AppModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("SCENARIOS").font(.caption2).foregroundStyle(.secondary)
             if let list = model.scenarios {
-                ForEach(list.scenarios) { scenario in
+                let shown = list.shownFolder()
+                // The caption carries the empty case on its own — it is the one that says the
+                // active scenario is not in this list. `scenariosPlaceholder` is not the sentence
+                // for it: that one explains why there is no list at all, so it would read "proxy
+                // not running" while the proxy is answering.
+                caption(shown.caption)
+                ForEach(shown.scenarios) { scenario in
                     Button {
                         Task { await model.activate(scenario.name) }
                     } label: {
@@ -90,7 +101,10 @@ private struct MenuScenarios: View {
                             Image(
                                 systemName: scenario.name == list.active
                                     ? "largecircle.fill.circle" : "circle")
-                            Text(scenario.name)
+                            // The leaf reads better in a folder that is already named above it; the
+                            // qualified name is what gets sent, and what the tooltip shows, because
+                            // that is the name every command takes.
+                            Text(scenario.leaf)
                             if scenario.verified {
                                 Image(systemName: "checkmark.seal.fill").foregroundStyle(RuleFormatting.success)
                             }
@@ -100,11 +114,19 @@ private struct MenuScenarios: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .help(scenario.name)
                 }
             } else {
+                caption(nil)
                 Text(model.scenariosPlaceholder).font(.caption).foregroundStyle(.secondary)
             }
         }
+    }
+
+    private func caption(_ folder: String?) -> some View {
+        Text(folder.map { "SCENARIOS · \($0)" } ?? "SCENARIOS")
+            .font(.caption2)
+            .foregroundStyle(.secondary)
     }
 }
 

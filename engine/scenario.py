@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import sys
+import urllib.parse
 
 import click
 
@@ -151,5 +152,65 @@ def scenario_new(name: str, clone_from: str | None, activate: bool) -> None:
 @click.argument("name")
 def scenario_rm(name: str) -> None:
     """Delete a scenario and its file."""
-    api._control(f"/__mock__/scenarios/{name}", "DELETE")
+    # Encoded into the query, not interpolated into the path: `checkout/scratch` in the path matches
+    # no route, and the CLI would report a scenario that is right there as one that is not — see
+    # test_scenario_rm_sends_the_name_in_the_query_encoded.
+    api._control(f"/__mock__/scenarios?name={urllib.parse.quote(name, safe='')}", "DELETE")
     click.echo(f"✓ deleted {name}")
+
+
+@scenario_group.command(name="list")
+@click.option("--json", "as_json", is_flag=True, help="Machine-readable output.")
+def scenario_list(as_json: bool) -> None:
+    """List the scenarios in this profile, by folder."""
+    payload = api._control("/__mock__/scenarios") or {"active": "", "scenarios": []}
+    if as_json:
+        click.echo(json.dumps(payload, indent=2))
+        return
+
+    active = payload.get("active")
+    scenarios = payload.get("scenarios") or []
+    if not scenarios:
+        click.echo(f"{ui.DIM}(no scenarios){ui.R}")
+        return
+
+    def row(scenario: dict, indent: str = "") -> None:
+        mark = "*" if scenario["name"] == active else " "
+        verified = f" {ui.GREEN}✓{ui.R}" if scenario.get("verified") else ""
+        count = f"  {ui.DIM}{scenario.get('overrideCount', 0)} rules{ui.R}"
+        # The full name, never the leaf: it is what `use`, `mv` and `rm` take, and a listing that
+        # printed something else would be a listing nobody can copy from.
+        click.echo(f" {mark} {indent}{scenario['name']}{verified}{count}")
+
+    groups: dict[str, list[dict]] = {}
+    for scenario in scenarios:
+        groups.setdefault(scenario.get("group") or "", []).append(scenario)
+    for scenario in groups.pop("", []):
+        row(scenario)
+    for group in sorted(groups):
+        click.echo(f"   {ui.DIM}{group}/{ui.R}")
+        for scenario in groups[group]:
+            row(scenario, indent="  ")
+
+
+@scenario_group.command(name="mv")
+@click.argument("name")
+@click.argument("to")
+def scenario_mv(name: str, to: str) -> None:
+    """Move a scenario to another name or folder, file and all."""
+    api._control("/__mock__/scenarios/move", "POST", {"name": name, "to": to})
+    click.echo(f"✓ moved {name} → {to}")
+
+
+@scenario_group.command(name="reload")
+@click.option("--use", "use", default=None, help="Activate this scenario as part of the reload.")
+def scenario_reload(use: str | None) -> None:
+    """Re-read the scenario files, picking up anything added or moved by hand.
+
+    All or nothing: if any file cannot be read whole the proxy goes on serving what it already has,
+    and the refusal names the files. Run evidence does not survive a reload — the scenarios are read
+    fresh, so counts and cursors from before it belong to nothing.
+    """
+    result = api._control("/__mock__/scenarios/reload", "POST", {"use": use} if use else {}) or {}
+    click.echo(f"✓ reloaded {result.get('reloaded', 0)} scenario(s), active: {result.get('active')}")
+    click.echo(f"{ui.DIM}  run evidence was reset — `lyrebird reset` before asserting{ui.R}")

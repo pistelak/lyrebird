@@ -8,6 +8,7 @@ look same-origin. These tests pin the three checks that close that gap.
 import asyncio
 import errno
 import json
+import urllib.parse
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
@@ -1085,3 +1086,212 @@ def test_clear_recent_preserves_rules_evidence_and_event_identity(profile, forei
     assert subject.active_overrides() == overrides
     subject.record_recent({"method": "GET", "path": "/api/orders"})
     assert subject.recent_list()[0]["id"] == "evt-2"
+
+
+# MARK: - Scenario groups over the API
+#
+# A grouped name contains a `/`, so it can travel in a body or a query but never in a path segment.
+# These pin the routes that carry it and the refusals that must not read as "not found".
+
+
+def _grouped(subject):
+    subject.create_scenario("checkout/orders-outage")
+    subject.create_scenario("archive/old")
+    subject.set_active("default")
+
+
+def test_listing_reports_each_scenarios_group(profile):
+    status, _, body = call(profile, "GET", "/__mock__/scenarios", prepare=_grouped)
+
+    assert status == 200
+    groups = {row["name"]: row["group"] for row in body["scenarios"]}
+    assert groups == {"default": "", "checkout/orders-outage": "checkout", "archive/old": "archive"}
+
+
+@pytest.mark.parametrize("name", ["../x", "a/b/c"])
+def test_activating_an_unsafe_qualified_name_is_a_400(profile, name):
+    """400, not 404: "there is no such scenario" invites a retry with a different name, when the
+    problem is that this string could never be one."""
+    status, _, body = call(profile, "PUT", "/__mock__/scenarios/active", json_body={"name": name})
+
+    assert status == 400
+    assert body["error"] == "invalid_name"
+
+
+@pytest.mark.parametrize("name", ["../x", "a/b/c"])
+def test_browsing_an_unsafe_qualified_name_is_a_400(profile, name):
+    status, _, body = call(profile, "GET", f"/__mock__/rules?scenario={urllib.parse.quote(name, safe='')}")
+
+    assert status == 400
+    assert body["error"] == "invalid_name"
+
+
+def test_deleting_an_unsafe_qualified_name_is_a_400(profile):
+    status, _, body = call(profile, "DELETE", "/__mock__/scenarios?name=..%2Fx")
+
+    assert status == 400
+    assert body["error"] == "invalid_name"
+
+
+def test_browsing_a_grouped_scenario(profile):
+    status, _, body = call(profile, "GET", "/__mock__/rules?scenario=checkout%2Forders-outage", prepare=_grouped)
+
+    assert status == 200
+    assert body["scenario"] == "checkout/orders-outage"
+
+
+def test_health_keys_not_whole_by_the_qualified_name(profile):
+    def prepare(subject):
+        directory = config.SCENARIOS_DIR / "checkout"
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "partial.json").write_text(
+            json.dumps({"overrides": [{"id": "bad", "mode": "nonsense"}]}), encoding="utf-8"
+        )
+        subject._load()
+
+    status, _, body = call(profile, "GET", "/__mock__/health", prepare=prepare)
+
+    assert status == 200
+    assert "checkout/partial" in (body.get("scenariosNotWhole") or {})
+
+
+# MARK: - Delete by query
+
+
+def test_deleting_by_query_removes_a_grouped_scenario(profile):
+    """The path form cannot carry this name at all — `/scenarios/checkout/x` matches no route, so
+    the CLI would report a scenario that is right there as one that is not."""
+    status, _, body = call(profile, "DELETE", "/__mock__/scenarios?name=checkout%2Forders-outage", prepare=_grouped)
+
+    assert status == 200
+    assert body["deleted"] == "checkout/orders-outage"
+
+
+def test_deleting_by_query_without_a_name_is_a_400(profile):
+    status, _, body = call(profile, "DELETE", "/__mock__/scenarios")
+
+    assert status == 400
+    assert body["error"] == "name_required"
+
+
+def test_the_path_delete_route_still_removes_a_root_scenario(profile):
+    status, _, body = call(
+        profile, "DELETE", "/__mock__/scenarios/scratch", prepare=lambda s: s.create_scenario("scratch")
+    )
+
+    assert status == 200
+    assert body["deleted"] == "scratch"
+
+
+# MARK: - Move
+
+
+def test_moving_a_scenario_reports_both_names(profile):
+    status, _, body = call(
+        profile,
+        "POST",
+        "/__mock__/scenarios/move",
+        json_body={"name": "archive/old", "to": "checkout/old"},
+        prepare=_grouped,
+    )
+
+    assert status == 200
+    assert (body["moved"], body["to"]) == ("archive/old", "checkout/old")
+
+
+def test_moving_the_active_scenario_is_a_409_that_says_why(profile):
+    def prepare(subject):
+        subject.create_scenario("scratch")
+        subject.set_active("scratch")
+
+    status, _, body = call(
+        profile, "POST", "/__mock__/scenarios/move", json_body={"name": "scratch", "to": "a/b"}, prepare=prepare
+    )
+
+    assert status == 409
+    assert body["error"] == "cannot_move"
+    assert "active scenario" in body["detail"]
+
+
+def test_moving_onto_an_existing_scenario_is_a_conflict(profile):
+    status, _, body = call(
+        profile,
+        "POST",
+        "/__mock__/scenarios/move",
+        json_body={"name": "archive/old", "to": "checkout/orders-outage"},
+        prepare=_grouped,
+    )
+
+    assert status == 409
+    assert body["error"] == "scenario_exists"
+
+
+def test_moving_an_unknown_scenario_is_a_404(profile):
+    status, _, body = call(profile, "POST", "/__mock__/scenarios/move", json_body={"name": "nope", "to": "a/b"})
+
+    assert status == 404
+    assert body["error"] == "unknown_scenario"
+
+
+def test_moving_without_a_destination_is_a_400(profile):
+    status, _, body = call(
+        profile, "POST", "/__mock__/scenarios/move", json_body={"name": "archive/old"}, prepare=_grouped
+    )
+
+    assert status == 400
+    assert body["error"] == "to_required"
+
+
+# MARK: - Reload
+
+
+def test_reload_picks_up_a_file_added_by_hand(profile):
+    def prepare(subject):
+        directory = config.SCENARIOS_DIR / "checkout"
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "added.json").write_text(json.dumps({"overrides": []}), encoding="utf-8")
+
+    status, _, body = call(profile, "POST", "/__mock__/scenarios/reload", json_body={}, prepare=prepare)
+
+    assert status == 200
+    assert "checkout/added" in {row["name"] for row in body["scenarios"]}
+
+
+def test_a_refused_reload_reports_its_problems_and_keeps_serving_the_old_rules(profile):
+    """The proxy answers from the snapshot it already has. A reload that published half a profile
+    would leave it answering from one nobody wrote."""
+
+    def prepare(subject):
+        subject.add_override({"id": "live", "mode": "replace", "status": 200})
+        (config.SCENARIOS_DIR / "broken.json").write_text("{not json", encoding="utf-8")
+
+    status, _, body = call(profile, "POST", "/__mock__/scenarios/reload", json_body={}, prepare=prepare)
+
+    assert status == 409
+    assert body["error"] == "reload_refused"
+    assert body["problems"] and "broken.json" in body["detail"]
+
+
+def test_reload_with_use_switches_the_active_scenario(profile):
+    status, _, body = call(
+        profile,
+        "POST",
+        "/__mock__/scenarios/reload",
+        json_body={"use": "checkout/orders-outage"},
+        prepare=_grouped,
+    )
+
+    assert status == 200
+    assert body["active"] == "checkout/orders-outage"
+
+
+def test_reload_refusing_the_missing_active_scenario_is_a_409(profile):
+    def prepare(subject):
+        subject.create_scenario("scratch")
+        subject.set_active("scratch")
+        (config.SCENARIOS_DIR / "scratch.json").unlink()
+
+    status, _, body = call(profile, "POST", "/__mock__/scenarios/reload", json_body={}, prepare=prepare)
+
+    assert status == 409
+    assert body["error"] == "reload_refused"

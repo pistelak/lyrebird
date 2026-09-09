@@ -29,11 +29,56 @@ struct ScenarioSummary: Codable, Sendable, Equatable, Identifiable {
     var verified: Bool
     var notes: String?
     var id: String { name }
+
+    /// The folder this scenario lives in, or `""` at the root of `scenarios/`.
+    ///
+    /// Derived from the name, and deliberately not decoded: the engine sends a `group` field for
+    /// other clients, but here it would be a second source for something the name already says, and
+    /// one an older engine simply omits. Deriving it means both engines render the same tree.
+    var group: String { name.contains("/") ? String(name.prefix(while: { $0 != "/" })) : "" }
+
+    /// What a row shows: the name without its folder. Scenarios nest one level, so exactly one
+    /// separator is ever stripped.
+    var leaf: String { name.contains("/") ? String(name.drop(while: { $0 != "/" }).dropFirst()) : name }
 }
 
 struct ScenarioList: Codable, Sendable, Equatable {
     var active: String
     var scenarios: [ScenarioSummary]
+
+    /// The scenarios split into the root's and one entry per folder, folders sorted by name.
+    ///
+    /// Order within a folder is the engine's, which is the order the files were read — the app does
+    /// not re-sort what the engine already decided.
+    func folders() -> (root: [ScenarioSummary], groups: [(name: String, scenarios: [ScenarioSummary])]) {
+        var root: [ScenarioSummary] = []
+        var groups: [String: [ScenarioSummary]] = [:]
+        for scenario in scenarios {
+            if scenario.group.isEmpty {
+                root.append(scenario)
+            } else {
+                groups[scenario.group, default: []].append(scenario)
+            }
+        }
+        return (root, groups.keys.sorted().map { (name: $0, scenarios: groups[$0] ?? []) })
+    }
+
+    /// What the menu shows: the active scenario's folder, and the caption naming it.
+    ///
+    /// Folder and caption are resolved together, in one place, because they are one answer. Derived
+    /// separately, a caption could name `checkout/` above rows taken from the root — a menu that
+    /// says it is showing one thing while showing another. When the active name is not in the list
+    /// at all (it was deleted between polls) the caption says so rather than implying a folder.
+    func shownFolder() -> (caption: String?, scenarios: [ScenarioSummary]) {
+        guard let current = scenarios.first(where: { $0.name == active }) else {
+            let root = scenarios.filter { $0.group.isEmpty }
+            return ("\(active) is not in this profile", root)
+        }
+        if current.group.isEmpty {
+            return (nil, scenarios.filter { $0.group.isEmpty })
+        }
+        return (current.group + "/", scenarios.filter { $0.group == current.group })
+    }
 }
 
 /// One request the proxy saw, as `store.record_recent` filed it. Only `method`, `path` and

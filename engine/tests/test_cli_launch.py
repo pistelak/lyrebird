@@ -154,6 +154,20 @@ def test_up_does_not_relaunch_when_the_activation_call_fails(profile, runner, mo
     assert "INTERCEPT ACTIVE" in result.output
 
 
+def test_up_use_accepts_a_grouped_name(profile, runner, monkeypatch):
+    """A scenario in a folder is selected the same way as any other: the name carries the folder, so
+    nothing along the path from the flag to the PUT needs a second notion of what a scenario is
+    called. The launch that follows must be the one that meets it."""
+    state = _fake_proxy(monkeypatch, scenarios=("default", "checkout/orders-outage"))
+    _up_with_a_proxy(profile, monkeypatch, state)
+
+    result = runner.invoke(cli.cli, ["up", "--use", "checkout/orders-outage"])
+
+    assert result.exit_code == 0
+    assert ("activate", "checkout/orders-outage") in state["events"]
+    assert state["launched"] == [{"scenario": "checkout/orders-outage", "status": 503, "step": 1}]
+
+
 def test_up_prints_both_fingerprints_when_the_activation_is_refused_for_another_profile(profile, runner, monkeypatch):
     """The port changed hands before the switch, so the PUT is answered by a proxy running someone
     else's profile. `_control` prints the two fingerprints on its way out; what it cannot know is
