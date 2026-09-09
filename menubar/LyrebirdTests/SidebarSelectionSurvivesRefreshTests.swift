@@ -5,16 +5,19 @@ import Testing
 @testable import Lyrebird
 
 extension AppTests {
-    /// The sidebar's rows are rebuilt on every poll, two seconds apart, while the user reads one
-    /// scenario. A selection binding that accepts SwiftUI's deselect writes clears the selection on
-    /// any such write, which would drop the user back onto the active scenario mid-read.
+    /// The sidebar's rows are rebuilt on every poll, two seconds apart, while someone is reading one
+    /// scenario. A selection that follows the list's deselect writes would be cleared by any of
+    /// them, dropping the reader back onto the active scenario mid-read.
     @MainActor
     struct SidebarSelectionSurvivesRefreshTests {
+        /// Records what the sidebar writes, as it writes it: a transient nil that a later write
+        /// repaired would be invisible in the resulting state.
         @MainActor
         final class Holder {
             var selection: String?
             var showsRecent = false
-            var clears = 0
+            var writes: [String?] = []
+            var clears: Int { writes.filter { $0 == nil }.count }
         }
 
         struct Host: View {
@@ -23,13 +26,26 @@ extension AppTests {
             @State private var selection: String?
             @State private var showsRecent = false
             var body: some View {
-                RulesSidebarView(model: model, selection: $selection, showsRecent: $showsRecent)
-                    .onAppear { selection = "charlie" }
-                    .onChange(of: selection) { _, new in
-                        holder.selection = new
-                        if new == nil { holder.clears += 1 }
-                    }
-                    .onChange(of: showsRecent) { _, new in holder.showsRecent = new }
+                RulesSidebarView(
+                    model: model,
+                    selection: Binding(
+                        get: { selection },
+                        set: { new in
+                            holder.writes.append(new)
+                            holder.selection = new
+                            selection = new
+                        }),
+                    showsRecent: Binding(
+                        get: { showsRecent },
+                        set: { new in
+                            holder.showsRecent = new
+                            showsRecent = new
+                        })
+                )
+                .onAppear {
+                    holder.selection = "charlie"
+                    selection = "charlie"
+                }
             }
         }
 
@@ -46,10 +62,23 @@ extension AppTests {
 
         nonisolated static let names = ["alpha", "bravo", "charlie", "delta"]
 
+        /// Fails rather than returning: a wait that gave up quietly would let every assertion after
+        /// it pass on state the test never actually reached.
+        private func waitUntil(
+            _ description: Comment, timeout: Duration = .seconds(2), _ condition: () -> Bool
+        ) async throws {
+            let deadline = ContinuousClock.now.advanced(by: timeout)
+            while ContinuousClock.now < deadline {
+                if condition() { return }
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            try #require(condition(), description)
+        }
+
         @Test
         func aPollingRefreshDoesNotClearTheBrowsedScenario() async throws {
             try await withAppTestEnvironment {
-                // A fresh list object per read, with the active scenario moving under the user, is
+                // A fresh list object per read, with the active scenario moving under the reader, is
                 // what the poll loop delivers.
                 let active = ActiveBox()
                 StubURLProtocol.install { request in
@@ -77,18 +106,23 @@ extension AppTests {
                 window.setContentSize(NSSize(width: 260, height: 420))
                 window.orderFront(nil)
                 defer { window.close() }
-                try await Task.sleep(for: .milliseconds(400))
+                try await waitUntil("the host never established a selection") { holder.selection == "charlie" }
                 controller.view.layoutSubtreeIfNeeded()
-                try #require(holder.selection == "charlie", "the host did not establish a selection")
+                holder.writes.removeAll()
 
                 for round in 0..<6 {
-                    active.name = round.isMultiple(of: 2) ? "bravo" : "alpha"
+                    let moved = round.isMultiple(of: 2) ? "bravo" : "alpha"
+                    active.name = moved
                     await model.refresh()
+                    // Each round has to reach the model, or six refreshes that all failed would
+                    // leave the selection untouched and pass.
+                    try #require(model.scenarios?.active == moved, "round \(round) did not reach the model")
+                    try #require(model.scenarios?.scenarios.map(\.name) == Self.names)
                     controller.view.layoutSubtreeIfNeeded()
                     try await Task.sleep(for: .milliseconds(120))
                 }
 
-                #expect(holder.selection == "charlie", "a refresh moved the user off the scenario they were reading")
+                #expect(holder.selection == "charlie", "a refresh moved the reader off their scenario")
                 #expect(holder.clears == 0, "a refresh cleared the selection \(holder.clears) time(s)")
                 #expect(!holder.showsRecent)
                 window.close()
