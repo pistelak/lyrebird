@@ -53,7 +53,11 @@ def _resolve_scenario(name: str) -> tuple[Path | None, list[str]]:
         # `--json` envelope, and a profile whose scenarios are all under the old name must not read
         # as one that simply lacks the name asked for — see test_validate_refuses_a_legacy_sessions_layout.
         return None, [str(error)]
-    identities = {store.scenario_identity(file): file for file in files}
+    # The non-throwing form: `scenario_files` returns every file worth explaining, including ones
+    # whose name could never be an identity (`.hidden.json`). Calling the throwing one here turned
+    # an unrelated file in the directory into a traceback out of `validate NAME` — see
+    # test_an_unnameable_file_does_not_break_a_lookup_by_name.
+    identities = {identity: file for file in files if (identity := store._owner(file)) is not None}
     if name not in identities:
         known = ", ".join(sorted(identities)) or "none"
         # The problems recorded against this identity travel with the refusal: a file discovery

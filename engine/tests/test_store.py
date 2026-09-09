@@ -1564,24 +1564,49 @@ def test_a_destination_created_between_the_check_and_the_link_is_a_conflict_and_
 
 
 def test_a_move_whose_unlink_fails_removes_the_link_and_leaves_memory_unchanged(profile, monkeypatch):
-    """Half a move is two files under one identity. The new link goes away again, so what the store
+    """Half a move is one scenario in two files. The new link goes away again, so what the store
     describes is what is on disk."""
     subject = make_store(profile)
     subject.create_scenario("scratch")
     subject.set_active("default")
+    real_unlink = store.Path.unlink
 
-    def refuse(self, missing_ok=False):
-        if self.name == "scratch.json" and self.parent.name == "scenarios":
+    def refuse_the_source(self, missing_ok=False):
+        if self.parent.name == "scenarios" and self.name == "scratch.json":
             raise PermissionError(errno.EACCES, "Permission denied")
-        return store.Path.unlink.__wrapped__(self) if False else None
+        return real_unlink(self, missing_ok=missing_ok)
 
-    monkeypatch.setattr(store.Path, "unlink", refuse)
+    monkeypatch.setattr(store.Path, "unlink", refuse_the_source)
 
     with pytest.raises(OSError):
         subject.move_scenario("scratch", "archive/scratch")
 
     assert "scratch" in subject.scenarios and "archive/scratch" not in subject.scenarios
     assert (profile / "scenarios" / "scratch.json").is_file()
+    # The rollback really happened. Leaving the destination behind is the state this refusal claims
+    # not to be in, and a double that made its unlink a no-op could never have noticed.
+    assert not (profile / "scenarios" / "archive" / "scratch.json").exists()
+
+
+def test_a_move_whose_rollback_also_fails_names_the_file_left_behind(profile, monkeypatch):
+    """Both unlinks failed, so the scenario is in two files. Saying "the profile is unchanged" would
+    describe a profile nobody has, and nothing else is going to notice the spare."""
+    subject = make_store(profile)
+    subject.create_scenario("scratch")
+    subject.set_active("default")
+
+    def refuse(self, missing_ok=False):
+        raise PermissionError(errno.EACCES, "Permission denied")
+
+    monkeypatch.setattr(store.Path, "unlink", refuse)
+
+    with pytest.raises(OSError) as failure:
+        subject.move_scenario("scratch", "archive/scratch")
+
+    message = str(failure.value)
+    assert "two files" in message
+    assert "archive/scratch.json" in message, "name the one left behind"
+    assert "scratch" in subject.scenarios and "archive/scratch" not in subject.scenarios
 
 
 def test_a_move_whose_primitive_returns_without_its_postcondition_raises(profile, monkeypatch):
@@ -1610,11 +1635,17 @@ def test_a_move_carries_load_problems_and_drops_run_state(profile):
     subject = make_store(profile)
     assert subject.scenarios_not_whole.get("partial")
 
+    slot = store._rule_runtime(subject.scenarios["partial"], "ok")
+    store.credit(slot)
+    assert store._runtime(subject.scenarios["partial"]), "there is evidence to lose"
+
     subject.move_scenario("partial", "archive/partial")
 
     assert subject.scenarios_not_whole.get("archive/partial")
     assert "partial" not in subject.scenarios_not_whole
-    assert not store._runtime(subject.scenarios["archive/partial"])
+    assert not store._runtime(subject.scenarios["archive/partial"]), (
+        "the run belonged to the identity that was serving it"
+    )
 
 
 # MARK: - Reloading
@@ -1730,14 +1761,18 @@ def test_reload_whose_pointer_write_fails_changes_nothing(profile, monkeypatch):
     a scenario the next start would not."""
     _write(profile, "orders-outage", {"overrides": []})
     subject = make_store(profile)
-    before = dict(subject.scenarios)
+    live = subject.scenarios["orders-outage"]
+    # A candidate whose *contents* differ, so an assertion on the keys alone cannot pass a reload
+    # that published anyway.
+    _write(profile, "orders-outage", {"overrides": [{"id": "added", "mode": "replace", "status": 204}]})
     _refuse_writes(monkeypatch)
 
     with pytest.raises(OSError):
         subject.reload_scenarios(use="orders-outage")
 
     assert subject.active_name == "default"
-    assert subject.scenarios.keys() == before.keys()
+    assert subject.scenarios["orders-outage"] is live, "the live objects are still the live ones"
+    assert subject.scenarios["orders-outage"]["overrides"] == []
 
 
 def test_reload_invalidates_prior_run_evidence(profile):
@@ -1748,9 +1783,104 @@ def test_reload_invalidates_prior_run_evidence(profile):
     slot = store._rule_runtime(subject.active_scenario(), "rule")
     before = slot["runId"]
 
+    store.credit(slot)
+    assert slot["answers"] == 1, "the slot is live before the reload"
+
     subject.reload_scenarios()
 
     after = store._rule_runtime(subject.active_scenario(), "rule")
     assert after["runId"] != before, "a fresh scenario carries a fresh run"
     store.credit(slot)
-    assert after["serves"] == {}, "a slot captured before the reload credits nobody"
+    # `credit` counts into `answers`; asserting on `serves` passed whatever the reload did.
+    assert after["answers"] == 0, "a slot captured before the reload credits nobody"
+    assert slot["answers"] == 2, "the orphaned slot is mutated, and nothing can reach it"
+
+
+def test_reload_refuses_when_a_default_it_wrote_itself_is_deleted(profile):
+    """`default` starts virtual, and the first rule added to it writes the file. Once that has
+    happened a missing `default.json` is a deletion like any other — treated as "there never was
+    one", the reload published an empty scenario over one full of rules and reported success."""
+    subject = make_store(profile)
+    subject.add_override({"id": "rule", "mode": "replace", "status": 200})
+    assert (profile / "scenarios" / "default.json").is_file()
+    (profile / "scenarios" / "default.json").unlink()
+
+    with pytest.raises(store.ReloadRefused):
+        subject.reload_scenarios()
+
+    assert [o["id"] for o in subject.active_overrides()] == ["rule"]
+
+
+def test_a_directory_named_like_a_scenario_file_is_reported_against_that_name(profile):
+    """`default.json/` is a valid *group* name to `safe_component`, so it was scanned for scenarios
+    inside and an empty one produced no problem at all — while `up --use default` served the
+    synthesised default and called it whole."""
+    (profile / "scenarios" / "default.json").mkdir()
+
+    subject = make_store(profile)
+
+    assert subject.scenarios_not_whole.get("default"), "the name `up --use` would ask about"
+    assert any("a directory, not a scenario file" in p for p in subject.load_problems)
+
+
+def test_a_dangling_symlink_in_scenarios_is_reported_rather_than_vanishing(profile):
+    """It is neither a file nor a directory, so it matched no branch and disappeared — the one shape
+    where "there is nothing here" and "I could not follow it" looked identical."""
+    (profile / "scenarios" / "checkout").symlink_to(profile / "scenarios" / "nowhere")
+
+    subject = make_store(profile)
+
+    assert any("symlink pointing at nothing" in problem for problem in subject.load_problems)
+
+
+def test_a_case_check_that_cannot_list_the_directory_refuses_rather_than_allowing_the_write(profile, monkeypatch):
+    """The check guards a write. Reading a failed listing as "nothing in the way" is the fail-open
+    that lets a create land beside a file it could not see."""
+    subject = make_store(profile)
+    real = store.Path.iterdir
+
+    def refuse(self):
+        if self.name == "scenarios":
+            raise PermissionError(errno.EACCES, "Permission denied")
+        return real(self)
+
+    monkeypatch.setattr(store.Path, "iterdir", refuse)
+
+    with pytest.raises(OSError):
+        subject.create_scenario("scratch")
+
+
+def test_moving_a_scenario_that_stopped_loading_whole_is_refused(profile):
+    """The rule added by hand does not validate, so both loads drop it and the two normalised
+    scenarios still match. Comparing only the contents let the move carry `scenariosNotWhole`
+    entries recorded before the edit — a destination marked whole over a file that drops a rule."""
+    _write(profile, "scratch", {"overrides": [{"id": "ok", "mode": "replace", "status": 200}]})
+    subject = make_store(profile)
+    assert not subject.scenarios_not_whole.get("scratch")
+    _write(
+        profile,
+        "scratch",
+        {"overrides": [{"id": "ok", "mode": "replace", "status": 200}, {"id": "bad", "mode": "nonsense"}]},
+    )
+
+    with pytest.raises(store.ScenarioRefused):
+        subject.move_scenario("scratch", "archive/scratch")
+
+
+def test_a_failed_delete_of_the_active_scenario_puts_it_back(profile, monkeypatch):
+    """Returning False while the proxy had quietly moved to `default` is the same "reported a
+    failure, changed anyway" the write-then-publish ordering exists to prevent."""
+    subject = make_store(profile)
+    subject.create_scenario("scratch")
+    subject.set_active("scratch")
+
+    def refuse(self, missing_ok=False):
+        raise PermissionError(errno.EACCES, "Permission denied")
+
+    monkeypatch.setattr(store.Path, "unlink", refuse)
+
+    assert subject.delete_scenario("scratch") is False
+
+    assert subject.active_name == "scratch", "the delete did not happen, so neither did the switch"
+    assert _pointed_at() == "scratch"
+    assert (profile / "scenarios" / "scratch.json").is_file()

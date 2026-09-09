@@ -576,3 +576,17 @@ def test_explain_match_accepts_a_qualified_name(profile, runner, offline):
     payload = json.loads(result.output)
     assert payload["selected"] == "ovr_orders"
     assert payload["problems"] == []
+
+
+def test_an_unnameable_file_does_not_break_a_lookup_by_name(profile, runner, offline):
+    """`validate whole` has to answer about `whole`. Deriving the known identities through the
+    throwing helper turned an unrelated `.hidden.json` sitting in the directory into a traceback out
+    of a command that promises a JSON verdict."""
+    write_scenario(profile, "whole", _WHOLE)
+    (profile / "scenarios" / ".hidden.json").write_text(json.dumps(_WHOLE), encoding="utf-8")
+
+    result = runner.invoke(cli.cli, ["validate", "whole", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert [report["name"] for report in payload["scenarios"]] == ["whole"]

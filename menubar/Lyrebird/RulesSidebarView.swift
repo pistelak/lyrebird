@@ -76,7 +76,7 @@ struct RulesSidebarView: View {
     private func rows(_ shown: [ScenarioSummary]) -> some View {
         ForEach(shown) { scenario in
             ScenarioSidebarRow(
-                name: scenario.name, isActive: scenario.name == scenarios?.active,
+                name: scenario.name, leaf: scenario.leaf, isActive: scenario.name == scenarios?.active,
                 problems: notWhole(scenario.name), activate: { activate(scenario.name) }
             )
             .tag(Destination.scenario(scenario.name))
@@ -97,15 +97,13 @@ struct RulesSidebarView: View {
 
 private struct ScenarioSidebarRow: View {
     let name: String
+    /// What the row shows: the name without its folder, which is already the heading above it.
+    /// Taken from the model rather than split again here — two implementations of "the leaf" is one
+    /// more than the tree has.
+    let leaf: String
     let isActive: Bool
     let problems: String?
     let activate: () -> Void
-
-    /// What the row shows. The folder is the section heading above it, so repeating it on every row
-    /// would push the part that differs off the edge of a narrow sidebar.
-    private var shown: String {
-        name.contains("/") ? String(name.drop(while: { $0 != "/" }).dropFirst()) : name
-    }
 
     var body: some View {
         HStack(spacing: RuleFormatting.Space.snug) {
@@ -114,7 +112,7 @@ private struct ScenarioSidebarRow: View {
                 // Reserve the checkmark width to keep scenario names aligned.
                 .opacity(isActive ? 1 : 0)
                 .accessibilityHidden(!isActive)
-            Text(shown)
+            Text(leaf)
                 .fontWeight(isActive ? .semibold : .regular)
                 .lineLimit(1).truncationMode(.middle)
             if let problems {
