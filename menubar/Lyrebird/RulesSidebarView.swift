@@ -18,12 +18,10 @@ struct RulesSidebarView: View {
                     case .scenario(let name):
                         showsRecent.wrappedValue = false
                         selection.wrappedValue = name
-                    case nil:
-                        // Dropping the list's deselect left the getter reporting a row the list had
-                        // already cleared, so the next click moved from a selection that was no
-                        // longer there — see destinationBindingRoundTripsDeselectThenSelect.
-                        showsRecent.wrappedValue = false
-                        selection.wrappedValue = nil
+                    // The list deselects before it selects, and taking that literally sent the window
+                    // back to the active scenario between every pair of clicks — see
+                    // destinationBindingKeepsTheBrowsedScenarioThroughADeselect.
+                    case nil: break
                     }
                 })
         }
