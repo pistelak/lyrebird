@@ -54,7 +54,6 @@ CONTROL_ORIGIN = f"http://{CONTROL_HOST}:{CONTROL_PORT}"
 CONTROL_HOST_HEADER = f"{CONTROL_HOST}:{CONTROL_PORT}"
 
 RECENT_CAP = 200
-MAX_DELAY_MS = 60000  # ceiling for a per-override delayMs so a typo can't wedge a flow indefinitely
 
 
 # MARK: - Profile and state locations

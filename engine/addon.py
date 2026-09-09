@@ -179,9 +179,10 @@ class Lyrebird:
         body_text = flow.request.get_text(strict=False) or ""
         override = self.store.find_override(flow.request.method, pathname, query, body_text)
 
-        delay_ms = override.get("delayMs") if override else None
+        # Capped by `rules.effective_delay_ms`, which is also what `describe_rewrite` reports — so a
+        # rule cannot be described as waiting two minutes and then answer after one.
+        delay_ms = rules.effective_delay_ms(override) if override else None
         if delay_ms:
-            delay_ms = min(int(delay_ms), config.MAX_DELAY_MS)
             flow.metadata["mock_delay_ms"] = delay_ms  # await sleeps only this flow; other flows keep serving
             # Awaited *before* the step is chosen. Selection and the response it produces are then
             # one synchronous block, so nothing can interleave between picking a step and committing

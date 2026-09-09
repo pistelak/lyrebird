@@ -165,40 +165,99 @@ def make_app(store: Store, meta_provider: MetaProvider) -> web.Application:
         )
 
     @routes.get("/__mock__/rules")
-    async def rules_snapshot(_request: web.Request) -> web.StreamResponse:
-        """The active scenario's rules, each with the engine's own description of what it answers
-        with and the runtime state it has. It exists so a client can show rules without
-        reimplementing which rule wins, which step is next or what a patch does.
+    async def rules_snapshot(request: web.Request) -> web.StreamResponse:
+        """The rules of one scenario, each with the engine's own description of what it answers with
+        and the runtime state it has. It exists so a client can show rules without reimplementing
+        which rule wins, which step is next or what a patch does.
 
-        Nothing is awaited: unlike `health` this needs no meta, and the four reads below are the
-        rules, their answer counts, their cursors and the problems recorded against this scenario —
-        a suspension anywhere among them would pair one scenario's rules with another's counters,
-        so the handler stays synchronous and every row describes the same moment.
+        `?scenario=NAME` *browses* that scenario instead of the active one, which is what a sidebar
+        does when the pointer moves down a list: looking is not switching, and a read that activated
+        what it was asked about would repoint the running proxy at every scenario a user glanced at.
+        `active` says which of the two a snapshot is, so a window can never present a scenario it is
+        merely reading as the one answering requests.
+
+        Nothing is awaited: unlike `health` this needs no meta, and the reads below — the rules,
+        their answer counts, their cursors and the problems recorded against the scenario — would
+        otherwise be split by a suspension, pairing one scenario's rules with another's counters. The
+        handler stays synchronous and every row describes the same moment.
         """
-        # Sequences first: `sequence_states` mints a rule's runtime slot where `answer_states` only
-        # reads one, so reading answers first left the very first snapshot after activation showing
-        # a null `answer.runId` beside a live `sequenceState.runId` for one rule — two run ids for
-        # one run. See test_a_fresh_snapshot_gives_a_sequenced_rule_one_run_id.
-        sequences = {state["id"]: state for state in store.sequence_states()}
-        answers = {state["id"]: state for state in store.answer_states()}
+        requested = request.query.get("scenario")
+        if requested is not None:
+            # Checked before the lookup below, which would report an empty name as an unknown
+            # scenario — the wrong problem: `?scenario=` is a client that meant to name one and
+            # sent nothing, not a client asking after a scenario called "".
+            if not requested:
+                return web.json_response({"error": "name_required"}, status=400)
+            if requested not in store.scenarios:
+                # `detail` as well as the slug, the same shape activating an unknown scenario uses.
+                return web.json_response(
+                    {
+                        "error": "unknown_scenario",
+                        "name": requested,
+                        "detail": f"no scenario named '{requested}' in this profile",
+                    },
+                    status=404,
+                )
+
+        # The active read is also the parameterless one, and it is not routed through a membership
+        # test: a store whose active scenario has gone heals itself inside `active_overrides`, and a
+        # lookup here would 404 that recovery instead of performing it.
+        if requested is None or requested == store.active_name:
+            active = True
+            # Sequences first: `sequence_states` mints a rule's runtime slot where `answer_states`
+            # only reads one, so reading answers first left the very first snapshot after activation
+            # showing a null `answer.runId` beside a live `sequenceState.runId` for one rule — two
+            # run ids for one run. See test_a_fresh_snapshot_gives_a_sequenced_rule_one_run_id.
+            sequences: dict[str, dict] = {state["id"]: state for state in store.sequence_states()}
+            answers: dict[str, dict] = {state["id"]: state for state in store.answer_states()}
+            # Read after the healing `active_overrides` may have done, so the name reported is the
+            # scenario these rules actually came from.
+            overrides = store.active_overrides()
+            name = store.active_name
+        else:
+            # Null runtime, not zeroed. Cursors and answer counts belong to the scenario the proxy
+            # is serving; a browsed one has no run, and reporting `count: 0` would say it answered
+            # nothing when the truth is that nothing has asked it to.
+            active = False
+            name, overrides = requested, list(store.scenarios[requested].get("overrides") or [])
+            sequences, answers = {}, {}
+
+        def advance_on_rule(matcher: dict | None) -> str | None:
+            """The id of the rule whose `match` is this trigger, or None when no rule's is.
+
+            Here because it needs the whole scenario, which `describe_rewrite` does not receive.
+            Inactive rules count and the first in scenario order wins: this is trigger identity,
+            not which rule would answer.
+            """
+            if matcher is None:
+                return None  # `self`: no request advances it, so there is no rule to name
+            return next((o["id"] for o in overrides if rules.same_matcher(o.get("match"), matcher)), None)
+
+        def described(override: dict) -> dict:
+            rewrite = rules.describe_rewrite(override)
+            if rewrite["sequence"] is not None:
+                rewrite["sequence"]["advanceOnRule"] = advance_on_rule(rewrite["sequence"]["advanceOn"])
+            return rewrite
+
         return web.json_response(
             {
-                "scenario": store.active_name,
+                "scenario": name,
+                "active": active,
                 # From the keyed map, never by filtering `load_problems`: a file named
                 # `orders-outage.json: backup.json` leaves a line that begins exactly like a problem
                 # with `orders-outage`, and a client would blame a scenario that loaded whole.
-                "notWhole": list(store.scenarios_not_whole.get(store.active_name, [])),
+                "notWhole": list(store.scenarios_not_whole.get(name, [])),
                 "rules": [
                     {
                         **override,
-                        "rewrite": rules.describe_rewrite(override),
+                        "rewrite": described(override),
                         "answer": answers.get(override["id"]),
                         # Not "sequence": that key already holds the rule's steps as written, and
                         # overwriting it with the cursor would hand back a payload that claims to
                         # carry the rule as stored while having dropped half of it.
                         "sequenceState": sequences.get(override["id"]),
                     }
-                    for override in store.active_overrides()
+                    for override in overrides
                 ],
             }
         )

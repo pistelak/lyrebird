@@ -44,6 +44,12 @@ from typing import Any, TypeGuard
 SCHEMA_VERSION = 1  # the scenario-file format this engine reads; see `normalise_scenario`
 MAX_WILDCARDS = 10  # a bounded number of wildcards keeps the generated regex cheap to evaluate
 MAX_SEQUENCE_STEPS = 50  # bounded for the same reason: a pasted file must not cost unbounded memory
+# The ceiling on a per-override `delayMs`, so a typo cannot wedge a flow indefinitely. Here
+# rather than in `config` because it is not configuration: the proxy applies it and
+# `describe_rewrite` reports it, and a rule described as waiting two minutes while the wire
+# waits one is the drift this module exists to prevent — see
+# test_describe_rewrite_reports_the_delay_the_proxy_will_apply.
+MAX_DELAY_MS = 60_000
 # The largest body `describe_rewrite` will hand back inside a sequence step. Each step is
 # described after inheritance, so one 1 MB body on the parent of a 50-step sequence is 50 MB of
 # snapshot — the same body, repeated, for a pane that only needs to say how big it is. Over this,
@@ -215,6 +221,21 @@ def is_active(override: Mapping[str, Any]) -> bool:
     return override.get("active", True) is not False
 
 
+def effective_delay_ms(override: Mapping[str, Any]) -> int | None:
+    """How long the proxy will actually hold a matched response, or None for no delay.
+
+    Capped here rather than at the sleep, so the number a client is shown is the number the flow
+    waits: a rule configured with 120000 used to be described as two minutes and served after one.
+    Validation has already made `delayMs` a non-negative int, and 0 is "no delay" the same as an
+    absent field — that is what the proxy does with it, and a description saying "0 ms" would offer
+    a distinction the wire does not make.
+    """
+    delay = override.get("delayMs")
+    if not delay:
+        return None
+    return min(int(delay), MAX_DELAY_MS)
+
+
 def effective_status(spec: Mapping[str, Any]) -> int:
     """The status a `replace` answers with: its own, or 200 when it names none.
 
@@ -263,6 +284,37 @@ def is_plain_object(value: Any) -> TypeGuard[Mapping[str, Any]]:
     """A TypeGuard rather than a plain bool so that the `if not is_plain_object(x): return` shape
     used throughout this module narrows `x` for the type checker instead of needing a cast."""
     return isinstance(value, Mapping)
+
+
+def _matcher_shape(matcher: Any) -> tuple:
+    """One comparable shape for a matcher: what it constrains, in the terms the wire compares by.
+
+    Truthiness, `str(value)` and the upper-cased method are `explain_matcher`'s own rules, not new
+    ones: two matchers that this says are the same are two matchers that accept exactly the same
+    requests, which is the only sense in which one rule's trigger *is* another rule.
+    """
+    fields = matcher if is_plain_object(matcher) else {}
+    method = fields.get("method")
+    query = fields.get("query") or {}
+    # Collapse stars so equivalent triggers stay linked — see
+    # test_same_matcher_links_a_double_star_trigger_to_a_single_star_rule.
+    path = re.sub(r"\*+", "*", fields.get("path") or "") or None
+    return (
+        method.upper() if isinstance(method, str) and method else None,
+        path,
+        tuple(sorted((key, str(value)) for key, value in query.items())) if is_plain_object(query) else (),
+        fields.get("bodyContains") or None,
+    )
+
+
+def same_matcher(a: Any, b: Any) -> bool:
+    """Do two matchers constrain requests identically?
+
+    One definition, because the only caller is a claim made to a client — that a sequence's trigger
+    is some other rule — and a client comparing matchers itself would be comparing them by rules of
+    its own: `POST` against `post`, `2` against `"2"`, an absent field against an explicit null.
+    """
+    return _matcher_shape(a) == _matcher_shape(b)
 
 
 # MARK: - Sequences
@@ -475,6 +527,10 @@ def describe_rewrite(override: Mapping[str, Any]) -> dict:
     which step is selected, what a patch merges into — stay in this module and in the store, and a
     client that renders this dict is the only kind of client that cannot drift away from them.
 
+    `active` is here as well as in `store.answer_states`, because that one describes a run and a
+    scenario merely being browsed has none: the field a client reads must not depend on which
+    scenario it is looking at.
+
     The top-level response fields (`status`, `bodyKind`, `bodyBytes`) belong to a rule that answers
     with one response. A sequenced rule does not: its answers are its steps, each described here
     after inheritance, so those fields are empty and `sequence` is what a reader must use instead.
@@ -499,6 +555,12 @@ def describe_rewrite(override: Mapping[str, Any]) -> dict:
         # would leave every client re-deriving the default this summary exists to carry.
         status = effective_status(override)
     summary = {
+        # First, and on every row: a browsed scenario's rules have no runtime state, so `answer` is
+        # null there and a client reading activeness off it would fall back to reading the stored
+        # `active` field itself — a second implementation of `is_active`, whose encoding is not
+        # obvious (a missing key means active, and only a literal `false` switches a rule off).
+        # See test_describe_rewrite_reports_the_engines_own_reading_of_activeness.
+        "active": is_active(override),
         "mode": mode,
         "status": status,
         "bodyKind": kind,
@@ -506,7 +568,10 @@ def describe_rewrite(override: Mapping[str, Any]) -> dict:
         # Present as None for a `replace` rule rather than absent, so one shape decodes both modes.
         "patchKeys": (len(patch) if is_plain_object(patch) else 0) if patching else None,
         "patchStrategy": override.get("patchStrategy") if patching else None,
-        "delayMs": override.get("delayMs"),
+        # The delay as it will be applied, not as it was written; the flag is what tells a reader
+        # the two differ. Absent rather than false when they agree, like `bodyOmitted`.
+        "delayMs": effective_delay_ms(override),
+        **({"delayCapped": True} if (override.get("delayMs") or 0) > MAX_DELAY_MS else {}),
         "sequence": None,
     }
     if steps is not None:

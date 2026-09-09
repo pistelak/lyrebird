@@ -1030,3 +1030,120 @@ def test_wire_response_drops_a_stored_content_length():
     assert rules.wire_response({"headers": {"content-length": "999"}, "body": "x"})["headers"] == {
         "Content-Type": "application/json"
     }, "however it is spelled"
+
+
+@pytest.mark.parametrize(
+    "override,expected",
+    [
+        ({"mode": "replace", "match": {}}, True),
+        ({"mode": "replace", "match": {}, "active": True}, True),
+        ({"mode": "replace", "match": {}, "active": False}, False),
+        # Validation does not check this field's type, and `is_active` answers for what gets
+        # through: only a literal `false` switches a rule off, so these are all live rules.
+        ({"mode": "replace", "match": {}, "active": 0}, True),
+        ({"mode": "replace", "match": {}, "active": "no"}, True),
+        ({"mode": "replace", "match": {}, "active": None}, True),
+    ],
+)
+def test_describe_rewrite_reports_the_engines_own_reading_of_activeness(override, expected):
+    """The encoding is not obvious — a missing key means active, and only a literal `false` switches
+    a rule off — and a browsed scenario's rows carry no runtime state to read it from, so a client
+    without this field ends up implementing `is_active` a second time and disagreeing at the edges.
+    """
+    assert rules.describe_rewrite(override)["active"] is expected
+    assert rules.describe_rewrite(override)["active"] is rules.is_active(override), "one reading, not two"
+
+
+def test_every_described_rule_and_step_says_what_kind_of_body_it_has():
+    """`bodyKind` is the field a client branches on, so it is never absent: a row missing it would
+    be read as a rule with no body by any client written to `.get`."""
+    for override in (
+        {"mode": "replace", "match": {}},
+        {"mode": "replace", "match": {}, "status": 204, "body": {"a": 1}},
+        {"mode": "patch", "match": {}, "patch": {"a": 1}},
+        {"mode": "replace", "match": {}, "body": "x", "sequence": {"steps": [{}, {"status": 304}]}},
+    ):
+        summary = rules.describe_rewrite(override)
+        assert "active" in summary and "bodyKind" in summary, summary
+        for step in (summary["sequence"] or {}).get("steps", []):
+            assert "bodyKind" in step, step
+
+
+# MARK: - When one rule's trigger is another rule
+
+
+def test_same_matcher_compares_the_method_the_way_the_wire_does():
+    """`explain_matcher` upper-cases both sides, so a scenario written with `post` describes exactly
+    the requests `POST` describes. Comparing the strings would call those two different triggers."""
+    assert rules.same_matcher(
+        {"method": "post", "path": "/api/v1/orders"}, {"method": "POST", "path": "/api/v1/orders"}
+    )
+    assert not rules.same_matcher(
+        {"method": "POST", "path": "/api/v1/orders"}, {"method": "PUT", "path": "/api/v1/orders"}
+    )
+
+
+def test_same_matcher_links_a_double_star_trigger_to_a_single_star_rule():
+    """A sequence triggered by `**` lost its link to a rule written with `*`, although both
+    globs accept the same requests, leaving `/rules` to report `advanceOnRule: null`."""
+    trigger_rule = {"match": {"method": "DELETE", "path": "/api/v1/orders/*"}}
+    sequence = _sequenced(advanceOn={"method": "DELETE", "path": "/api/v1/orders/**"})
+    assert rules.same_matcher(trigger_rule["match"], rules.advance_matcher(sequence))
+
+
+def test_same_matcher_treats_an_absent_field_and_a_null_one_alike():
+    """Both mean "this constrains nothing", which is how the wire reads them — so a rule spelling
+    out the fields it does not use must not stop being the trigger it is."""
+    assert rules.same_matcher(
+        {"method": "POST", "path": "/api/v1/orders"},
+        {"method": "POST", "path": "/api/v1/orders", "query": None, "bodyContains": None},
+    )
+    assert rules.same_matcher({"path": "/api/v1/orders", "query": {}}, {"path": "/api/v1/orders"})
+
+
+def test_same_matcher_separates_different_query_pins():
+    """Two rules on one path that pin different parameters answer different requests; drawing one
+    in the other's place would show a story the scenario does not tell."""
+    base = {"method": "GET", "path": "/api/v1/orders"}
+    assert not rules.same_matcher({**base, "query": {"page": "1"}}, {**base, "query": {"page": "2"}})
+    assert not rules.same_matcher({**base, "query": {"page": "1"}}, base)
+    assert rules.same_matcher({**base, "query": {"page": 2}}, {**base, "query": {"page": "2"}}), (
+        "a query value is compared as the string the wire carries"
+    )
+
+
+# MARK: - The delay that will actually be applied
+
+
+@pytest.mark.parametrize("mode_fields", [{"mode": "replace", "status": 200}, {"mode": "patch", "patch": {"a": 1}}])
+def test_describe_rewrite_reports_the_delay_the_proxy_will_apply(mode_fields):
+    """The proxy caps a per-rule delay so a typo cannot wedge a flow, and it caps it for every mode
+    — the sleep happens before the mode is looked at. A description carrying the configured 120000
+    would tell a reader the response takes two minutes when the flow is released after one."""
+    over = rules.describe_rewrite({"match": {}, "delayMs": 120_000, **mode_fields})
+    assert over["delayMs"] == rules.MAX_DELAY_MS
+    assert over["delayCapped"] is True
+
+    under = rules.describe_rewrite({"match": {}, "delayMs": 250, **mode_fields})
+    assert under["delayMs"] == 250
+    assert "delayCapped" not in under, "absent, not false: the flag is the exception"
+
+
+def test_describe_rewrite_reports_a_sequenced_rules_delay_the_same_way():
+    """`delayMs` is parent-level — a step may not carry one — so a sequence has exactly one delay,
+    and it is capped like any other."""
+    summary = rules.describe_rewrite(
+        {"match": {}, "mode": "replace", "delayMs": 120_000, "sequence": {"steps": [{"status": 200}]}}
+    )
+    assert summary["delayMs"] == rules.MAX_DELAY_MS and summary["delayCapped"] is True
+
+
+@pytest.mark.parametrize("configured,expected", [(None, None), (0, None), (1, 1), (60_000, 60_000), (60_001, 60_000)])
+def test_effective_delay_ms_is_the_one_number_both_sides_use(configured, expected):
+    """0 and an absent field are one thing on the wire — neither delays anything — so they are one
+    thing here; reporting "0 ms" would offer a distinction the proxy does not make."""
+    override = {"match": {}, "mode": "replace"}
+    if configured is not None:
+        override["delayMs"] = configured
+    assert rules.effective_delay_ms(override) == expected
+    assert rules.describe_rewrite(override)["delayMs"] == expected

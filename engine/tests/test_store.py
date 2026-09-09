@@ -1078,3 +1078,76 @@ def test_scenario_files_refuses_a_legacy_sessions_layout(profile):
     make_legacy_profile(profile)
     with pytest.raises(store.LegacyProfileLayout):
         store.scenario_files()
+
+
+# MARK: - Identity for the recent list
+#
+# `/recent` is polled, and a client keeps a selection across polls. Position cannot carry that — a
+# new request pushes every row down — and neither can content, since the same request repeated is
+# indistinguishable from itself. So the engine names each entry.
+
+
+def test_recent_entries_get_increasing_ids(profile):
+    """Unique and ordered, so a client can key a selection to a row and know which of two entries
+    for the same request it holds. Two identical requests differ in nothing else."""
+    subject = make_store(profile)
+    for _ in range(3):
+        subject.record_recent({"method": "GET", "path": "/api/v1/orders"})
+    ids = [entry["id"] for entry in subject.recent_list()]
+    assert ids == ["evt-3", "evt-2", "evt-1"], "newest first, as the list itself is"
+
+
+def test_a_supplied_id_does_not_collide_with_the_counter(profile):
+    """The id is the engine's to give. Honouring a caller's `evt-2` would put two rows in one list
+    under one name the moment the counter reached it, and a client selecting by identity would hold
+    whichever of them it happened to find first."""
+    subject = make_store(profile)
+    subject.record_recent({"id": "evt-2", "method": "GET", "path": "/api/v1/orders"})
+    subject.record_recent({"method": "GET", "path": "/api/v1/orders"})
+    ids = [entry["id"] for entry in subject.recent_list()]
+    assert ids == ["evt-2", "evt-1"], "the counter's own numbering, not the caller's"
+
+
+@pytest.mark.parametrize("supplied", [None, 7, {"nested": True}])
+def test_a_recent_id_replaces_whatever_the_caller_supplied(profile, supplied):
+    """`null` and a number are not names a client can select by — the first cannot be told from a
+    row with no id and the second is not the type the API promises. Defaulting would have kept both.
+    """
+    subject = make_store(profile)
+    subject.record_recent({"id": supplied, "method": "GET", "path": "/api/v1/orders"})
+    assert subject.recent_list()[0]["id"] == "evt-1"
+
+
+def test_a_recorded_entry_is_not_written_back_into_the_callers_dict(profile):
+    """The store copies. `addon._record` builds one dict per request and hands it over; an id
+    written into it would be state the caller did not ask for and cannot see the rules of."""
+    subject = make_store(profile)
+    entry = {"method": "GET", "path": "/api/v1/orders"}
+    subject.record_recent(entry)
+    assert entry == {"method": "GET", "path": "/api/v1/orders"}
+    assert subject.recent_list()[0]["id"] == "evt-1"
+
+
+def test_recent_ids_keep_increasing_when_the_list_rolls_over(profile):
+    """The deque is bounded, and the counter is not: once `RECENT_CAP` entries have gone in, every
+    further one drops the oldest. An id derived from the list's length or its position would start
+    repeating here, and a client's stored selection would silently match a different request."""
+    subject = make_store(profile)
+    for _ in range(config.RECENT_CAP + 5):
+        subject.record_recent({"method": "GET", "path": "/api/v1/orders"})
+    ids = [entry["id"] for entry in subject.recent_list()]
+    assert len(ids) == config.RECENT_CAP, "the list itself is still bounded"
+    assert ids[0] == f"evt-{config.RECENT_CAP + 5}", "the newest keeps counting past the cap"
+    assert ids[-1] == "evt-6", "and the oldest survivor is the sixth, not the first"
+    assert len(set(ids)) == len(ids), "no id is reused"
+
+
+def test_recent_ids_are_per_store(profile):
+    """The counter belongs to the store, not to the module: a second proxy — or the next test —
+    must not continue somebody else's numbering, and nothing here promises ids that outlive the
+    process, which is why the README says they restart with it."""
+    first = make_store(profile)
+    first.record_recent({"method": "GET", "path": "/api/v1/orders"})
+    second = make_store(profile)
+    second.record_recent({"method": "GET", "path": "/api/v1/orders"})
+    assert first.recent_list()[0]["id"] == second.recent_list()[0]["id"] == "evt-1"
