@@ -51,6 +51,13 @@ make check-app
 settings. Tests bind local sockets, so an agent sandbox must allow that. Build output stays in
 ignored `.build` directories. `make acceptance` is separate and never part of `make check`.
 
+## Swift tests
+
+Use Swift Testing (`import Testing`, `@Test`, `#expect`, and `#require`) for unit tests.
+Keep XCTest only where there is no replacement, such as XCUIAutomation. Pure suites can run
+in parallel. Tests that share app preferences, URL protocol stubs, or Dock state belong under
+the serialized `AppTests` suite and use `withAppTestEnvironment` for setup and cleanup.
+
 ## Formatting and editor setup
 
 Ruff owns Python formatting and import ordering; swift-format owns Swift formatting and lint.

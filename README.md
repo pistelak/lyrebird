@@ -139,7 +139,7 @@ not exist or did not load whole, and exits non-zero with the proxy left running 
 `down`. If `simBundleId` isn't set, relaunch the app yourself; if something else owns the launch —
 a UI-test runner — pass `--no-relaunch` and start it once `up` has exited 0.
 
-There's an optional [menu-bar app](menubar/README.md).
+To review prepared scenarios visually, use the optional [macOS scenario browser](#macos-app).
 
 ## Driving it from an agent
 
@@ -156,6 +156,25 @@ lyrebird down
 
 [AGENTS.md](AGENTS.md) is the full contract — the loop, the control API, and the mistakes that
 cost the most time.
+
+## macOS app
+
+The optional macOS app is a companion for browsing scenarios your coding agent has prepared.
+Its menu-bar controls manage interception; the scenario browser lets you inspect what each
+scenario will do before trying it. Open
+**Scenarios** from the menu bar to explore the saved requests, responses, and sequence transitions.
+Scenario notes explain the intended test case; the detail pane shows the matching conditions and
+configured response body.
+
+A single click browses a scenario. Double-clicking activates it when you are ready to try it in
+your iOS app. **Recent** shows the requests recorded during the run and which rules answered them.
+
+![The macOS scenario browser showing a synthetic GET → DELETE → GET sequence and its configured JSON response.](docs/images/sequence.png)
+
+*In this synthetic example, GET returns three items. DELETE advances the sequence, and subsequent
+GETs return the remaining two.*
+
+See the [macOS app guide](menubar/README.md) for installation, menu-bar controls, and configuration.
 
 ## Profiles
 
@@ -270,7 +289,7 @@ the CA.
 `trust-ca`, `untrust-ca` and `logs`. `bin/lb` is a shorter alias for it.
 
 - [Engine guide](engine/README.md) — the full rule schema, matching order, control API, ports, tests
-- [Menu-bar app](menubar/README.md) — building and signing the SwiftUI client
+- [macOS scenario browser](menubar/README.md) — inspect scenarios prepared by your agent; build and install the optional app
 - [AGENTS.md](AGENTS.md) — driving Lyrebird from a coding agent
 - [Troubleshooting](TROUBLESHOOTING.md) — symptoms, their usual causes, and reading the proxy log
 - [Contributing](CONTRIBUTING.md)

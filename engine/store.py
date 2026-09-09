@@ -672,5 +672,8 @@ class Store:
         self._recent_seq += 1
         self.recent.appendleft({"time": _now_iso(), **entry, "id": f"evt-{self._recent_seq}"})
 
+    def clear_recent(self) -> None:
+        self.recent.clear()
+
     def recent_list(self) -> list[dict]:
         return list(self.recent)

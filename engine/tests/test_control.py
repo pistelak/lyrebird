@@ -1062,3 +1062,26 @@ def test_an_inactive_rule_is_still_the_rule_a_trigger_is(profile):
     _, _, body = call(profile, "GET", "/__mock__/rules")
     assert sequences_of(body)["ovr_cancelled"]["advanceOnRule"] == "ovr_cancel"
     assert next(rule for rule in body["rules"] if rule["id"] == "ovr_cancel")["rewrite"]["active"] is False
+
+
+@pytest.mark.parametrize("foreign", [False, True])
+def test_clear_recent_preserves_rules_evidence_and_event_identity(profile, foreign):
+    subjects = []
+
+    def prepare(subject):
+        subject.add_override({"id": "ovr_orders", "match": {"path": "/api/orders"}, "mode": "replace"})
+        subject.reset_runtime("ovr_orders")
+        store.credit(subject.answer_slot("ovr_orders"))
+        store.credit(subject.answer_slot("ovr_orders"))
+        subject.record_recent({"method": "GET", "path": "/api/orders"})
+        subjects.append((subject, subject.answer_states(), subject.active_overrides().copy()))
+
+    status, _, _ = call(profile, "DELETE", "/__mock__/recent", headers=_FOREIGN if foreign else {}, prepare=prepare)
+    subject, answers, overrides = subjects[0]
+    assert status == (409 if foreign else 200)
+    assert len(subject.recent_list()) == (1 if foreign else 0)
+    assert answers[0]["count"] == 2
+    assert subject.answer_states() == answers
+    assert subject.active_overrides() == overrides
+    subject.record_recent({"method": "GET", "path": "/api/orders"})
+    assert subject.recent_list()[0]["id"] == "evt-2"

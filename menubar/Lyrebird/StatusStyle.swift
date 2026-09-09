@@ -11,6 +11,18 @@ extension AppModel.Status {
         }
     }
 
+    /// Compact toolbar label, preserving each connection state.
+    var word: String {
+        switch self {
+        case .intercepting: return "intercepting"
+        case .pacDisabled: return "not intercepting"
+        case .down: return "stopped"
+        case .foreignProfile: return "another profile"
+        case .unreadable: return "unreadable"
+        case .profileUnknown: return "profile unknown"
+        }
+    }
+
     /// The status-dot colour, or nil (no dot) when there is nothing of ours to report.
     var dotColor: Color? {
         switch self {
