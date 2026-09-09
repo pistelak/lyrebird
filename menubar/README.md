@@ -56,14 +56,22 @@ ID identity in `project.yml`, enable `ENABLE_HARDENED_RUNTIME`, and notarize the
 system-proxy + CA-installing controller cannot run in the App Store sandbox, so Developer ID is the
 conventional route.
 
-## What it does
+## Menu-bar controls
 
 Menu-bar glyph: filled bird with a green dot while intercepting, orange when the proxy is up but
 not intercepting, and an outlined bird with no dot when stopped.
 Click for a scenario picker, Start/Stop (`lyrebird up|down`), a Relaunch-app button, the requests
 the proxy has seen, and settings.
 
-**Scenarios** opens a three-column browser: scenarios and Recent in the sidebar, configured
+Lyrebird is a regular app: a Dock icon and a menu bar extra, both from launch. **Show in Dock only
+while a window is open** in Settings puts it in the menu bar instead, with the Dock icon appearing
+only while the window is. ⌘Q quits the app and removes the extra; it leaves a running proxy running,
+exactly as Quit in the menu does.
+
+## Scenario browser
+
+Browse scenarios prepared by your coding agent and inspect the responses and transitions they
+configure. **Scenarios** opens a three-column browser: scenarios and Recent in the sidebar, configured
 requests or recorded traffic in the middle, and details on the right. A single click browses a
 scenario; double-clicking activates it. Activation is also available from the context menu.
 The sidebar marks the active scenario, and the toolbar shows the interception status.
@@ -81,11 +89,6 @@ rules, sequence progress and answer counters intact. Clearing requires an engine
 
 The browser reads the engine's rule descriptions through `GET /__mock__/rules`. It distinguishes
 failed reads from empty results, preserves selection across polls, and does not edit rules.
-
-Lyrebird is a regular app: a Dock icon and a menu bar extra, both from launch. **Show in Dock only
-while a window is open** in Settings puts it in the menu bar instead, with the Dock icon appearing
-only while the window is. ⌘Q quits the app and removes the extra; it leaves a running proxy running,
-exactly as Quit in the menu does.
 
 ## Configuration
 

@@ -139,7 +139,7 @@ not exist or did not load whole, and exits non-zero with the proxy left running 
 `down`. If `simBundleId` isn't set, relaunch the app yourself; if something else owns the launch —
 a UI-test runner — pass `--no-relaunch` and start it once `up` has exited 0.
 
-To review prepared scenarios visually, use the optional [macOS scenario browser](#browse-what-your-agent-prepared).
+To review prepared scenarios visually, use the optional [macOS scenario browser](#macos-app).
 
 ## Driving it from an agent
 
@@ -157,9 +157,11 @@ lyrebird down
 [AGENTS.md](AGENTS.md) is the full contract — the loop, the control API, and the mistakes that
 cost the most time.
 
-## Browse what your agent prepared
+## macOS app
 
-The optional macOS app lets you review the scenarios your coding agent has prepared. Open
+The optional macOS app is a companion for browsing scenarios your coding agent has prepared.
+Its menu-bar controls manage interception; the scenario browser lets you inspect what each
+scenario will do before trying it. Open
 **Scenarios** from the menu bar to explore the saved requests, responses, and sequence transitions.
 Scenario notes explain the intended test case; the detail pane shows the matching conditions and
 configured response body.
@@ -171,6 +173,8 @@ your iOS app. **Recent** shows the requests recorded during the run and which ru
 
 *In this synthetic example, GET returns three items. DELETE advances the sequence, and subsequent
 GETs return the remaining two.*
+
+See the [macOS app guide](menubar/README.md) for installation, menu-bar controls, and configuration.
 
 ## Profiles
 
