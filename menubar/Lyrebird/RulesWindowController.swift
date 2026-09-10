@@ -202,6 +202,7 @@ final class RulesWindowController: NSWindowController, NSWindowDelegate, NSToolb
         return true
     }
     @objc func refresh(_ sender: Any?) { Task { await model.refresh() } }
+    @objc func reload(_ sender: Any?) { Task { await model.reloadScenarios() } }
     @objc func toggleInterception(_ sender: Any?) {
         guard !model.busy else { return }
         Task { await model.toggle() }
@@ -226,7 +227,7 @@ final class RulesWindowController: NSWindowController, NSWindowDelegate, NSToolb
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         [
             .flexibleSpace, .toggleSidebar, .sidebarTrackingSeparator, .init("title"), .init("interception"),
-            .flexibleSpace, .init("status"), .flexibleSpace,
+            .flexibleSpace, .init("status"), .flexibleSpace, .init("reload"),
         ]
     }
     func toolbar(
@@ -263,8 +264,14 @@ final class RulesWindowController: NSWindowController, NSWindowDelegate, NSToolb
             item.view = statusBadge
         case "refresh":
             item.label = "Refresh"
+            item.toolTip = "Refresh status and lists from the running engine"
             item.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: item.label)
             item.action = #selector(refresh)
+        case "reload":
+            item.label = "Reload from disk"
+            item.toolTip = "Re-read scenario files from disk and update the lists"
+            item.image = NSImage(systemSymbolName: "arrow.down.doc", accessibilityDescription: item.label)
+            item.action = #selector(reload)
         case "dismiss":
             item.label = "Dismiss error"
             item.image = NSImage(systemSymbolName: "xmark.circle", accessibilityDescription: item.label)

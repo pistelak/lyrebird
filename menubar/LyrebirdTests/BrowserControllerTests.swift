@@ -31,6 +31,159 @@ extension AppTests {
             }
         }
 
+        /// The rewrite left folder selection in the model but showed every qualified name in the menu,
+        /// making users hunt through unrelated scenarios; opening the menu must follow each active folder.
+        @Test func menuOpeningScopesScenariosToTheActiveFolder() async throws {
+            try await withAppTestEnvironment {
+                let model = AppModel(autoStart: false, expectedFingerprint: RulesFixture.ours)
+                let controller = StatusItemController(model: model)
+                let scenarios: [ScenarioSummary] = [
+                    .init(name: "orders/pending", overrideCount: 2, verified: true),
+                    .init(name: "orders/complete", overrideCount: 1, verified: false),
+                    .init(name: "checkout/pending", overrideCount: 3, verified: false),
+                    .init(name: "default", overrideCount: 0, verified: false),
+                ]
+                let delegate = try #require(controller.menu.delegate)
+                for (active, names, caption) in [
+                    ("orders/pending", ["orders/pending", "orders/complete"], "orders/"),
+                    ("checkout/pending", ["checkout/pending"], "checkout/"),
+                    ("default", ["default"], ""),
+                    ("missing/pending", ["default"], "missing/pending is not in this profile"),
+                ] {
+                    model.scenarios = ScenarioList(active: active, scenarios: scenarios)
+                    for busy in [false, true] {
+                        model.busy = busy
+                        controller.menu.removeAllItems()
+                        delegate.menuWillOpen?(controller.menu)
+                        let entries = controller.menu.items.filter { $0.representedObject is String }
+                        #expect(Set(entries.compactMap { $0.representedObject as? String }) == Set(names))
+                        if !caption.isEmpty {
+                            let heading = try #require(controller.menu.items.first { $0.title == caption })
+                            #expect(!heading.isEnabled)
+                        } else {
+                            #expect(!controller.menu.items.contains { $0.title.hasSuffix("/") })
+                        }
+                        for entry in entries {
+                            let scenario = try #require(
+                                scenarios.first { $0.name == entry.representedObject as? String })
+                            let leaf = String(scenario.name.split(separator: "/").last!)
+                            #expect(
+                                entry.title == leaf + "  (\(scenario.overrideCount))" + (scenario.verified ? "  ✓" : "")
+                            )
+                            #expect(entry.state == (scenario.name == active ? .on : .off))
+                            #expect(entry.isEnabled == !busy)
+                        }
+                    }
+                }
+                model.scenarios = nil
+                controller.menu.removeAllItems()
+                delegate.menuWillOpen?(controller.menu)
+                #expect(controller.menu.items.contains { $0.title == model.scenariosPlaceholder && !$0.isEnabled })
+            }
+        }
+
+        /// Two folders can hold the same leaf; sending that display name activates the wrong mock
+        /// or fails outright, so the constructed item's action must carry the qualified name to the client.
+        @Test func menuActionActivatesTheQualifiedNameForDuplicateLeaves() async throws {
+            try await withAppTestEnvironment {
+                let model = model()
+                await model.refresh()
+                model.scenarios = ScenarioList(
+                    active: "checkout/ready",
+                    scenarios: [
+                        .init(name: "orders/pending", overrideCount: 1, verified: false),
+                        .init(name: "checkout/pending", overrideCount: 1, verified: false),
+                        .init(name: "checkout/ready", overrideCount: 0, verified: false),
+                    ])
+                let controller = StatusItemController(model: model)
+                let delegate = try #require(controller.menu.delegate)
+                controller.menu.removeAllItems()
+                delegate.menuWillOpen?(controller.menu)
+                let entry = try #require(
+                    controller.menu.items.first { $0.representedObject as? String == "checkout/pending" })
+                let action = try #require(entry.action)
+                #expect(NSApp.sendAction(action, to: entry.target, from: entry))
+                try await waitFor("menu activation did not reach the client") {
+                    StubURLProtocol.requests.contains { $0.httpMethod == "PUT" }
+                }
+                let request = try #require(StubURLProtocol.requests.first { $0.httpMethod == "PUT" })
+                #expect(request.url?.path == "/__mock__/scenarios/active")
+                let body = try #require(
+                    JSONSerialization.jsonObject(with: StubURLProtocol.body(of: request)) as? [String: String])
+                #expect(body["name"] == "checkout/pending")
+                try await waitFor("activation did not finish") { !model.busy }
+            }
+        }
+
+        /// A disconnected reload leaves externally edited profiles invisible until a restart;
+        /// the toolbar action must request a disk read and update the native sidebar on its own.
+        @Test func reloadToolbarActionUpdatesTheDisplayedScenarios() async throws {
+            try await withAppTestEnvironment {
+                let model = model()
+                let controller = RulesWindowController(model: model, restore: false)
+                controller.showWindow(nil)
+                defer { controller.close() }
+                try await waitFor("initial scenario did not load") { model.rulesRead != nil }
+                StubURLProtocol.install { request in
+                    if request.url?.path == "/__mock__/scenarios/reload" {
+                        return (Stub.response(request, 200), Data("{}".utf8))
+                    }
+                    if request.url?.path == "/__mock__/scenarios",
+                        StubURLProtocol.requests.contains(where: { $0.url?.path == "/__mock__/scenarios/reload" })
+                    {
+                        let body =
+                            #"{"active":"orders-outage","scenarios":[{"name":"disk-added","overrideCount":0,"verified":false}]}"#
+                        return (Stub.response(request, 200), Data(body.utf8))
+                    }
+                    return RulesFixture.serve(request)
+                }
+                let toolbar = try #require(controller.window?.toolbar)
+                let item = try #require(toolbar.items.first { $0.itemIdentifier.rawValue == "reload" })
+                #expect(item.label == "Reload from disk")
+                let action = try #require(item.action)
+                #expect(NSApp.sendAction(action, to: item.target, from: item))
+                try await waitFor("reload did not update the displayed sidebar") {
+                    (0..<controller.sidebar.outline.numberOfRows).contains { row in
+                        let entry = controller.sidebar.outline.item(atRow: row) as? ScenarioSidebarController.Item
+                        return entry?.destination == .scenario("disk-added")
+                    }
+                }
+                #expect(
+                    StubURLProtocol.requests.contains {
+                        $0.httpMethod == "POST" && $0.url?.path == "/__mock__/scenarios/reload"
+                    })
+                try await waitFor("reload did not finish") { !model.busy }
+            }
+        }
+
+        /// A generic reload error hides which file needs repair, costing another debugging cycle;
+        /// firing the toolbar control must put the engine's own refusal in the visible request list.
+        @Test func refusedReloadToolbarActionDisplaysTheEngineSentence() async throws {
+            try await withAppTestEnvironment {
+                let model = model()
+                let controller = RulesWindowController(model: model, restore: false)
+                controller.showWindow(nil)
+                defer { controller.close() }
+                try await waitFor("initial scenario did not load") { model.rulesRead != nil }
+                let sentence = "skipped broken.json: Expecting value"
+                StubURLProtocol.install { request in
+                    if request.url?.path == "/__mock__/scenarios/reload" {
+                        let body = #"{"error":"reload_refused","detail":"skipped broken.json: Expecting value"}"#
+                        return (Stub.response(request, 409), Data(body.utf8))
+                    }
+                    return RulesFixture.serve(request)
+                }
+                let toolbar = try #require(controller.window?.toolbar)
+                let item = try #require(toolbar.items.first { $0.itemIdentifier.rawValue == "reload" })
+                let action = try #require(item.action)
+                #expect(NSApp.sendAction(action, to: item.target, from: item))
+                try await waitFor("engine refusal did not reach the visible error") {
+                    controller.requests.rows.contains { $0.text.string.contains(sentence) }
+                }
+                try await waitFor("refused reload did not finish") { !model.busy }
+            }
+        }
+
         private func model() -> AppModel {
             StubURLProtocol.install { request in RulesFixture.serve(request) }
             return AppModel(
