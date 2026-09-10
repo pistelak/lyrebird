@@ -212,7 +212,7 @@ final class RulesWindowController: NSWindowController, NSWindowDelegate, NSToolb
         interceptionItem.label = stops ? "Stop interception" : "Start interception"
         interceptionItem.image = NSImage(
             systemSymbolName: stops ? "stop.fill" : "play.fill", accessibilityDescription: interceptionItem.label)?
-            .withSymbolConfiguration(.init(pointSize: 14, weight: .semibold))
+            .withSymbolConfiguration(.init(pointSize: stops ? 12 : 14, weight: .medium))
         interceptionItem.isEnabled = !model.busy
         interceptionItem.toolTip = interceptionItem.label
     }
