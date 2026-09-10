@@ -1,5 +1,5 @@
 # Python
-engine/.venv/
+/engine/.venv
 __pycache__/
 *.pyc
 .pytest_cache/
