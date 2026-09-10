@@ -88,8 +88,10 @@ final class DetailDocument {
     }
 
     func facts(_ facts: [RuleFormatting.Fact]) {
-        for fact in facts {
-            separator()
+        // Between the rows, not around them: the section heading above and whatever follows already
+        // bound the block, and a rule on both sides of a lone header read as two mistakes.
+        for (index, fact) in facts.enumerated() {
+            if index > 0 { separator() }
             let start = document.length
             line(fact.label + "\t" + fact.value)
             let range = NSRange(location: start, length: document.length - start)
@@ -100,7 +102,6 @@ final class DetailDocument {
                     .foregroundColor: NSColor.secondaryLabelColor,
                 ], range: NSRange(location: start + fact.label.utf16.count + 1, length: fact.value.utf16.count))
         }
-        if !facts.isEmpty { separator() }
     }
 
     func body(_ value: JSONValue, title: String = "Body", note: String? = nil) {

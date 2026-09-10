@@ -103,8 +103,8 @@ extension AppTests {
             let lines = [
                 "Request\n", " GET   /api/items/🚀\n", " \n", "Query parameters\n", "page  =  2\n", "q  =  café\n",
                 " \n", "Body contains\n", "needle\n", "Response\n", " Replace \n",
-                "Returns the configured response instead of calling the server.\n", " \n", " \n", "X-Trace\tsample\n",
-                " \n", " \n", "Payload\n", "Inherited\n", "\"café 🚀\"", "\n", "Related\n", "Open item 🚀\n", "End\n",
+                "Returns the configured response instead of calling the server.\n", " \n", "X-Trace\tsample\n",
+                " \n", "Payload\n", "Inherited\n", "\"café 🚀\"", "\n", "Related\n", "Open item 🚀\n", "End\n",
             ]
             let result = NSMutableAttributedString()
             var ranges: [NSRange] = []
@@ -115,15 +115,15 @@ extension AppTests {
                 paragraph.tailIndent = -10
                 paragraph.paragraphSpacing = 4
                 paragraph.lineBreakMode = .byWordWrapping
-                if [0, 9, 21].contains(index) {
+                if [0, 9, 19].contains(index) {
                     paragraph.paragraphSpacingBefore = index == 0 ? 0 : 30
                     paragraph.paragraphSpacing = 20
-                } else if index == 17 {
+                } else if index == 15 {
                     paragraph.paragraphSpacingBefore = 3
                     paragraph.paragraphSpacing = 12
-                } else if index == 19 || index == 20 {
+                } else if index == 17 || index == 18 {
                     paragraph.paragraphSpacing = 0
-                    paragraph.lineSpacing = index == 19 ? 2 : 0
+                    paragraph.lineSpacing = index == 17 ? 2 : 0
                 }
                 let range = NSRange(location: result.length, length: line.utf16.count)
                 ranges.append(range)
@@ -134,11 +134,11 @@ extension AppTests {
                             .font: NSFont.systemFont(ofSize: 13), .foregroundColor: NSColor.labelColor,
                             .paragraphStyle: paragraph,
                         ]))
-                if ![0, 9, 21].contains(index) {
-                    result.addAttribute(.detailCard, value: index < 9 ? 0 : index < 21 ? 1 : 2, range: range)
+                if ![0, 9, 19].contains(index) {
+                    result.addAttribute(.detailCard, value: index < 9 ? 0 : index < 19 ? 1 : 2, range: range)
                 }
             }
-            for index in [0, 9, 21] {
+            for index in [0, 9, 19] {
                 result.addAttribute(
                     .font, value: NSFont.systemFont(ofSize: 13, weight: .semibold), range: ranges[index])
             }
@@ -146,18 +146,18 @@ extension AppTests {
                 result.addAttribute(
                     .font, value: NSFont.monospacedSystemFont(ofSize: 13, weight: .regular), range: ranges[index])
             }
-            for index in [2, 6, 13, 15, 16] {
+            for index in [2, 6, 14] {
                 result.addAttributes(
                     [.detailSeparator: true, .font: NSFont.systemFont(ofSize: 6)],
                     range: NSRange(location: ranges[index].location, length: 1))
             }
-            for index in [3, 7, 11, 18, 23] {
+            for index in [3, 7, 11, 16, 21] {
                 result.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor, range: ranges[index])
             }
             for index in [3, 7] {
                 result.addAttribute(.font, value: NSFont.systemFont(ofSize: 11), range: ranges[index])
             }
-            for index in [4, 5, 19] {
+            for index in [4, 5, 17] {
                 result.addAttribute(
                     .font, value: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular), range: ranges[index])
             }
@@ -183,16 +183,16 @@ extension AppTests {
                     .detailBadge: NSColor.systemBlue, .foregroundColor: NSColor.systemBlue,
                     .font: NSFont.systemFont(ofSize: 11, weight: .medium),
                 ], on: " Replace ")
-            result.addAttribute(.detailHeaderRow, value: true, range: ranges[14])
+            result.addAttribute(.detailHeaderRow, value: true, range: ranges[13])
             try set(
                 [
                     .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular),
                     .foregroundColor: NSColor.secondaryLabelColor,
                 ], on: "sample")
-            result.addAttribute(.font, value: NSFont.systemFont(ofSize: 12, weight: .semibold), range: ranges[17])
-            result.addAttribute(.foregroundColor, value: BrowserAppearance.jsonString, range: ranges[19])
-            result.addAttribute(.font, value: NSFont.systemFont(ofSize: 4), range: ranges[20])
-            result.removeAttribute(.foregroundColor, range: ranges[20])
+            result.addAttribute(.font, value: NSFont.systemFont(ofSize: 12, weight: .semibold), range: ranges[15])
+            result.addAttribute(.foregroundColor, value: BrowserAppearance.jsonString, range: ranges[17])
+            result.addAttribute(.font, value: NSFont.systemFont(ofSize: 4), range: ranges[18])
+            result.removeAttribute(.foregroundColor, range: ranges[18])
             try set([.link: "lyrebird-rule:0"], on: "Open item 🚀")
             return result
         }
