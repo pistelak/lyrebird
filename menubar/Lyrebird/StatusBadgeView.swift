@@ -7,23 +7,18 @@ final class StatusBadgeView: NSView {
 
     override init(frame: NSRect) {
         super.init(frame: frame)
-        if #available(macOS 26.0, *) {
-            let glass = NSGlassEffectView()
-            glass.style = .regular
-            glass.cornerRadius = 16
-            glass.contentView = content
-            NativeStyle.pin(glass, in: self)
-            content.translatesAutoresizingMaskIntoConstraints = false
-            NSLayoutConstraint.activate([
-                content.leadingAnchor.constraint(equalTo: glass.leadingAnchor),
-                content.trailingAnchor.constraint(equalTo: glass.trailingAnchor),
-                content.topAnchor.constraint(equalTo: glass.topAnchor),
-                content.bottomAnchor.constraint(equalTo: glass.bottomAnchor),
-            ])
-        } else {
-            content.usesLegacyBackground = true
-            NativeStyle.pin(content, in: self)
-        }
+        let glass = NSGlassEffectView()
+        glass.style = .regular
+        glass.cornerRadius = 16
+        glass.contentView = content
+        NativeStyle.pin(glass, in: self)
+        content.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            content.leadingAnchor.constraint(equalTo: glass.leadingAnchor),
+            content.trailingAnchor.constraint(equalTo: glass.trailingAnchor),
+            content.topAnchor.constraint(equalTo: glass.topAnchor),
+            content.bottomAnchor.constraint(equalTo: glass.bottomAnchor),
+        ])
         label.textColor = .secondaryLabelColor
         label.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(label)
@@ -50,16 +45,8 @@ final class StatusBadgeView: NSView {
 @MainActor
 private final class StatusBadgeContent: NSView {
     var status: AppModel.Status = .down
-    var usesLegacyBackground = false
 
     override func draw(_ dirtyRect: NSRect) {
-        if usesLegacyBackground {
-            let capsule = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 16, yRadius: 16)
-            BrowserAppearance.sidebar.setFill()
-            capsule.fill()
-            NSColor.separatorColor.setStroke()
-            capsule.stroke()
-        }
         NSImage(systemSymbolName: status.symbolName, accessibilityDescription: nil)?
             .withSymbolConfiguration(.init(paletteColors: [.labelColor]))?
             .draw(in: NSRect(x: 8, y: 8, width: 18, height: 18))

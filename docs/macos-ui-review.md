@@ -37,7 +37,7 @@ Open rows remain part of the work; they are not waived by the existing test suit
   the legacy visual-effect background that covered it was removed. The status
   capsule uses `NSGlassEffectView` with its label and glyph inside `contentView`.
   Both light and dark UI-test screenshots were inspected after this change.
-  Earlier macOS versions retain their existing materials.
+  The app now requires macOS 26; the earlier-version material fallbacks have been removed.
 - Sidebar rows now use AppKit's default sizing preference. Existing cells receive
   the effective size through `NSTableCellView.rowSizeStyle`; labels and symbols
   follow it. Header-fit checks pass at small, medium, and large sizes. The light

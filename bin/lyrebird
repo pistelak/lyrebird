@@ -5,7 +5,7 @@ set -euo pipefail
 # Resolve the launcher's real location first: `BASH_SOURCE[0]` is the path we were *invoked* by,
 # and the documented install is a symlink on PATH (`bin/lb` is one too), so deriving the engine
 # directory from the invoked path looked for `~/.local/engine`. `readlink -f` follows the whole
-# chain, relative targets included; it has shipped with macOS since 12.3 and the app targets 14.
+# chain, relative targets included; it has shipped with macOS since 12.3 and the app targets 26.
 if ! SELF="$(readlink -f "${BASH_SOURCE[0]}")"; then
   echo "lyrebird: cannot resolve the launcher's own path from '${BASH_SOURCE[0]}'" >&2
   exit 1

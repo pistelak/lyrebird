@@ -9,6 +9,8 @@ and choose which scenario to activate while testing your iOS app.
 
 ## Build
 
+The app requires macOS 26 or newer. Building requires Xcode 26 or newer with the macOS 26 SDK.
+
 The Xcode project is generated from `project.yml` via
 [XcodeGen](https://github.com/yonaskolb/XcodeGen), so it isn't committed:
 

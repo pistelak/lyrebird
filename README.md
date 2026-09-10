@@ -161,7 +161,8 @@ cost the most time.
 
 ## macOS app
 
-The optional macOS app is a companion for browsing scenarios your coding agent has prepared.
+The optional macOS app requires **macOS 26 or newer** and is a companion for browsing scenarios
+your coding agent has prepared. Building it requires Xcode 26 or newer with the macOS 26 SDK.
 Its menu-bar controls manage interception; the scenario browser lets you inspect what each
 scenario will do before trying it. Open
 **Scenarios** from the menu bar to explore the saved requests, responses, and sequence transitions.

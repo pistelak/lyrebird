@@ -2,7 +2,7 @@ name: Lyrebird
 options:
   bundleIdPrefix: com.lyrebird
   deploymentTarget:
-    macOS: "14.0"
+    macOS: "26.0"
   createIntermediateGroups: true
 targets:
   Lyrebird:
@@ -28,7 +28,7 @@ targets:
         CURRENT_PROJECT_VERSION: "0"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         SWIFT_VERSION: "5.0"
-        MACOSX_DEPLOYMENT_TARGET: "14.0"
+        MACOSX_DEPLOYMENT_TARGET: "26.0"
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGN_STYLE: Manual
         CODE_SIGN_IDENTITY: "-"
@@ -54,7 +54,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.lyrebird.LyrebirdTests
         SWIFT_VERSION: "5.0"
-        MACOSX_DEPLOYMENT_TARGET: "14.0"
+        MACOSX_DEPLOYMENT_TARGET: "26.0"
         GENERATE_INFOPLIST_FILE: YES
         CODE_SIGN_STYLE: Manual
         CODE_SIGN_IDENTITY: "-"
@@ -70,7 +70,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.lyrebird.LyrebirdUITests
         SWIFT_VERSION: "5.0"
-        MACOSX_DEPLOYMENT_TARGET: "14.0"
+        MACOSX_DEPLOYMENT_TARGET: "26.0"
         GENERATE_INFOPLIST_FILE: YES
         CODE_SIGN_STYLE: Manual
         CODE_SIGN_IDENTITY: "-"

@@ -2,9 +2,10 @@
 
 ## Setup
 
-Use Python 3.12 (the patch version is in `.tool-versions`) and Xcode 16 or newer, with
-Command Line Tools selected via `xcode-select`. Source builds of the formatter require
-Swift 6 or newer, which setup checks before downloading and compiling. From the repository root:
+Use macOS 26 or newer, Python 3.12 (the patch version is in `.tool-versions`), and Xcode 26 or newer,
+with Command Line Tools selected via `xcode-select`. The app deployment target is macOS 26.
+Source builds of the formatter require Swift 6 or newer, which setup checks before downloading
+and compiling. From the repository root:
 
 ```bash
 make setup
@@ -27,7 +28,7 @@ patch releases in `.tool-versions` may not have GitHub-hosted macOS binaries. Th
 development dependency locks are the same locally and in CI, but the interpreter patch can differ.
 
 The pinned tools are XcodeGen 2.46.0 and swift-format 602.0.0. Xcode itself is supplied by the
-machine; `make doctor` reports its version. The workflow uses the `macos-15` runner image,
+machine; `make doctor` reports its version. The workflow uses the `macos-26` runner image,
 so the Xcode build environment is not completely locked. Use the same selected Xcode for
 local builds and investigate compiler-version differences when reproducing CI failures.
 

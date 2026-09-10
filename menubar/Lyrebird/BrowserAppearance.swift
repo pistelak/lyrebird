@@ -2,7 +2,6 @@ import AppKit
 
 enum BrowserAppearance {
     static let pane = appearanceColor(light: NSColor(white: 0.98, alpha: 1), dark: NSColor(white: 0.15, alpha: 1))
-    static let sidebar = appearanceColor(light: NSColor(white: 0.94, alpha: 1), dark: NSColor(white: 0.125, alpha: 1))
     static let card = appearanceColor(light: NSColor(white: 0.94, alpha: 1), dark: NSColor(white: 0.19, alpha: 1))
     static let sequence = appearanceColor(
         light: NSColor(red: 0.22, green: 0.43, blue: 0.41, alpha: 1),
