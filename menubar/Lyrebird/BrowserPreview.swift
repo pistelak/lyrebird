@@ -12,6 +12,7 @@
                 ? ["default", "empty-list", "remove-an-item", "service-unavailable", "slow-network"]
                 : [initialScenario, "orders-complete", "empty", "partial", "orders/previous", "orders/complete"]
         }
+
         static func notes(_ name: String) -> String {
             name == "remove-an-item"
                 ? "Start with three items. Delete the notebook, then fetch the list again to see the remaining two. Repeated reads keep the current response."
@@ -117,8 +118,11 @@
         private static let lock = NSLock()
         private static var active = BrowserPreview.initialScenario
         private static var cleared = false
+
         override class func canInit(with request: URLRequest) -> Bool { true }
+
         override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
         override func stopLoading() {}
 
         override func startLoading() {

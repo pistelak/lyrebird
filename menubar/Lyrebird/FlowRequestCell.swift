@@ -7,6 +7,7 @@ final class FlowRequestCell: NSTableCellView {
     override var backgroundStyle: NSView.BackgroundStyle {
         didSet { updateSelectionAppearance() }
     }
+
     private func updateSelectionAppearance() {
         let highlighted = backgroundStyle == .emphasized
         for (field, normal) in textColors {
@@ -70,6 +71,7 @@ final class FlowRequestCell: NSTableCellView {
         toolTip = row.request.method + " " + row.request.path + "\n" + row.subtitle
         setAccessibilityElement(true)
         setAccessibilityLabel(toolTip)
+
         func collect(_ view: NSView) {
             if let field = view as? NSTextField { textColors.append((field, field.textColor ?? .labelColor)) }
             if let badge = view as? BadgeView { badges.append(badge) }
@@ -78,6 +80,7 @@ final class FlowRequestCell: NSTableCellView {
         collect(self)
         updateSelectionAppearance()
     }
+
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     static func height(_ row: RuleFormatting.FlowListRow, width: CGFloat) -> CGFloat {

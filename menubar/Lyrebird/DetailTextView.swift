@@ -46,10 +46,12 @@ final class DetailLayoutManager: NSLayoutManager {
 @MainActor
 final class DetailTextView: NSTextView {
     var didLayout: (() -> Void)?
+
     override func accessibilityChildren() -> [Any]? {
         (super.accessibilityChildren() ?? []) + subviews.filter { $0 is NSButton && !$0.isHidden }
     }
     override var isOpaque: Bool { true }
+
     override func draw(_ dirtyRect: NSRect) {
         BrowserAppearance.pane.setFill()
         dirtyRect.fill()
@@ -59,10 +61,12 @@ final class DetailTextView: NSTextView {
         }
         super.draw(dirtyRect)
     }
+
     override func layout() {
         super.layout()
         didLayout?()
     }
+
     override func setFrameSize(_ newSize: NSSize) {
         let changed = newSize.width != frame.width
         super.setFrameSize(newSize)

@@ -23,6 +23,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 10
+
         func field(_ title: String, _ field: NSTextField, _ placeholder: String) {
             stack.addArrangedSubview(NativeStyle.label(title, size: 12, weight: .medium))
             field.placeholderString = placeholder
@@ -54,6 +55,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         NativeStyle.pin(stack, in: window.contentView!, inset: 20)
         window.center()
     }
+
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     override func showWindow(_ sender: Any?) {
@@ -84,6 +86,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         close()
         Task { await model.settingsChanged() }
     }
+
     func windowWillClose(_ notification: Notification) {
         guard registered else { return }
         registered = false

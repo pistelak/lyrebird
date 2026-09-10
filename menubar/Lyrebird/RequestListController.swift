@@ -120,6 +120,7 @@ final class RequestListController: NSViewController, NSTableViewDataSource, NSTa
             rulesRead = content.rulesRead
         }
         var next: [Row] = []
+
         func note(_ id: String, _ text: String, error: Bool = false) {
             next.append(Row(id: id, text: NativeStyle.text(text, color: error ? .systemOrange : .secondaryLabelColor)))
         }
@@ -242,7 +243,9 @@ final class RequestListController: NSViewController, NSTableViewDataSource, NSTa
     }
 
     func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
+
     func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool { rows[row].selectable }
+
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         if let entry = rows[row].traffic { return RecentRequestCell(entry) }
         if let flow = rows[row].flow { return FlowRequestCell(flow) }
@@ -251,6 +254,7 @@ final class RequestListController: NSViewController, NSTableViewDataSource, NSTa
         cell.toolTip = rows[row].text.string
         return cell
     }
+
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
         if let entry = rows[row].traffic { return RecentRequestCell.height(entry, width: scrollView.contentSize.width) }
         if let flow = rows[row].flow { return FlowRequestCell.height(flow, width: scrollView.contentSize.width) }
@@ -262,6 +266,7 @@ final class RequestListController: NSViewController, NSTableViewDataSource, NSTa
                 options: [.usesLineFragmentOrigin, .usesFontLeading]
             ).height) + 22
     }
+
     func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
         let view = BrowserTableRow()
         view.separates =
@@ -269,9 +274,11 @@ final class RequestListController: NSViewController, NSTableViewDataSource, NSTa
             || rows[row].id == "notes-heading"
         return view
     }
+
     func tableViewColumnDidResize(_ notification: Notification) {
         table.noteHeightOfRows(withIndexesChanged: IndexSet(integersIn: rows.indices))
     }
+
     func tableViewSelectionDidChange(_ notification: Notification) {
         guard !applying, rows.indices.contains(table.selectedRow) else { return }
         let row = rows[table.selectedRow]

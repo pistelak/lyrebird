@@ -79,6 +79,7 @@ final class RuleDetailController: NSViewController, NSTextViewDelegate {
         var cardStart: Int?
         var cards: [NSRange] = []
         var nextCopyRange: NSRange?
+
         func paragraph(before: CGFloat = 0, after: CGFloat = 4) -> NSMutableParagraphStyle {
             let value = NSMutableParagraphStyle()
             value.firstLineHeadIndent = 10
@@ -89,6 +90,7 @@ final class RuleDetailController: NSViewController, NSTextViewDelegate {
             value.lineBreakMode = .byWordWrapping
             return value
         }
+
         func line(_ value: String, mono: Bool = false, secondary: Bool = false) {
             guard !value.isEmpty else { return }
             let text = NSMutableAttributedString(
@@ -97,6 +99,7 @@ final class RuleDetailController: NSViewController, NSTextViewDelegate {
             text.addAttribute(.paragraphStyle, value: paragraph(), range: NSRange(location: 0, length: text.length))
             document.append(text)
         }
+
         func separator() {
             let start = document.length
             line(" ")
@@ -104,6 +107,7 @@ final class RuleDetailController: NSViewController, NSTextViewDelegate {
                 [.detailSeparator: true, .font: NSFont.systemFont(ofSize: 6)],
                 range: NSRange(location: start, length: 1))
         }
+
         func section(_ title: String) {
             if let cardStart, document.length > cardStart {
                 cards.append(NSRange(location: cardStart, length: document.length - cardStart))
@@ -116,6 +120,7 @@ final class RuleDetailController: NSViewController, NSTextViewDelegate {
             document.append(text)
             cardStart = document.length
         }
+
         func request(_ method: String, _ path: String) {
             let start = document.length
             line(" " + method + "   " + path, mono: true)
@@ -123,6 +128,7 @@ final class RuleDetailController: NSViewController, NSTextViewDelegate {
                 [.detailBadge: NSColor.labelColor, .font: NSFont.systemFont(ofSize: 11, weight: .semibold)],
                 range: NSRange(location: start, length: method.utf16.count + 2))
         }
+
         func mode(_ kind: RuleFormatting.ResponseKind) {
             let start = document.length
             line(" " + kind.title + " ")
@@ -134,6 +140,7 @@ final class RuleDetailController: NSViewController, NSTextViewDelegate {
             line(kind.explanation, secondary: true)
             line(" ")
         }
+
         func facts(_ facts: [RuleFormatting.Fact]) {
             for fact in facts {
                 separator()
@@ -149,10 +156,12 @@ final class RuleDetailController: NSViewController, NSTextViewDelegate {
             }
             if !facts.isEmpty { separator() }
         }
+
         func vacancy(_ value: RuleFormatting.Vacancy) {
             section(value.message)
             line(value.hint, secondary: true)
         }
+
         func body(_ value: JSONValue, title: String = "Body", note: String? = nil) {
             separator()
             let start = document.length
@@ -179,6 +188,7 @@ final class RuleDetailController: NSViewController, NSTextViewDelegate {
             copyText = RuleFormatting.jsonText(value)
             copyButton.setAccessibilityLabel("Copy body")
         }
+
         func transition(_ value: ScenarioOutline.Transition, ending: Bool = false, showRelated: Bool = false) {
             section(ending ? "Advances past the final response" : "Advances the sequence")
             request(value.request.method, value.request.path)
@@ -407,16 +417,19 @@ final class RuleDetailController: NSViewController, NSTextViewDelegate {
     }
 
     func scrollToResponse() { textView.scrollRangeToVisible(responseRange) }
+
     @objc private func stepChanged() {
         guard let currentRule else { return }
         onPickStep(stepPicker.indexOfSelectedItem + 1, currentRule)
         scrollToResponse()
     }
+
     private func copyBody() {
         guard let copyText else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(copyText, forType: .string)
     }
+
     func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
         let key = (link as? URL)?.absoluteString ?? link as? String ?? ""
         guard let destination = links[key] else { return false }

@@ -183,10 +183,12 @@ final class RulesWindowController: NSWindowController, NSWindowDelegate, NSToolb
         }
         return name != scenarios.active && scenarios.scenarios.contains { $0.name == name }
     }
+
     @objc func activateSelectedScenario(_ sender: Any?) {
         guard canActivateSelection, let name = state.scenario else { return }
         Task { await model.activate(name) }
     }
+
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         if menuItem.action == #selector(toggleInterception) {
             menuItem.title = model.stopsRatherThanStarts ? "Stop Interception" : "Start Interception"
@@ -198,8 +200,11 @@ final class RulesWindowController: NSWindowController, NSWindowDelegate, NSToolb
         }
         return true
     }
+
     @objc func refresh(_ sender: Any?) { Task { await model.refresh() } }
+
     @objc func reload(_ sender: Any?) { Task { await model.reloadScenarios() } }
+
     @objc func toggleInterception(_ sender: Any?) {
         guard !model.busy else { return }
         Task { await model.toggle() }
@@ -214,19 +219,24 @@ final class RulesWindowController: NSWindowController, NSWindowDelegate, NSToolb
         interceptionItem.isEnabled = !model.busy
         interceptionItem.toolTip = interceptionItem.label
     }
+
     @objc func toggleSidebar(_ sender: Any?) {
         split.toggleSidebar(sender)
     }
+
     @objc func dismissError(_ sender: Any?) { model.dismissError() }
+
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         toolbarDefaultItemIdentifiers(toolbar) + [.init("dismiss"), .init("refresh")]
     }
+
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         [
             .flexibleSpace, .toggleSidebar, .sidebarTrackingSeparator, .init("title"), .init("interception"),
             .flexibleSpace, .init("status"), .flexibleSpace, .init("reload"),
         ]
     }
+
     func toolbar(
         _ toolbar: NSToolbar, itemForItemIdentifier id: NSToolbarItem.Identifier, willBeInsertedIntoToolbar flag: Bool
     ) -> NSToolbarItem? {

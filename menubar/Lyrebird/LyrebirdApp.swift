@@ -58,20 +58,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         browser?.showWindow(sender)
         NSApp.activate(ignoringOtherApps: true)
     }
+
     @objc func showSettings(_ sender: Any?) {
         guard let model else { return }
         if settings == nil { settings = SettingsWindowController(model: model) }
         settings?.showWindow(sender)
         NSApp.activate(ignoringOtherApps: true)
     }
+
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
         showBrowser(nil)
         return false
     }
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
     private func installMenus() {
         let main = NSMenu()
+
         func submenu(_ title: String) -> NSMenu {
             let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
             let menu = NSMenu(title: title)
@@ -79,6 +83,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             main.addItem(item)
             return menu
         }
+
         func add(_ menu: NSMenu, _ title: String, _ action: Selector, _ key: String = "", target: AnyObject? = nil) {
             let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
             item.target = target

@@ -8,6 +8,7 @@ final class ScenarioSidebarController: NSViewController, NSOutlineViewDataSource
         let title: String
         let destination: BrowserState.Destination?
         var children: [Item] = []
+
         init(id: String, title: String, destination: BrowserState.Destination? = nil) {
             self.id = id
             self.title = title
@@ -140,18 +141,23 @@ final class ScenarioSidebarController: NSViewController, NSOutlineViewDataSource
     func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
         (item as? Item)?.children.count ?? roots.count
     }
+
     func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any {
         ((item as? Item)?.children ?? roots)[index]
     }
+
     func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool {
         !(item as! Item).children.isEmpty
     }
+
     func outlineView(_ outlineView: NSOutlineView, shouldSelectItem item: Any) -> Bool {
         (item as! Item).destination != nil
     }
+
     // Give native source-list groups enough space for their labels; pinning a label on all four
     // edges compressed it below its font height. See BrowserDesignTests.
     func outlineView(_ outlineView: NSOutlineView, isGroupItem item: Any) -> Bool { (item as! Item).destination == nil }
+
     func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
         let item = item as! Item
         let cell = SidebarCell()
@@ -205,21 +211,25 @@ final class ScenarioSidebarController: NSViewController, NSOutlineViewDataSource
         cell.rowSizeStyle = outline.effectiveRowSizeStyle
         return cell
     }
+
     func outlineViewSelectionDidChange(_ notification: Notification) {
         guard !applying, let item = outline.item(atRow: outline.selectedRow) as? Item,
             let destination = item.destination
         else { return }
         onSelect(destination)
     }
+
     @objc private func activateClicked() {
         activate(row: outline.clickedRow >= 0 ? outline.clickedRow : outline.selectedRow)
     }
+
     private func activate(row: Int) {
         guard let item = outline.item(atRow: row) as? Item, case .scenario(let name) = item.destination,
             canActivate(name)
         else { return }
         onActivate(name)
     }
+
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
         guard let item = outline.item(atRow: outline.clickedRow) as? Item, case .scenario(let name) = item.destination
@@ -231,6 +241,7 @@ final class ScenarioSidebarController: NSViewController, NSOutlineViewDataSource
         menu.autoenablesItems = false
         menu.addItem(action)
     }
+
     @objc private func activateMenu(_ sender: NSMenuItem) {
         guard let name = sender.representedObject as? String, canActivate(name) else { return }
         onActivate(name)

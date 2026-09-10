@@ -26,7 +26,9 @@ final class BadgeView: NSView {
         setAccessibilityElement(true)
         setAccessibilityLabel(text)
     }
+
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
     override func draw(_ dirtyRect: NSRect) {
         let rect = bounds.insetBy(dx: 0.5, dy: 0.5)
         if circle {
@@ -39,5 +41,6 @@ final class BadgeView: NSView {
             NSBezierPath(roundedRect: rect, xRadius: 4, yRadius: 4).fill()
         }
     }
+
     override func viewDidChangeEffectiveAppearance() { needsDisplay = true }
 }

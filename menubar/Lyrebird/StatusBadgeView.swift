@@ -4,6 +4,7 @@ import AppKit
 final class StatusBadgeView: NSView {
     let label = NativeStyle.label("Stopped", size: 13)
     private let content = StatusBadgeContent(frame: .zero)
+
     override init(frame: NSRect) {
         super.init(frame: frame)
         if #available(macOS 26.0, *) {
@@ -35,7 +36,9 @@ final class StatusBadgeView: NSView {
             widthAnchor.constraint(lessThanOrEqualToConstant: 360),
         ])
     }
+
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
     func update(_ status: AppModel.Status, scenario: String?, help: String) {
         content.status = status
         label.stringValue = RuleFormatting.statusItem(status: status, activeScenario: scenario)
@@ -48,6 +51,7 @@ final class StatusBadgeView: NSView {
 private final class StatusBadgeContent: NSView {
     var status: AppModel.Status = .down
     var usesLegacyBackground = false
+
     override func draw(_ dirtyRect: NSRect) {
         if usesLegacyBackground {
             let capsule = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 16, yRadius: 16)
