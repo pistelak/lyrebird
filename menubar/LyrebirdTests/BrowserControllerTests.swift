@@ -6,6 +6,31 @@ import Testing
 extension AppTests {
     @MainActor
     struct BrowserControllerTests {
+        @Test func toolbarInterceptionActionFollowsStatusAndBusyState() async throws {
+            try await withAppTestEnvironment {
+                let model = AppModel(autoStart: false, expectedFingerprint: "toolbar")
+                let controller = RulesWindowController(model: model, restore: false)
+                let toolbar = try #require(controller.window?.toolbar)
+                let item = try #require(toolbar.items.first { $0.itemIdentifier.rawValue == "interception" })
+                let menu = NSMenuItem(
+                    title: "", action: #selector(RulesWindowController.toggleInterception(_:)), keyEquivalent: "")
+                for intercepting in [false, true, false] {
+                    model.healthRead = .up(
+                        Health(proxyUp: true, intercepting: intercepting, profileFingerprint: "toolbar"))
+                    controller.render()
+                    #expect(item.label == (intercepting ? "Stop interception" : "Start interception"))
+                    #expect(item.isEnabled)
+                    #expect(controller.validateMenuItem(menu))
+                    #expect(menu.title == (intercepting ? "Stop Interception" : "Start Interception"))
+                    model.busy = true
+                    controller.render()
+                    #expect(!item.isEnabled)
+                    #expect(!controller.validateMenuItem(menu))
+                    model.busy = false
+                }
+            }
+        }
+
         private func model() -> AppModel {
             StubURLProtocol.install { request in RulesFixture.serve(request) }
             return AppModel(

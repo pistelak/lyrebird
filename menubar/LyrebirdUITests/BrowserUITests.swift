@@ -26,6 +26,13 @@ final class BrowserUITests: XCTestCase {
         expectation(for: populated, evaluatedWith: detail)
         waitForExpectations(timeout: 5)
         XCTAssertEqual(app.searchFields.count, 0)
+        let interception = app.toolbars.buttons["Stop interception"]
+        XCTAssertTrue(interception.isHittable)
+        XCTAssertTrue(interception.isEnabled)
+        XCTAssertEqual(interception.label, "Stop interception")
+        let title = app.toolbars.staticTexts["Lyrebird"]
+        XCTAssertGreaterThanOrEqual(interception.frame.minX, title.frame.maxX)
+        XCTAssertLessThan(interception.frame.minX - title.frame.maxX, 50)
         let attachment = XCTAttachment(screenshot: window.screenshot())
         attachment.name = "AppKit browser light"
         attachment.lifetime = .keepAlways

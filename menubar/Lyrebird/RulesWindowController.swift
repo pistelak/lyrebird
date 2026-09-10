@@ -9,6 +9,7 @@ final class RulesWindowController: NSWindowController, NSWindowDelegate, NSToolb
     let requests = RequestListController()
     let detail = RuleDetailController()
     private let statusBadge = StatusBadgeView(frame: .zero)
+    private let interceptionItem = NSToolbarItem(itemIdentifier: .init("interception"))
     private let observation = ModelObservation()
     private var registered = false
     private var pendingDestination: RuleFormatting.Destination?
@@ -159,6 +160,7 @@ final class RulesWindowController: NSWindowController, NSWindowDelegate, NSToolb
             }
         }
         statusBadge.update(model.status, scenario: model.ownHealth?.activeScenario, help: model.statusLine)
+        updateInterceptionItem()
         if let toolbar = window?.toolbar {
             let dismissIndex = toolbar.items.firstIndex { $0.itemIdentifier.rawValue == "dismiss" }
             if RuleFormatting.actionFailure(model.lastError) != nil, dismissIndex == nil {
@@ -189,6 +191,10 @@ final class RulesWindowController: NSWindowController, NSWindowDelegate, NSToolb
         Task { await model.activate(name) }
     }
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(toggleInterception) {
+            menuItem.title = model.stopsRatherThanStarts ? "Stop Interception" : "Start Interception"
+            return !model.busy
+        }
         if menuItem.action == #selector(activateSelectedScenario) { return canActivateSelection }
         if menuItem.action == #selector(toggleSidebar) {
             menuItem.title = split.splitViewItems.first?.isCollapsed == true ? "Show Sidebar" : "Hide Sidebar"
@@ -196,6 +202,19 @@ final class RulesWindowController: NSWindowController, NSWindowDelegate, NSToolb
         return true
     }
     @objc func refresh(_ sender: Any?) { Task { await model.refresh() } }
+    @objc func toggleInterception(_ sender: Any?) {
+        guard !model.busy else { return }
+        Task { await model.toggle() }
+    }
+
+    private func updateInterceptionItem() {
+        let stops = model.stopsRatherThanStarts
+        interceptionItem.label = stops ? "Stop interception" : "Start interception"
+        interceptionItem.image = NSImage(
+            systemSymbolName: stops ? "stop.fill" : "play.fill", accessibilityDescription: interceptionItem.label)
+        interceptionItem.isEnabled = !model.busy
+        interceptionItem.toolTip = interceptionItem.label
+    }
     @objc func toggleSidebar(_ sender: Any?) {
         split.toggleSidebar(sender)
     }
@@ -205,8 +224,8 @@ final class RulesWindowController: NSWindowController, NSWindowDelegate, NSToolb
     }
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         [
-            .flexibleSpace, .toggleSidebar, .sidebarTrackingSeparator, .init("title"), .flexibleSpace, .init("status"),
-            .flexibleSpace,
+            .flexibleSpace, .toggleSidebar, .sidebarTrackingSeparator, .init("title"), .init("interception"),
+            .flexibleSpace, .init("status"), .flexibleSpace,
         ]
     }
     func toolbar(
@@ -221,6 +240,15 @@ final class RulesWindowController: NSWindowController, NSWindowDelegate, NSToolb
             item.action = #selector(NSSplitViewController.toggleSidebar(_:))
             item.label = "Toggle sidebar"
             return item
+        }
+        if id.rawValue == "interception" {
+            updateInterceptionItem()
+            interceptionItem.target = self
+            interceptionItem.action = #selector(toggleInterception)
+            interceptionItem.isBordered = false
+            interceptionItem.visibilityPriority = .high
+            interceptionItem.autovalidates = false
+            return interceptionItem
         }
         let item = NSToolbarItem(itemIdentifier: id)
         item.isBordered = false

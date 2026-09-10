@@ -95,6 +95,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let file = submenu("File")
         add(file, "Scenarios", #selector(showBrowser), "o", target: self)
         add(file, "Activate Scenario", #selector(RulesWindowController.activateSelectedScenario(_:)), "\r")
+        add(file, "Start Interception", #selector(RulesWindowController.toggleInterception(_:)))
         add(file, "Close", #selector(NSWindow.performClose(_:)), "w")
         let edit = submenu("Edit")
         add(edit, "Undo", Selector(("undo:")), "z")
