@@ -362,6 +362,47 @@ extension AppTests {
             #expect(state.ruleSelection != .rule("missing"))
         }
 
+        /// Identical leaf names in different folders must remain separate navigation targets;
+        /// qualified labels or merged identities would make browsing the intended scenario ambiguous.
+        @Test func nativeSidebarKeepsSameNamedLeavesInTheirFolders() async throws {
+            try await withAppTestEnvironment {
+                let sidebar = ScenarioSidebarController()
+                var selections: [BrowserState.Destination] = []
+                sidebar.onSelect = { selections.append($0) }
+                let list = ScenarioList(
+                    active: "orders/pending",
+                    scenarios: [
+                        .init(name: "orders/pending", overrideCount: 1, verified: false),
+                        .init(name: "checkout/pending", overrideCount: 1, verified: false),
+                    ])
+                sidebar.update(list, selection: nil, problems: [:], stale: false)
+                let items = (0..<sidebar.outline.numberOfRows).compactMap {
+                    sidebar.outline.item(atRow: $0) as? ScenarioSidebarController.Item
+                }
+                let orders = try #require(items.first { $0.destination == .scenario("orders/pending") })
+                let checkout = try #require(items.first { $0.destination == .scenario("checkout/pending") })
+                #expect(orders !== checkout)
+                #expect(orders.id == "scenario:orders/pending")
+                #expect(checkout.id == "scenario:checkout/pending")
+                for (item, folder) in [(orders, "orders"), (checkout, "checkout")] {
+                    let parent = try #require(sidebar.outline.parent(forItem: item) as? ScenarioSidebarController.Item)
+                    #expect(parent.id == "group:" + folder)
+                    #expect(parent.title == folder)
+                    let cell = try #require(
+                        sidebar.outlineView(sidebar.outline, viewFor: sidebar.outline.outlineTableColumn, item: item)
+                            as? NSTableCellView)
+                    #expect(cell.textField?.stringValue == "pending")
+                    sidebar.outline.selectRowIndexes(
+                        IndexSet(integer: sidebar.outline.row(forItem: item)), byExtendingSelection: false)
+                    let selected =
+                        sidebar.outline.item(atRow: sidebar.outline.selectedRow)
+                        as? ScenarioSidebarController.Item
+                    #expect(selected === item)
+                }
+                #expect(selections == [.scenario("orders/pending"), .scenario("checkout/pending")])
+            }
+        }
+
         @Test func nativeSidebarRefreshKeepsSelectionAndGroups() async throws {
             try await withAppTestEnvironment {
                 let sidebar = ScenarioSidebarController()

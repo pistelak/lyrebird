@@ -104,7 +104,11 @@ final class ScenarioSidebarController: NSViewController, NSOutlineViewDataSource
                 }
                 parent.children.append(
                     Item(
-                        id: "scenario:" + scenario.name, title: parts.last ?? scenario.name,
+                        // The model's leaf, not `parts.last`, so the sidebar and the menu cannot drift apart
+                        // on what a row is called. The two agree only because the engine refuses a name
+                        // deeper than `group/name` (store.py `scenario_parts`), which is what holds the loop
+                        // above to one level — see nativeSidebarKeepsSameNamedLeavesInTheirFolders.
+                        id: "scenario:" + scenario.name, title: scenario.leaf,
                         destination: .scenario(scenario.name)))
             }
             outline.reloadData()
