@@ -48,6 +48,16 @@ make test-engine TEST_ARGS="-k reset"
 make check-app
 ```
 
+The UI tests under `menubar/LyrebirdUITests` drive the real app through XCUIAutomation and do run
+on CI — with one exception. `testDarkAppearanceAndFullscreenKeepContentVisible` enters full screen,
+which is an animated Space transition that a runner's virtual framebuffer never completes, so CI
+passes `APP_TEST_SKIP=-skip-testing:LyrebirdUITests/BrowserUITests/testDarkAppearanceAndFullscreenKeepContentVisible`.
+A local `make check` runs it, and every UI test needs the screen left alone while it does —
+clicking around during a run fails them for reasons that have nothing to do with the code.
+
+Skip the case, not the target: the other UI tests exercise the real app on a runner, and dropping
+them to avoid one environment-bound assertion would cost coverage that works.
+
 `make help` lists the main targets. Checks do not install dependencies or change network
 settings. Tests bind local sockets, so an agent sandbox must allow that. Build output stays in
 ignored `.build` directories. `make acceptance` is separate and never part of `make check`.
