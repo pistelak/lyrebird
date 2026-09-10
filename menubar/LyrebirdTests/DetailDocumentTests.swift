@@ -73,6 +73,43 @@ extension AppTests {
             #expect(next.attribute(.detailCard, at: another.location, effectiveRange: nil) as? Int == 1)
         }
 
+        /// Rows are ruled apart, not fenced in: a single row used to have a line above and below it,
+        /// which read as a mistake because it was one. The count is what pins it — none for one row,
+        /// one between each pair after that — and `facts` draws a sequence's advance conditions too,
+        /// not only response headers, so getting it wrong shows up in more than one pane.
+        @Test func rulesGoBetweenFactRowsRatherThanAroundThem() throws {
+            let rows = [
+                RuleFormatting.Fact("Content-Type", "application/json"),
+                RuleFormatting.Fact("X-Trace", "sample"),
+                RuleFormatting.Fact("Cache-Control", "no-store"),
+            ]
+            func separators(_ facts: [RuleFormatting.Fact]) -> Int {
+                let document = DetailDocument()
+                document.section("Response")
+                document.facts(facts)
+                let text = document.attributedString
+                var count = 0
+                text.enumerateAttribute(.detailSeparator, in: NSRange(location: 0, length: text.length)) {
+                    value, _, _ in
+                    if value != nil { count += 1 }
+                }
+                return count
+            }
+            #expect(separators([]) == 0)
+            #expect(separators(Array(rows.prefix(1))) == 0, "a lone row has nothing to be separated from")
+            #expect(separators(Array(rows.prefix(2))) == 1)
+            #expect(separators(rows) == 2)
+
+            let document = DetailDocument()
+            document.section("Response")
+            document.facts(rows)
+            let rendered = document.attributedString.string
+            for row in rows {
+                #expect(rendered.contains(row.label))
+                #expect(rendered.contains(row.value))
+            }
+        }
+
         /// Reusing the same drawing objects across appearances must still resolve the dynamic palette, and
         /// extracting badge and content insets must leave the original card, separator and badge pixels intact.
         @Test func detailDecorationsKeepOriginalGeometryAcrossAppearances() throws {
