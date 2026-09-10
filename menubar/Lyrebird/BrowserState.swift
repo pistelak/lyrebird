@@ -1,5 +1,4 @@
 import Foundation
-import Observation
 
 /// Selection belongs to the reader; activation belongs to the engine.
 @MainActor
@@ -47,33 +46,5 @@ final class BrowserState {
 
     func pickStep(_ step: Int, rule: String) {
         pickedStep = .init(scenario: scenario ?? "", rule: rule, step: step)
-    }
-}
-
-/// Observation is re-armed after mutations have committed. The generation invalidates queued
-/// callbacks on close, so a closed window cannot resume rendering; see BrowserControllerTests.
-@MainActor
-final class ModelObservation {
-    private var generation = 0
-    private var render: (() -> Void)?
-
-    func start(_ render: @escaping () -> Void) {
-        stop()
-        self.render = render
-        track(generation)
-    }
-
-    func stop() {
-        generation &+= 1
-        render = nil
-    }
-
-    private func track(_ expected: Int) {
-        guard generation == expected, let render else { return }
-        withObservationTracking {
-            render()
-        } onChange: { [weak self] in
-            Task { @MainActor [weak self] in self?.track(expected) }
-        }
     }
 }
