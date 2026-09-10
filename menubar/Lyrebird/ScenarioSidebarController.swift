@@ -78,32 +78,7 @@ final class ScenarioSidebarController: NSViewController {
             roots = [Item(id: "recent", title: "Recent", destination: .recent)]
             let scenarios = Item(id: "scenarios", title: "Scenarios")
             roots.append(scenarios)
-            var groups: [String: Item] = [:]
-            for scenario in list?.scenarios ?? [] {
-                let parts = scenario.name.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
-                var parent = scenarios
-                if parts.count > 1 {
-                    for depth in 1..<parts.count {
-                        let prefix = parts.prefix(depth).joined(separator: "/")
-                        if let group = groups[prefix] {
-                            parent = group
-                        } else {
-                            let group = Item(id: "group:" + prefix, title: parts[depth - 1])
-                            parent.children.append(group)
-                            groups[prefix] = group
-                            parent = group
-                        }
-                    }
-                }
-                parent.children.append(
-                    Item(
-                        // The model's leaf, not `parts.last`, so the sidebar and the menu cannot drift apart
-                        // on what a row is called. The two agree only because the engine refuses a name
-                        // deeper than `group/name` (store.py `scenario_parts`), which is what holds the loop
-                        // above to one level — see nativeSidebarKeepsSameNamedLeavesInTheirFolders.
-                        id: "scenario:" + scenario.name, title: scenario.leaf,
-                        destination: .scenario(scenario.name)))
-            }
+            appendScenarios(list?.scenarios ?? [], to: scenarios)
             outline.reloadData()
             for item in allItems where item.destination == nil {
                 if first || !previousGroups.contains(item.id) || expanded.contains(item.id) || item === scenarios {
@@ -111,7 +86,7 @@ final class ScenarioSidebarController: NSViewController {
                 }
             }
         } else if appearanceChanged {
-            // Refresh cell appearance without replacing row identities or resetting scroll.
+            // Preserve row identities on appearance changes; see sidebarAppearanceRefreshKeepsItemsAndSelection.
             outline.reloadData(
                 forRowIndexes: IndexSet(integersIn: 0..<outline.numberOfRows), columnIndexes: IndexSet(integer: 0))
         }
@@ -123,6 +98,35 @@ final class ScenarioSidebarController: NSViewController {
         } else {
             outline.deselectAll(nil)
         }
+    }
+
+    private func appendScenarios(_ list: [ScenarioSummary], to scenarios: Item) {
+        var groups: [String: Item] = [:]
+        for scenario in list {
+            let parts = scenario.name.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+            let parent = scenarioParent(parts, in: scenarios, groups: &groups)
+            parent.children.append(
+                Item(
+                    // Keep menu and sidebar leaf names equal; see nativeSidebarKeepsSameNamedLeavesInTheirFolders.
+                    id: "scenario:" + scenario.name, title: scenario.leaf,
+                    destination: .scenario(scenario.name)))
+        }
+    }
+
+    private func scenarioParent(_ parts: [String], in scenarios: Item, groups: inout [String: Item]) -> Item {
+        var parent = scenarios
+        for depth in parts.indices.dropFirst() {
+            let prefix = parts.prefix(depth).joined(separator: "/")
+            if let group = groups[prefix] {
+                parent = group
+            } else {
+                let group = Item(id: "group:" + prefix, title: parts[depth - 1])
+                parent.children.append(group)
+                groups[prefix] = group
+                parent = group
+            }
+        }
+        return parent
     }
 
     private var allItems: [Item] {
@@ -224,19 +228,7 @@ extension ScenarioSidebarController: NSOutlineViewDelegate {
         cell.iconHeight?.isActive = true
         if item.destination == nil { field.textColor = .secondaryLabelColor }
         if case .scenario(let name) = item.destination {
-            let warning = problems[name]?.isEmpty == false
-            field.stringValue = item.title + (warning ? "  ⚠" : "")
-            if active == name {
-                icon.image = NSImage(systemSymbolName: "checkmark", accessibilityDescription: nil)
-            }
-            field.font = .systemFont(ofSize: 13, weight: active == name ? .semibold : .regular)
-            cell.isActive = active == name
-            field.textColor = stale ? .secondaryLabelColor : .labelColor
-            cell.toolTip =
-                ([name, active == name ? "Active scenario" : "Double-click to activate"] + (problems[name] ?? []))
-                .joined(separator: "\n")
-            field.setAccessibilityLabel(
-                name + (active == name ? ", active" : "") + (warning ? ", did not load whole" : ""))
+            applyScenarioAppearance(name, item: item, cell: cell, field: field, icon: icon)
         } else if item.destination == .recent {
             icon.image = NSImage(systemSymbolName: "clock", accessibilityDescription: nil)
             icon.contentTintColor = .labelColor
@@ -255,6 +247,24 @@ extension ScenarioSidebarController: NSOutlineViewDelegate {
         cell.imageView = icon
         cell.rowSizeStyle = outline.effectiveRowSizeStyle
         return cell
+    }
+
+    private func applyScenarioAppearance(
+        _ name: String, item: Item, cell: SidebarCell, field: NSTextField, icon: NSImageView
+    ) {
+        let warning = problems[name]?.isEmpty == false
+        field.stringValue = item.title + (warning ? "  ⚠" : "")
+        if active == name {
+            icon.image = NSImage(systemSymbolName: "checkmark", accessibilityDescription: nil)
+        }
+        field.font = .systemFont(ofSize: 13, weight: active == name ? .semibold : .regular)
+        cell.isActive = active == name
+        field.textColor = stale ? .secondaryLabelColor : .labelColor
+        cell.toolTip =
+            ([name, active == name ? "Active scenario" : "Double-click to activate"] + (problems[name] ?? []))
+            .joined(separator: "\n")
+        field.setAccessibilityLabel(
+            name + (active == name ? ", active" : "") + (warning ? ", did not load whole" : ""))
     }
 
     func outlineViewSelectionDidChange(_ notification: Notification) {
