@@ -77,9 +77,6 @@ extension AppTests {
             let row = try #require(
                 RuleFormatting.flowSections(BrowserPreview.snapshot("remove-an-item")).first?.rows.first)
             let cell = FlowRequestCell(row)
-            func fields(_ view: NSView) -> [NSTextField] {
-                (view as? NSTextField).map { [$0] } ?? view.subviews.flatMap(fields)
-            }
             let labels = fields(cell)
             let original = labels.map(\.textColor)
             #expect(labels.count >= 5)

@@ -132,7 +132,8 @@ extension AppTests {
                         StubURLProtocol.requests.contains(where: { $0.url?.path == "/__mock__/scenarios/reload" })
                     {
                         let body =
-                            #"{"active":"orders-outage","scenarios":[{"name":"disk-added","overrideCount":0,"verified":false}]}"#
+                            #"{"active":"orders-outage","scenarios":[{"name":"disk-added","#
+                            + #""overrideCount":0,"verified":false}]}"#
                         return (Stub.response(request, 200), Data(body.utf8))
                     }
                     return RulesFixture.serve(request)
@@ -186,9 +187,7 @@ extension AppTests {
 
         private func model() -> AppModel {
             StubURLProtocol.install { request in RulesFixture.serve(request) }
-            return AppModel(
-                client: MockClient(base: Stub.base, session: StubURLProtocol.session()),
-                autoStart: false, expectedFingerprint: RulesFixture.ours)
+            return makeModel(expecting: RulesFixture.ours)
         }
 
         private func waitFor(_ description: String, _ condition: () -> Bool) async throws {
@@ -465,6 +464,7 @@ extension AppTests {
                 #expect(!detail.textView.string.contains("\"items\""))
             }
         }
+
         @Test func aNewHeadingNeverDisplaysThePreviousScenariosRows() async throws {
             try await withAppTestEnvironment {
                 let model = model()
@@ -495,6 +495,7 @@ extension AppTests {
                 #expect(DockPresence.openWindows == 0)
             }
         }
+
         @Test func trafficUpdatesAfterSwitchingFromRulesWithoutAnotherHealthChange() async throws {
             try await withAppTestEnvironment {
                 let model = model()

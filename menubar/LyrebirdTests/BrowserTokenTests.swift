@@ -7,7 +7,7 @@ extension AppTests {
     @MainActor
     struct BrowserTokenTests {
         /// Sharing row insets must not merge a wrapping traffic path with the heavier, truncated flow path,
-        /// or move the numbered flow gutter; these are the original constraints and fonts at both widths.
+        /// or move the numbered flow gutter; these are the original insets, gaps and fonts at both widths.
         @Test func requestCellsKeepTheirDistinctTypographyAndGeometry() throws {
             let entry = RecentEntry(id: "request", method: "GET", path: "/api/items/🚀/details", status: 200)
             var flow = try #require(
@@ -26,7 +26,12 @@ extension AppTests {
                 let aligned = path.alignmentRect(forFrame: path.frame)
                 #expect(aligned.minX == 16)
                 #expect(aligned.maxX == width - 16)
-                #expect(recent.constraints.map(\.constant).sorted() == [-16, -8, 0, 0, 6, 8, 16])
+                let header = try #require(recent.subviews.first as? NSStackView)
+                #expect(header.frame.minX == 16)
+                #expect(header.frame.maxX == width - 16)
+                #expect(topInset(header, in: recent) == 8)
+                #expect((recent.isFlipped ? aligned.minY - header.frame.maxY : header.frame.minY - aligned.maxY) == 6)
+                #expect(bottomInsetLimit(path, in: recent) == -8)
 
                 for number: Int? in [nil, 1] {
                     flow.number = number
@@ -43,8 +48,13 @@ extension AppTests {
                     let column = try #require(cell.subviews.first as? NSStackView)
                     #expect(column.frame.minX == (number == nil ? 16 : 48))
                     #expect(column.frame.maxX == width - 16)
-                    let constants: [CGFloat] = number == nil ? [-16, -8, 8, 16] : [-16, -8, 8, 8, 14, 48]
-                    #expect(cell.constraints.map(\.constant).sorted() == constants)
+                    #expect(topInset(column, in: cell) == 8)
+                    #expect(bottomInsetLimit(column, in: cell) == -8)
+                    if number != nil {
+                        let badge = try #require(cell.subviews.compactMap { $0 as? BadgeView }.first)
+                        #expect(badge.frame.minX == 14)
+                        #expect(topInset(badge, in: cell) == 8)
+                    }
                     #expect(column.spacing == 4)
                     #expect(column.arrangedSubviews.compactMap { ($0 as? NSStackView)?.spacing } == [8, 8])
                 }
@@ -91,33 +101,26 @@ extension AppTests {
                                     NSBezierPath(roundedRect: rect, xRadius: 4, yRadius: 4).fill()
                                 }
                             }
-                            #expect(actual == expected)
+                            #expect(
+                                actual == expected,
+                                Comment(rawValue: bitmapDifference(actual, expected, appearance: name)))
                         }
                     }
                 }
             }
         }
 
-        private func fields(_ view: NSView) -> [NSTextField] {
-            (view as? NSTextField).map { [$0] } ?? view.subviews.flatMap(fields)
+        private func topInset(_ view: NSView, in parent: NSView) -> CGFloat {
+            parent.isFlipped ? view.frame.minY - parent.bounds.minY : parent.bounds.maxY - view.frame.maxY
         }
 
-        private func bitmap(_ view: NSView, draw: () -> Void) throws -> Data {
-            let bitmap = try #require(
-                NSBitmapImageRep(
-                    bitmapDataPlanes: nil, pixelsWide: Int(view.bounds.width), pixelsHigh: Int(view.bounds.height),
-                    bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
-                    bytesPerRow: 0, bitsPerPixel: 0))
-            let context = try #require(NSGraphicsContext(bitmapImageRep: bitmap))
-            NSGraphicsContext.saveGraphicsState()
-            defer { NSGraphicsContext.restoreGraphicsState() }
-            NSGraphicsContext.current = context
-            view.effectiveAppearance.performAsCurrentDrawingAppearance {
-                BrowserAppearance.pane.setFill()
-                view.bounds.fill()
-                draw()
-            }
-            return try #require(bitmap.representation(using: .png, properties: [:]))
+        /// This is a minimum margin, not the laid-out gap: short content need not reach the bottom.
+        private func bottomInsetLimit(_ view: NSView, in parent: NSView) -> CGFloat? {
+            parent.constraints.first {
+                $0.firstItem === view && $0.firstAttribute == .bottom
+                    && $0.secondItem === parent && $0.secondAttribute == .bottom
+                    && $0.relation == .lessThanOrEqual && $0.multiplier == 1
+            }?.constant
         }
     }
 }

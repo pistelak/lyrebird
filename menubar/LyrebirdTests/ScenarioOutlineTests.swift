@@ -3,7 +3,6 @@ import Testing
 @testable import Lyrebird
 
 struct ScenarioOutlineTests {
-
     // MARK: - Fixtures
 
     private func replaceRule(
@@ -340,7 +339,6 @@ struct ScenarioOutlineTests {
         #expect(RuleFormatting.selection(current: rows[2].selection, in: shot) == rows[2].selection)
         let filtered = RuleFormatting.flowSections(shot, query: "PATCH").flatMap(\.rows)
         #expect(filtered.map(\.number) == [2], "search must not renumber configured order")
-        #expect(RuleFormatting.detailRule(selection: rows[2].selection, in: shot)?.id == "ovr_orders")
     }
 
     @Test

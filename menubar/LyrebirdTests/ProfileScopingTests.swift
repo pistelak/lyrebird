@@ -11,22 +11,6 @@ import Testing
 extension AppTests {
     @MainActor
     struct ProfileScopingTests {
-
-        private func makeClient(profile: String? = Fixture.ours) -> MockClient {
-            MockClient(base: Stub.base, profile: profile, session: StubURLProtocol.session())
-        }
-
-        /// A model that already knows its profile, driven by the injected client. Discovery is not
-        /// wired up unless a test asks for it, so nothing here shells out.
-        private func makeModel(
-            expecting fingerprint: String? = Fixture.ours,
-            discover: (@Sendable () async throws -> String)? = nil
-        ) -> AppModel {
-            AppModel(
-                client: MockClient(base: Stub.base, session: StubURLProtocol.session()),
-                autoStart: false, expectedFingerprint: fingerprint, discover: discover)
-        }
-
         private func headers(ofRequestsTo path: String) -> [String?] {
             StubURLProtocol.requests
                 .filter { $0.url?.path == path }
@@ -45,7 +29,7 @@ extension AppTests {
                         ? (Stub.response(request, 200), Data(#"{"active":"baseline"}"#.utf8))
                         : Stub.read(request)
                 }
-                let client = makeClient()
+                let client = Stub.makeClient(profile: Fixture.ours)
 
                 _ = await client.health()
                 _ = await client.scenarios()
@@ -69,7 +53,7 @@ extension AppTests {
                 // nobody and refuses it. Absent is the older-CLI case it deliberately lets through.
                 StubURLProtocol.install { request in Stub.read(request) }
 
-                _ = await makeClient(profile: nil).health()
+                _ = await Stub.makeClient(profile: nil).health()
 
                 #expect(headers(ofRequestsTo: "/__mock__/health") == [nil])
             }
@@ -80,7 +64,7 @@ extension AppTests {
             try await withAppTestEnvironment {
                 StubURLProtocol.install { request in Stub.read(request) }
 
-                await makeModel().refresh()
+                await makeModel(expecting: Fixture.ours).refresh()
 
                 #expect(!StubURLProtocol.requests.isEmpty, "the refresh sent nothing at all")
                 for request in StubURLProtocol.requests {
@@ -98,7 +82,7 @@ extension AppTests {
                     (Stub.response(request, 200), Fixture.health(fingerprint: Fixture.ours))
                 }
 
-                guard case .up(let health) = await makeClient().health() else {
+                guard case .up(let health) = await Stub.makeClient(profile: Fixture.ours).health() else {
                     Issue.record("a well-formed health read as something other than up")
                     return
                 }
@@ -112,7 +96,7 @@ extension AppTests {
             try await withAppTestEnvironment {
                 StubURLProtocol.install { _ in throw URLError(.cannotConnectToHost) }
 
-                guard case .down = await makeClient().health() else {
+                guard case .down = await Stub.makeClient(profile: Fixture.ours).health() else {
                     Issue.record("a refused connection is the one case that really is 'stopped'")
                     return
                 }
@@ -124,7 +108,7 @@ extension AppTests {
             try await withAppTestEnvironment {
                 StubURLProtocol.install { _ in throw URLError(.timedOut) }
 
-                guard case .unreadable(let reason) = await makeClient().health() else {
+                guard case .unreadable(let reason) = await Stub.makeClient(profile: Fixture.ours).health() else {
                     Issue.record("a timeout says nothing about whether a proxy is there")
                     return
                 }
@@ -139,7 +123,7 @@ extension AppTests {
                     (Stub.response(request, 500), Data("<html>gateway barfed</html>".utf8))
                 }
 
-                guard case .unreadable(let reason) = await makeClient().health() else {
+                guard case .unreadable(let reason) = await Stub.makeClient(profile: Fixture.ours).health() else {
                     Issue.record("HTTP 500 is something answering, not nothing listening")
                     return
                 }
@@ -155,7 +139,7 @@ extension AppTests {
                 for body in ["{}", #"{"intercepting":true}"#, "not json at all", "[]"] {
                     StubURLProtocol.install { request in (Stub.response(request, 200), Data(body.utf8)) }
 
-                    guard case .unreadable = await makeClient().health() else {
+                    guard case .unreadable = await Stub.makeClient(profile: Fixture.ours).health() else {
                         Issue.record("'\(body)' was accepted as a health reading")
                         return
                     }
@@ -175,14 +159,14 @@ extension AppTests {
                     (
                         Stub.response(request, 409),
                         Data(
-                            #"{"error":"profile_mismatch","running":"\#(Fixture.theirs)","requested":"\#(Fixture.ours)"}"#
-                                .utf8)
+                            (#"{"error":"profile_mismatch","running":"\#(Fixture.theirs)","#
+                                + #""requested":"\#(Fixture.ours)"}"#).utf8)
                     )
                 }
 
                 let error = try #require(
                     await #expect(throws: (any Error).self) {
-                        try await makeClient().activate("baseline")
+                        try await Stub.makeClient(profile: Fixture.ours).activate("baseline")
                     })
                 let message = error.localizedDescription
                 #expect(message.contains(Fixture.theirs), "which proxy answered: \(message)")
@@ -198,7 +182,7 @@ extension AppTests {
                 StubURLProtocol.install { request in
                     (Stub.response(request, 200), Fixture.health(fingerprint: Fixture.theirs))
                 }
-                let model = makeModel()
+                let model = makeModel(expecting: Fixture.ours)
 
                 await model.refresh()
 
@@ -224,7 +208,7 @@ extension AppTests {
                         ? (Stub.response(request, 200), Fixture.health(fingerprint: Fixture.ours))
                         : Stub.read(request)
                 }
-                let model = makeModel()
+                let model = makeModel(expecting: Fixture.ours)
 
                 await model.refresh()
 
@@ -244,7 +228,7 @@ extension AppTests {
                         ? (Stub.response(request, 200), Fixture.health(fingerprint: nil))
                         : Stub.read(request)
                 }
-                let model = makeModel()
+                let model = makeModel(expecting: Fixture.ours)
 
                 await model.refresh()
 
@@ -267,7 +251,7 @@ extension AppTests {
                         )
                         : Stub.read(request)
                 }
-                let model = makeModel()
+                let model = makeModel(expecting: Fixture.ours)
 
                 await model.refresh()
 
@@ -280,7 +264,7 @@ extension AppTests {
         func aProxyThatCouldNotBeReadIsNeverRenderedAsStopped() async throws {
             try await withAppTestEnvironment {
                 StubURLProtocol.install { request in (Stub.response(request, 500), Data("nope".utf8)) }
-                let model = makeModel()
+                let model = makeModel(expecting: Fixture.ours)
 
                 await model.refresh()
 
@@ -344,9 +328,8 @@ extension AppTests {
                         : Stub.read(request)
                 }
                 let fingerprint = MutableFingerprint(Fixture.ours)
-                let model = AppModel(
-                    client: MockClient(base: Stub.base, session: StubURLProtocol.session()),
-                    autoStart: false, expectedFingerprint: Fixture.ours,
+                let model = makeModel(
+                    expecting: Fixture.ours,
                     discover: { fingerprint.value })
                 await model.refresh()
                 #expect(model.status == .intercepting)
@@ -375,12 +358,10 @@ extension AppTests {
                     if request.url?.path == "/__mock__/health" { gate.wait() }
                     return Stub.read(request)
                 }
-                let model = makeModel()
+                let model = makeModel(expecting: Fixture.ours)
 
                 let refresh = Task { await model.refresh() }
-                for _ in 0..<200 where StubURLProtocol.requests.isEmpty {
-                    try await Task.sleep(for: .milliseconds(5))
-                }
+                try await StubURLProtocol.waitForRequest("/__mock__/health", releasing: gate, task: refresh)
                 #expect(!StubURLProtocol.requests.isEmpty, "the refresh never sent its health request")
                 Config.defaults.set("/tmp/another-profile", forKey: Config.profilePathKey)
                 gate.signal()
@@ -427,7 +408,7 @@ extension AppTests {
                 // in Settings.
                 Config.defaults.set("/does-not-exist/lyrebird", forKey: Config.lyrebirdPathKey)
                 StubURLProtocol.install { _ in throw URLError(.cannotConnectToHost) }
-                let model = makeModel()
+                let model = makeModel(expecting: Fixture.ours)
 
                 await model.toggle()
 
@@ -591,7 +572,9 @@ private final class MutableFingerprint: @unchecked Sendable {
     private let lock = NSLock()
     private var stored: String
 
-    init(_ value: String) { stored = value }
+    init(_ value: String) {
+        stored = value
+    }
 
     var value: String {
         get {

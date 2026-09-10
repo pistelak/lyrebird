@@ -39,7 +39,8 @@ extension AppTests {
                     reference.appearance = view.appearance
                     let rendered = try bitmap(view) { view.draw(view.bounds) }
                     let baseline = try bitmap(reference) { reference.draw(reference.bounds) }
-                    #expect(rendered == baseline)
+                    #expect(
+                        rendered == baseline, Comment(rawValue: bitmapDifference(rendered, baseline, appearance: name)))
                 }
             }
         }
@@ -88,11 +89,13 @@ extension AppTests {
                         manager.drawDecorations(in: view.bounds, at: view.textContainerOrigin)
                     }
                     let expected = try bitmap(view) { drawOriginalDecorations(view) }
-                    #expect(actual == expected)
+                    #expect(actual == expected, Comment(rawValue: bitmapDifference(actual, expected, appearance: name)))
                     appearances.append(actual)
                 }
                 #expect(appearances[0] != appearances[1])
-                #expect(appearances[0] == appearances[2])
+                #expect(
+                    appearances[0] == appearances[2],
+                    Comment(rawValue: bitmapDifference(appearances[0], appearances[2], appearance: .aqua)))
             }
         }
 
@@ -204,24 +207,6 @@ extension AppTests {
             view.textStorage!.setAttributedString(text)
             view.setFrameSize(NSSize(width: 240, height: 1_200))
             return view
-        }
-
-        private func bitmap(_ view: NSView, draw: () -> Void) throws -> Data {
-            let bitmap = try #require(
-                NSBitmapImageRep(
-                    bitmapDataPlanes: nil, pixelsWide: Int(view.bounds.width), pixelsHigh: Int(view.bounds.height),
-                    bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
-                    bytesPerRow: 0, bitsPerPixel: 0))
-            let context = try #require(NSGraphicsContext(bitmapImageRep: bitmap))
-            NSGraphicsContext.saveGraphicsState()
-            defer { NSGraphicsContext.restoreGraphicsState() }
-            NSGraphicsContext.current = context
-            view.effectiveAppearance.performAsCurrentDrawingAppearance {
-                BrowserAppearance.pane.setFill()
-                view.bounds.fill()
-                draw()
-            }
-            return try #require(bitmap.representation(using: .png, properties: [:]))
         }
 
         private func drawOriginalDecorations(_ view: DetailTextView) {
