@@ -42,5 +42,7 @@ final class BadgeView: NSView {
         }
     }
 
-    override func viewDidChangeEffectiveAppearance() { needsDisplay = true }
+    override func viewDidChangeEffectiveAppearance() {
+        needsDisplay = true
+    }
 }

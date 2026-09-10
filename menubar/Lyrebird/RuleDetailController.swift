@@ -93,9 +93,9 @@ final class RuleDetailController: NSViewController, NSTextViewDelegate {
 
         func line(_ value: String, mono: Bool = false, secondary: Bool = false) {
             guard !value.isEmpty else { return }
+            let color: NSColor = secondary ? .secondaryLabelColor : .labelColor
             let text = NSMutableAttributedString(
-                attributedString:
-                    NativeStyle.text(value + "\n", color: secondary ? .secondaryLabelColor : .labelColor, mono: mono))
+                attributedString: NativeStyle.text(value + "\n", color: color, mono: mono))
             text.addAttribute(.paragraphStyle, value: paragraph(), range: NSRange(location: 0, length: text.length))
             document.append(text)
         }
@@ -416,7 +416,9 @@ final class RuleDetailController: NSViewController, NSTextViewDelegate {
             x: origin.x + container.size.width - 62, y: origin.y + rect.minY - 3, width: 52, height: 22)
     }
 
-    func scrollToResponse() { textView.scrollRangeToVisible(responseRange) }
+    func scrollToResponse() {
+        textView.scrollRangeToVisible(responseRange)
+    }
 
     @objc private func stepChanged() {
         guard let currentRule else { return }

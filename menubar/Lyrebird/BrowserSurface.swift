@@ -16,5 +16,7 @@ final class BrowserSurface: NSView {
         bounds.fill()
     }
 
-    override func viewDidChangeEffectiveAppearance() { needsDisplay = true }
+    override func viewDidChangeEffectiveAppearance() {
+        needsDisplay = true
+    }
 }

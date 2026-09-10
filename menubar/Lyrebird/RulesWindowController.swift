@@ -201,9 +201,13 @@ final class RulesWindowController: NSWindowController, NSWindowDelegate, NSToolb
         return true
     }
 
-    @objc func refresh(_ sender: Any?) { Task { await model.refresh() } }
+    @objc func refresh(_ sender: Any?) {
+        Task { await model.refresh() }
+    }
 
-    @objc func reload(_ sender: Any?) { Task { await model.reloadScenarios() } }
+    @objc func reload(_ sender: Any?) {
+        Task { await model.reloadScenarios() }
+    }
 
     @objc func toggleInterception(_ sender: Any?) {
         guard !model.busy else { return }
@@ -224,7 +228,9 @@ final class RulesWindowController: NSWindowController, NSWindowDelegate, NSToolb
         split.toggleSidebar(sender)
     }
 
-    @objc func dismissError(_ sender: Any?) { model.dismissError() }
+    @objc func dismissError(_ sender: Any?) {
+        model.dismissError()
+    }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         toolbarDefaultItemIdentifiers(toolbar) + [.init("dismiss"), .init("refresh")]

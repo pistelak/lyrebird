@@ -242,9 +242,13 @@ final class RequestListController: NSViewController, NSTableViewDataSource, NSTa
         }
     }
 
-    func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
+    func numberOfRows(in tableView: NSTableView) -> Int {
+        rows.count
+    }
 
-    func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool { rows[row].selectable }
+    func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool {
+        rows[row].selectable
+    }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         if let entry = rows[row].traffic { return RecentRequestCell(entry) }

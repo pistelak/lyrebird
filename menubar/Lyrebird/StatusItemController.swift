@@ -130,29 +130,43 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         quit.keyEquivalent = "q"
     }
 
-    @objc private func toggle() { onToggle() }
+    @objc private func toggle() {
+        onToggle()
+    }
 
-    @objc private func relaunch() { onRelaunch() }
+    @objc private func relaunch() {
+        onRelaunch()
+    }
 
     @objc private func activate(_ sender: NSMenuItem) {
         guard let name = sender.representedObject as? String else { return }
         onActivate(name)
     }
 
-    @objc private func clear() { onClear() }
+    @objc private func clear() {
+        onClear()
+    }
 
-    @objc private func browse() { onBrowse() }
+    @objc private func browse() {
+        onBrowse()
+    }
 
-    @objc private func settings() { onSettings() }
+    @objc private func settings() {
+        onSettings()
+    }
 
-    @objc private func terminate() { NSApp.terminate(nil) }
+    @objc private func terminate() {
+        NSApp.terminate(nil)
+    }
 }
 
 @MainActor
 private final class StatusDotView: NSView {
     var color: NSColor? { didSet { needsDisplay = true } }
 
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
+    }
 
     override func draw(_ dirtyRect: NSRect) {
         color?.setFill()

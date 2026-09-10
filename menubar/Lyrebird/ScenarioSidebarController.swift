@@ -134,7 +134,9 @@ final class ScenarioSidebarController: NSViewController, NSOutlineViewDataSource
     }
 
     private var allItems: [Item] {
-        func descend(_ item: Item) -> [Item] { [item] + item.children.flatMap(descend) }
+        func descend(_ item: Item) -> [Item] {
+            [item] + item.children.flatMap(descend)
+        }
         return roots.flatMap(descend)
     }
 
@@ -156,7 +158,9 @@ final class ScenarioSidebarController: NSViewController, NSOutlineViewDataSource
 
     // Give native source-list groups enough space for their labels; pinning a label on all four
     // edges compressed it below its font height. See BrowserDesignTests.
-    func outlineView(_ outlineView: NSOutlineView, isGroupItem item: Any) -> Bool { (item as! Item).destination == nil }
+    func outlineView(_ outlineView: NSOutlineView, isGroupItem item: Any) -> Bool {
+        (item as! Item).destination == nil
+    }
 
     func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
         let item = item as! Item

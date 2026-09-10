@@ -119,9 +119,13 @@
         private static var active = BrowserPreview.initialScenario
         private static var cleared = false
 
-        override class func canInit(with request: URLRequest) -> Bool { true }
+        override class func canInit(with request: URLRequest) -> Bool {
+            true
+        }
 
-        override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+        override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+            request
+        }
 
         override func stopLoading() {}
 
