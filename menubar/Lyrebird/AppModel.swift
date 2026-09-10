@@ -377,7 +377,7 @@ final class AppModel {
         // `up` is what repairs a disabled PAC, so anything short of intercepting starts — except
         // the states where something else holds the port, which have to be stopped first.
         let result = stopsRatherThanStarts ? await Control.down() : await Control.up()
-        lastError = result.succeeded ? nil : result.output.trimmingCharacters(in: .whitespacesAndNewlines)
+        lastError = result.failure
         await refresh()
     }
 
@@ -472,6 +472,6 @@ final class AppModel {
             return
         }
         let result = await Control.relaunch(bundleId: bundleId)
-        lastError = result.succeeded ? nil : result.output.trimmingCharacters(in: .whitespacesAndNewlines)
+        lastError = result.failure
     }
 }

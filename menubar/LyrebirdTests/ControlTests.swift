@@ -7,6 +7,25 @@ import Testing
 /// in Settings. Nothing but the environment ties the two together, so these pin that knot.
 struct ControlTests {
 
+    /// A launcher can exit nonzero and say nothing — a wrong path, a killed child, output that is
+    /// not UTF-8. That used to leave `lastError` an empty string, and both places that show an
+    /// action failure drop an empty message, so Start or Relaunch failed and the app showed nothing
+    /// at all. The exit status is the one thing always available to say instead.
+    @Test
+    func aCommandThatFailedSilentlyStillSaysSomethingTheDisplayKeeps() {
+        for output in ["", "   ", " \n\t "] {
+            let result = Control.Result(output: output, status: 3)
+            let failure = result.failure
+            #expect(failure?.isEmpty == false, "a failure with output \(output.debugDescription) said nothing")
+            #expect(failure?.contains("3") == true, "the exit status is the only detail there is")
+            // The displays are what dropped it before, so the message has to survive them too.
+            #expect(RuleFormatting.actionFailure(failure) != nil)
+        }
+        #expect(
+            Control.Result(output: "could not find the launcher", status: 1).failure == "could not find the launcher")
+        #expect(Control.Result(output: "", status: 0).failure == nil, "a command that worked has no failure")
+    }
+
     @Test
     func aPortInTheControlURLReachesTheChildAsTheControlPort() {
         #expect(

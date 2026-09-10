@@ -6,6 +6,16 @@ enum Control {
         var output: String
         var status: Int32
         var succeeded: Bool { status == 0 }
+
+        /// Why the command failed, never an empty string — a launcher that exits nonzero without
+        /// saying why, or whose output is not UTF-8, used to leave `lastError` empty, and both error
+        /// displays drop an empty message: the command failed and the app said nothing.
+        /// See aCommandThatFailedSilentlyStillSaysSomethingTheDisplayKeeps.
+        var failure: String? {
+            guard !succeeded else { return nil }
+            let message = output.trimmingCharacters(in: .whitespacesAndNewlines)
+            return message.isEmpty ? "the command failed with exit status \(status) and said nothing" : message
+        }
     }
 
     /// Runs a subprocess without blocking a thread.
