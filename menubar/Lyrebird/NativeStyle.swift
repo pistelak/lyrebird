@@ -3,8 +3,12 @@ import AppKit
 @MainActor
 enum NativeStyle {
     static func label(_ text: String, size: CGFloat = 13, weight: NSFont.Weight = .regular) -> NSTextField {
+        label(text, font: .systemFont(ofSize: size, weight: weight))
+    }
+
+    static func label(_ text: String, font: NSFont) -> NSTextField {
         let field = NSTextField(labelWithString: text)
-        field.font = .systemFont(ofSize: size, weight: weight)
+        field.font = font
         field.lineBreakMode = .byTruncatingMiddle
         field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         return field

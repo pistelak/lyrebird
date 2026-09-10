@@ -3,7 +3,9 @@ import AppKit
 @MainActor
 final class FlowRequestCell: NSTableCellView {
     private var textColors: [(NSTextField, NSColor)] = []
+
     private var badges: [BadgeView] = []
+
     override var backgroundStyle: NSView.BackgroundStyle {
         didSet { updateSelectionAppearance() }
     }
@@ -22,8 +24,7 @@ final class FlowRequestCell: NSTableCellView {
         column.orientation = .vertical
         column.alignment = .leading
         column.spacing = 4
-        let path = NativeStyle.label(row.request.path)
-        path.font = .monospacedSystemFont(ofSize: 13, weight: .medium)
+        let path = NativeStyle.label(row.request.path, font: BrowserTypography.flowPath)
         path.lineBreakMode = .byTruncatingMiddle
         path.maximumNumberOfLines = 2
         let method = BadgeView(row.request.method)
@@ -37,7 +38,7 @@ final class FlowRequestCell: NSTableCellView {
         request.spacing = 8
         column.addArrangedSubview(request)
         let subtitle = NSTextField(wrappingLabelWithString: row.subtitle + (row.inactive ? " · Inactive" : ""))
-        subtitle.font = .systemFont(ofSize: 12)
+        subtitle.font = BrowserTypography.flowSubtitle
         subtitle.textColor = .secondaryLabelColor
         subtitle.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         var second: [NSView] = []
@@ -50,21 +51,22 @@ final class FlowRequestCell: NSTableCellView {
         column.addArrangedSubview(caption)
         column.translatesAutoresizingMaskIntoConstraints = false
         addSubview(column)
-        let leading: CGFloat = row.number == nil ? 16 : 48
+        let leading: CGFloat = row.number == nil ? BrowserMetrics.requestHorizontalInset : 48
         if let number = row.number {
             let badge = BadgeView(String(number), circle: true)
             badge.translatesAutoresizingMaskIntoConstraints = false
             addSubview(badge)
             NSLayoutConstraint.activate([
                 badge.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
-                badge.topAnchor.constraint(equalTo: topAnchor, constant: 8),
+                badge.topAnchor.constraint(equalTo: topAnchor, constant: BrowserMetrics.requestVerticalInset),
             ])
         }
         NSLayoutConstraint.activate([
             column.leadingAnchor.constraint(equalTo: leadingAnchor, constant: leading),
-            column.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
-            column.topAnchor.constraint(equalTo: topAnchor, constant: 8),
-            column.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -8),
+            column.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -BrowserMetrics.requestHorizontalInset),
+            column.topAnchor.constraint(equalTo: topAnchor, constant: BrowserMetrics.requestVerticalInset),
+            column.bottomAnchor.constraint(
+                lessThanOrEqualTo: bottomAnchor, constant: -BrowserMetrics.requestVerticalInset),
             request.widthAnchor.constraint(equalTo: column.widthAnchor),
             caption.widthAnchor.constraint(equalTo: column.widthAnchor),
         ])
@@ -81,12 +83,17 @@ final class FlowRequestCell: NSTableCellView {
         updateSelectionAppearance()
     }
 
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
 
     static func height(_ row: RuleFormatting.FlowListRow, width: CGFloat) -> CGFloat {
-        let content = width - (row.number == nil ? 32 : 64)
-        let mono = NSFont.monospacedSystemFont(ofSize: 13, weight: .medium)
-        let badgeFont = NSFont.systemFont(ofSize: 11, weight: .semibold)
+        let content =
+            width
+            - (row.number == nil
+                ? 2 * BrowserMetrics.requestHorizontalInset : 48 + BrowserMetrics.requestHorizontalInset)
+        let mono = BrowserTypography.flowPath
+        let badgeFont = BrowserTypography.badge
         let badges = [row.request.method, row.status.map(String.init), row.delay.map { "◷ " + $0 }].compactMap { $0 }
         let reserved = badges.reduce(CGFloat(0)) {
             $0 + ($1 as NSString).size(withAttributes: [.font: badgeFont]).width + 18
@@ -100,8 +107,8 @@ final class FlowRequestCell: NSTableCellView {
         let subtitle = row.subtitle + (row.inactive ? " · Inactive" : "")
         let caption = (subtitle as NSString).boundingRect(
             with: NSSize(width: max(40, content - modeWidth), height: .greatestFiniteMagnitude),
-            options: .usesLineFragmentOrigin, attributes: [.font: NSFont.systemFont(ofSize: 12)]
+            options: .usesLineFragmentOrigin, attributes: [.font: BrowserTypography.flowSubtitle]
         ).height
-        return ceil(max(18, min(path, 34)) + max(18, caption) + 20)
+        return ceil(max(18, min(path, 34)) + max(18, caption) + (2 * BrowserMetrics.requestVerticalInset + 4))
     }
 }

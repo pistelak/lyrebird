@@ -2,8 +2,11 @@ import AppKit
 
 extension NSAttributedString.Key {
     static let detailCard = NSAttributedString.Key("LyrebirdDetailCard")
+
     static let detailBadge = NSAttributedString.Key("LyrebirdDetailBadge")
+
     static let detailSeparator = NSAttributedString.Key("LyrebirdDetailSeparator")
+
     static let detailHeaderRow = NSAttributedString.Key("LyrebirdDetailHeaderRow")
 }
 
@@ -33,11 +36,17 @@ final class DetailLayoutManager: NSLayoutManager {
             ).offsetBy(dx: origin.x, dy: origin.y)
             if let color = attributes[.detailBadge] as? NSColor {
                 color.withAlphaComponent(0.14).setFill()
-                NSBezierPath(roundedRect: rect.insetBy(dx: -2, dy: -1), xRadius: 4, yRadius: 4).fill()
+                NSBezierPath(
+                    roundedRect: rect.insetBy(dx: -2, dy: -1), xRadius: BrowserMetrics.badgeRadius,
+                    yRadius: BrowserMetrics.badgeRadius
+                ).fill()
             }
             if attributes[.detailSeparator] != nil {
                 NSColor.separatorColor.setFill()
-                NSRect(x: origin.x + 10, y: rect.minY + 4, width: max(0, container.size.width - 20), height: 0.5).fill()
+                NSRect(
+                    x: origin.x + BrowserMetrics.detailContentInset, y: rect.minY + 4,
+                    width: max(0, container.size.width - 2 * BrowserMetrics.detailContentInset), height: 0.5
+                ).fill()
             }
         }
     }
@@ -50,6 +59,7 @@ final class DetailTextView: NSTextView {
     override func accessibilityChildren() -> [Any]? {
         (super.accessibilityChildren() ?? []) + subviews.filter { $0 is NSButton && !$0.isHidden }
     }
+
     override var isOpaque: Bool { true }
 
     override func draw(_ dirtyRect: NSRect) {
