@@ -1,5 +1,5 @@
+import AppKit
 import Foundation
-import SwiftUI
 import Testing
 
 @testable import Lyrebird
@@ -51,9 +51,9 @@ struct RuleFormattingTests {
         // in both appearances, and the red one sits near 3:1 on a dark pane. AppKit's system
         // colours are resolved against the appearance the view is drawn in, and follow Increase
         // Contrast with it, which is what makes the dark renders legible.
-        #expect(RuleFormatting.danger == Color(nsColor: .systemRed))
-        #expect(RuleFormatting.success == Color(nsColor: .systemGreen))
-        #expect(RuleFormatting.warning == Color(nsColor: .systemOrange))
+        #expect(RuleFormatting.danger == NSColor.systemRed)
+        #expect(RuleFormatting.success == NSColor.systemGreen)
+        #expect(RuleFormatting.warning == NSColor.systemOrange)
         #expect(RuleFormatting.danger != .red, "a fixed sRGB red does not adapt to the appearance")
     }
 
@@ -144,7 +144,7 @@ struct RuleFormattingTests {
         // where the window says what a rule is set to. A green 0 claims a request succeeded when
         // what happened is that it produced no response at all.
         #expect(RuleFormatting.statusText(0) == "no response")
-        #expect(RuleFormatting.statusColor(0) == .secondary)
+        #expect(RuleFormatting.statusColor(0) == .secondaryLabelColor)
         #expect(RuleFormatting.statusText(200) == "200")
         #expect(RuleFormatting.statusColor(204) == RuleFormatting.success)
         #expect(RuleFormatting.statusColor(503) == RuleFormatting.danger)

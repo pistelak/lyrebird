@@ -1,64 +1,118 @@
-import SwiftUI
-
-/// Reopening from the Dock raises the browsing window.
-final class AppDelegate: NSObject, NSApplicationDelegate {
-    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
-        WindowLauncher.show()
-        return false
-    }
-}
+import AppKit
 
 @main
-struct LyrebirdApp: App {
-    @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
-    // The unit tests are hosted by this app, so an autostarted model would poll the real control
-    // port and shell out to the real CLI for the length of every `xcodebuild test` run — see
-    // `LaunchEnvironmentTests`.
-    @State private var model = AppModel(autoStart: !LyrebirdApp.isHostingTests())
-    @State private var searchFocus = SearchFocus()
+enum LyrebirdApp {
+    @MainActor
+    static func main() {
+        let application = NSApplication.shared
+        let delegate = AppDelegate()
+        application.delegate = delegate
+        withExtendedLifetime(delegate) { application.run() }
+    }
 
-    /// Decided by whether XCTest is loaded, not by the environment: XCTest variables inherited by
-    /// a shell used to stop the app it launched from ever starting its model — see
-    /// `LaunchEnvironmentTests`.
     static func isHostingTests(xctestCase: AnyClass? = NSClassFromString("XCTestCase")) -> Bool {
         xctestCase != nil
     }
-
-    var body: some Scene {
-        MenuBarExtra {
-            MenuContentView(model: model)
-        } label: {
-            StatusLabel(status: model.status)
-        }
-        .menuBarExtraStyle(.window)
-
-        // WindowGroup supports an independent full-screen space; WindowLauncher keeps it single-instance.
-        WindowGroup("Lyrebird", id: RulesWindowView.sceneId) {
-            RulesWindowView(model: model, searchFocus: searchFocus)
-        }
-        .defaultSize(width: 1120, height: 640)
-        .windowResizability(.contentMinSize)
-        .commands {
-            // All panes share one browsing model, so disable additional windows.
-            CommandGroup(replacing: .newItem) {}
-            CommandGroup(after: .textEditing) {
-                Button("Find") { searchFocus.request() }
-                    .keyboardShortcut("f", modifiers: .command)
-            }
-        }
-    }
 }
 
-/// Installs scene and Dock integration at launch, before the menu is opened.
-private struct StatusLabel: View {
-    let status: AppModel.Status
-    @Environment(\.openWindow) private var openWindow
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    private var model: AppModel?
+    private var browser: RulesWindowController?
+    private var settings: SettingsWindowController?
+    private var status: StatusItemController?
 
-    var body: some View {
-        StatusGlyph(status: status)
-            .task {
-                WindowLauncher.openScene = { openWindow(id: RulesWindowView.sceneId) }
-                DockPresence.settingChanged()
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // Hosted tests must never poll a real profile or launch the CLI; see LaunchEnvironmentTests.
+        guard !LyrebirdApp.isHostingTests() else { return }
+        let model: AppModel
+        #if DEBUG
+            if ProcessInfo.processInfo.arguments.contains("--preview") {
+                model = BrowserPreview.makeModel()
+                if ProcessInfo.processInfo.arguments.contains("--dark") {
+                    NSApp.appearance = NSAppearance(named: .darkAqua)
+                } else {
+                    NSApp.appearance = NSAppearance(named: .aqua)
+                }
+            } else {
+                model = AppModel()
             }
+        #else
+            model = AppModel()
+        #endif
+        self.model = model
+        installMenus()
+        status = StatusItemController(model: model)
+        status?.onBrowse = { [weak self] in self?.showBrowser(nil) }
+        status?.onSettings = { [weak self] in self?.showSettings(nil) }
+        DockPresence.settingChanged()
+        if !Config.dockOnlyWhileWindowOpen { showBrowser(nil) }
+    }
+
+    @objc func showBrowser(_ sender: Any?) {
+        guard let model else { return }
+        if browser == nil {
+            browser = RulesWindowController(
+                model: model, restore: !ProcessInfo.processInfo.arguments.contains("--preview"))
+        }
+        browser?.showWindow(sender)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+    @objc func showSettings(_ sender: Any?) {
+        guard let model else { return }
+        if settings == nil { settings = SettingsWindowController(model: model) }
+        settings?.showWindow(sender)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
+        showBrowser(nil)
+        return false
+    }
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
+    private func installMenus() {
+        let main = NSMenu()
+        func submenu(_ title: String) -> NSMenu {
+            let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+            let menu = NSMenu(title: title)
+            item.submenu = menu
+            main.addItem(item)
+            return menu
+        }
+        func add(_ menu: NSMenu, _ title: String, _ action: Selector, _ key: String = "", target: AnyObject? = nil) {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
+            item.target = target
+            menu.addItem(item)
+        }
+        let app = submenu("Lyrebird")
+        add(app, "About Lyrebird", #selector(NSApplication.orderFrontStandardAboutPanel(_:)))
+        add(app, "Settings…", #selector(showSettings), ",", target: self)
+        app.addItem(.separator())
+        add(app, "Hide Lyrebird", #selector(NSApplication.hide(_:)), "h")
+        add(app, "Show All", #selector(NSApplication.unhideAllApplications(_:)))
+        app.addItem(.separator())
+        add(app, "Quit Lyrebird", #selector(NSApplication.terminate(_:)), "q")
+        let file = submenu("File")
+        add(file, "Scenarios", #selector(showBrowser), "o", target: self)
+        add(file, "Close", #selector(NSWindow.performClose(_:)), "w")
+        let edit = submenu("Edit")
+        add(edit, "Undo", Selector(("undo:")), "z")
+        add(edit, "Redo", Selector(("redo:")), "Z")
+        edit.addItem(.separator())
+        add(edit, "Cut", #selector(NSText.cut(_:)), "x")
+        add(edit, "Copy", #selector(NSText.copy(_:)), "c")
+        add(edit, "Paste", #selector(NSText.paste(_:)), "v")
+        add(edit, "Select All", #selector(NSText.selectAll(_:)), "a")
+        edit.addItem(.separator())
+        let view = submenu("View")
+        add(view, "Toggle Sidebar", #selector(RulesWindowController.toggleSidebar(_:)))
+        add(view, "Refresh", #selector(RulesWindowController.refresh(_:)), "r")
+        let window = submenu("Window")
+        add(window, "Minimize", #selector(NSWindow.performMiniaturize(_:)), "m")
+        add(window, "Zoom", #selector(NSWindow.performZoom(_:)))
+        add(window, "Enter Full Screen", #selector(NSWindow.toggleFullScreen(_:)), "f")
+        window.items.last?.keyEquivalentModifierMask = [.command, .control]
+        NSApp.windowsMenu = window
+        NSApp.mainMenu = main
     }
 }

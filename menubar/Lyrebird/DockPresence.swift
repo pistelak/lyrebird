@@ -33,7 +33,7 @@ enum DockPresence {
     }
 
     static func windowClosed() {
-        openWindows = max(0, openWindows - 1)  // `onDisappear` can arrive for a window that never counted
+        openWindows = max(0, openWindows - 1)  // Duplicate close notifications must not make the count negative.
         applyCurrent()
     }
 

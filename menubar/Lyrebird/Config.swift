@@ -8,7 +8,7 @@ enum Config {
 
     static let defaultControlURL = "http://127.0.0.1:8088"
 
-    /// The store every setting is read from, and the one `SettingsView` writes to.
+    /// The store every setting is read from, and the one `SettingsWindowController` writes to.
     ///
     /// A `var` only so the tests can point it somewhere else: they run hosted inside Lyrebird.app,
     /// so `UserDefaults.standard` in a test is the user's real `com.lyrebird.Lyrebird` domain — a

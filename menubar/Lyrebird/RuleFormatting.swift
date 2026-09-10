@@ -1,4 +1,4 @@
-import SwiftUI
+import AppKit
 
 /// How a rule reads on screen. Pure functions over the decoded models and nothing else, so every
 /// line the window shows can be checked without standing a view up — see `RuleFormattingTests`.
@@ -129,15 +129,15 @@ enum RuleFormatting {
     // sRGB values that look the same in both appearances, and the red one sits at 3.0:1 on a dark
     // pane. The system ones are resolved against the appearance the view is drawn in, so they also
     // follow Increase Contrast — see `RuleFormattingTests`.
-    static let danger = Color(nsColor: .systemRed)
-    static let success = Color(nsColor: .systemGreen)
-    static let warning = Color(nsColor: .systemOrange)
+    static let danger = NSColor.systemRed
+    static let success = NSColor.systemGreen
+    static let warning = NSColor.systemOrange
 
     /// Green below 400, red at or above — the menu's reading of what happened to a request. The
     /// configured rules use neutral status badges; Recent colours observed outcomes.
     /// See `RuleFormattingTests`.
-    static func statusColor(_ status: Int) -> Color {
-        guard status > 0 else { return .secondary }
+    static func statusColor(_ status: Int) -> NSColor {
+        guard status > 0 else { return .secondaryLabelColor }
         return status < 400 ? success : danger
     }
 
@@ -204,11 +204,11 @@ enum RuleFormatting {
 
     // MARK: - Printing stored JSON
 
-    private static let punctuationColor = Color.secondary
-    private static let keyColor = Color.primary
-    private static let stringColor = Color(nsColor: .systemGreen)
-    private static let numberColor = Color(nsColor: .systemBlue)
-    private static let literalColor = Color(nsColor: .systemPurple)
+    private static let punctuationColor = NSColor.secondaryLabelColor
+    private static let keyColor = NSColor.labelColor
+    private static let stringColor = NSColor.systemGreen
+    private static let numberColor = NSColor.systemBlue
+    private static let literalColor = NSColor.systemPurple
 
     /// A rule's body, patch or step exactly as stored: two-space indent, keys sorted so two reads of
     /// the same rule look the same, one space after a colon and none before, and empty containers on
@@ -224,9 +224,9 @@ enum RuleFormatting {
     /// written twice, so what lands on the pasteboard is exactly what the pane shows.
     static func jsonText(_ value: JSONValue) -> String { String(attributedJSON(value).characters) }
 
-    private static func token(_ text: String, _ color: Color) -> AttributedString {
+    private static func token(_ text: String, _ color: NSColor) -> AttributedString {
         var piece = AttributedString(text)
-        piece.foregroundColor = color
+        piece.appKit.foregroundColor = color
         return piece
     }
 

@@ -1,0 +1,229 @@
+import AppKit
+
+@MainActor
+final class RulesWindowController: NSWindowController, NSWindowDelegate, NSToolbarDelegate {
+    let model: AppModel
+    let state = BrowserState()
+    let split = NSSplitViewController()
+    let sidebar = ScenarioSidebarController()
+    let requests = RequestListController()
+    let detail = RuleDetailController()
+    private let statusBadge = StatusBadgeView(frame: .zero)
+    private let observation = ModelObservation()
+    private var registered = false
+    private var pendingDestination: RuleFormatting.Destination?
+    private var browsingTask: Task<Void, Never>?
+    private let restore: Bool
+
+    init(model: AppModel, restore: Bool = true) {
+        self.model = model
+        self.restore = restore
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1180, height: 720),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered,
+            defer: false)
+        super.init(window: window)
+        window.title = "Lyrebird"
+        window.titleVisibility = .hidden
+        window.identifier = .init("rules")
+        window.isReleasedWhenClosed = false
+        window.collectionBehavior = [.fullScreenPrimary]
+        window.contentMinSize = NSSize(width: 940, height: 460)
+        window.delegate = self
+        split.splitView = BrowserSplitView()
+        split.splitView.isVertical = true
+        split.splitView.dividerStyle = .thin
+        let left = NSSplitViewItem(sidebarWithViewController: sidebar)
+        left.minimumThickness = 190
+        left.maximumThickness = 340
+        left.canCollapse = true
+        left.holdingPriority = NSLayoutConstraint.Priority(260)
+        let middle = NSSplitViewItem(viewController: requests)
+        middle.minimumThickness = 300
+        middle.maximumThickness = 640
+        let right = NSSplitViewItem(viewController: detail)
+        right.minimumThickness = 380
+        split.addSplitViewItem(left)
+        split.addSplitViewItem(middle)
+        split.addSplitViewItem(right)
+        window.contentViewController = split
+        // Pane backgrounds extend through the toolbar; content uses each pane’s safe area.
+        if restore { split.splitView.autosaveName = "AppKitBrowserSplit" }
+        let toolbar = NSToolbar(identifier: "AppKitBrowserToolbar")
+        toolbar.delegate = self
+        toolbar.displayMode = .iconOnly
+        toolbar.centeredItemIdentifiers = [.init("status")]
+        window.toolbar = toolbar
+        window.toolbarStyle = .unified
+        window.titlebarSeparatorStyle = .none
+        sidebar.onSelect = { [weak self] destination in self?.select(destination) }
+        sidebar.onActivate = { [weak model] name in Task { await model?.activate(name) } }
+        sidebar.canActivate = { [weak model] name in
+            model?.busy == false && model?.scenarios != nil && name != model?.scenarios?.active
+        }
+        requests.onRule = { [weak self] selection in
+            self?.state.ruleSelection = selection
+            self?.render()
+        }
+        requests.onRecent = { [weak self] key in
+            self?.state.recentSelection = key
+            self?.render()
+        }
+        requests.onClear = { [weak self] in
+            guard let self else { return }
+            Task {
+                await self.model.clearRecent()
+                if model.lastError == nil { self.state.recentSelection = nil }
+                self.render()
+            }
+        }
+        detail.onPickStep = { [weak self] step, rule in
+            self?.state.pickStep(step, rule: rule)
+            self?.render()
+        }
+        detail.onOpenRule = { [weak self] destination in self?.openRule(destination) }
+        window.center()
+        if restore { window.setFrameAutosaveName("AppKitBrowserWindow") }
+        window.contentView?.layoutSubtreeIfNeeded()
+        if !restore || UserDefaults.standard.object(forKey: "NSSplitView Subview Frames AppKitBrowserSplit") == nil {
+            split.splitView.setPosition(220, ofDividerAt: 0)
+            split.splitView.setPosition(610, ofDividerAt: 1)
+        }
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func showWindow(_ sender: Any?) {
+        if !registered {
+            registered = true
+            model.windowOpened()
+            DockPresence.windowOpened()
+            observation.start { [weak self] in self?.render() }
+            Task { [weak self] in await self?.model.refresh() }
+        }
+        super.showWindow(sender)
+        window?.makeKeyAndOrderFront(sender)
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        guard registered else { return }
+        registered = false
+        observation.stop()
+        browsingTask?.cancel()
+        model.windowClosed()
+        DockPresence.windowClosed()
+    }
+
+    func select(_ destination: BrowserState.Destination?) {
+        state.select(destination)
+        if let name = state.scenario, !state.showsRecent {
+            browsingTask?.cancel()
+            browsingTask = Task { [weak self] in
+                guard let self, !Task.isCancelled else { return }
+                await model.browse(name)
+            }
+        }
+        render()
+    }
+
+    func render() {
+        // Track traffic even while browsing rules, so switching panes does not leave the
+        // observer subscribed only to unchanged health/rules; see BrowserControllerTests.
+        _ = model.recentRead
+        let snapshot: RulesSnapshot?
+        if case .ok(let value) = model.rulesRead { snapshot = value } else { snapshot = nil }
+        state.reconcile(snapshot, activeScenario: model.ownHealth?.activeScenario)
+        if let destination = pendingDestination, snapshot?.scenario == destination.scenario {
+            let rows = snapshot.map { RuleFormatting.flowSections($0).flatMap(\.rows) } ?? []
+            if case .rule(let id) = destination.selection,
+                let row = rows.first(where: {
+                    $0.ruleId == id && (destination.step == nil || $0.step == destination.step)
+                })
+            {
+                state.ruleSelection = row.selection
+            } else {
+                state.ruleSelection = destination.selection
+            }
+            if case .rule(let id) = destination.selection, let step = destination.step {
+                state.pickStep(step, rule: id)
+            }
+            pendingDestination = nil
+        }
+        // Browsing an initially active scenario makes subsequent activation changes independent.
+        if registered, let scenario = state.scenario, model.browsedScenario != scenario, !state.showsRecent {
+            browsingTask?.cancel()
+            browsingTask = Task { [weak self] in
+                guard let self, !Task.isCancelled else { return }
+                await model.browse(scenario)
+            }
+        }
+        statusBadge.update(model.status, scenario: model.ownHealth?.activeScenario, help: model.statusLine)
+        if let toolbar = window?.toolbar {
+            let dismissIndex = toolbar.items.firstIndex { $0.itemIdentifier.rawValue == "dismiss" }
+            if RuleFormatting.actionFailure(model.lastError) != nil, dismissIndex == nil {
+                toolbar.insertItem(withItemIdentifier: .init("dismiss"), at: max(0, toolbar.items.count - 1))
+            } else if model.lastError == nil, let dismissIndex {
+                toolbar.removeItem(at: dismissIndex)
+            }
+        }
+        sidebar.update(
+            model.scenarios ?? model.lastScenarios, selection: state.destination,
+            problems: model.ownHealth?.scenariosNotWhole ?? [:], stale: model.scenarios == nil)
+        requests.update(model: model, state: state)
+        detail.update(model: model, state: state)
+    }
+
+    private func openRule(_ destination: RuleFormatting.Destination) {
+        pendingDestination = destination
+        select(.scenario(destination.scenario))
+    }
+    @objc func refresh(_ sender: Any?) { Task { await model.refresh() } }
+    @objc func toggleSidebar(_ sender: Any?) {
+        split.toggleSidebar(sender)
+    }
+    @objc func dismissError(_ sender: Any?) { model.dismissError() }
+    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        toolbarDefaultItemIdentifiers(toolbar) + [.init("dismiss"), .init("refresh")]
+    }
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        [
+            .flexibleSpace, .toggleSidebar, .sidebarTrackingSeparator, .init("title"), .flexibleSpace, .init("status"),
+            .flexibleSpace,
+        ]
+    }
+    func toolbar(
+        _ toolbar: NSToolbar, itemForItemIdentifier id: NSToolbarItem.Identifier, willBeInsertedIntoToolbar flag: Bool
+    ) -> NSToolbarItem? {
+        if id == .sidebarTrackingSeparator {
+            return NSTrackingSeparatorToolbarItem(identifier: id, splitView: split.splitView, dividerIndex: 0)
+        }
+        if id == .toggleSidebar {
+            let item = NSToolbarItem(itemIdentifier: id)
+            item.target = split
+            item.action = #selector(NSSplitViewController.toggleSidebar(_:))
+            item.label = "Toggle sidebar"
+            return item
+        }
+        let item = NSToolbarItem(itemIdentifier: id)
+        item.isBordered = false
+        item.target = self
+        switch id.rawValue {
+        case "title":
+            item.label = "Lyrebird"
+            item.view = NativeStyle.label("Lyrebird", size: 15, weight: .semibold)
+        case "status":
+            item.label = "Interception status"
+            item.view = statusBadge
+        case "refresh":
+            item.label = "Refresh"
+            item.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: item.label)
+            item.action = #selector(refresh)
+        case "dismiss":
+            item.label = "Dismiss error"
+            item.image = NSImage(systemSymbolName: "xmark.circle", accessibilityDescription: item.label)
+            item.action = #selector(dismissError)
+        default: return nil
+        }
+        return item
+    }
+}

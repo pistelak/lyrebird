@@ -1,6 +1,6 @@
 # Lyrebird — menu-bar app
 
-Native SwiftUI `MenuBarExtra` client for the Lyrebird engine — a thin client over the control API
+Native AppKit client for the Lyrebird engine — a thin client over the control API
 on `:8088` and the `lyrebird` CLI. No proxy logic in Swift; the engine stays the single source of
 truth.
 
@@ -60,7 +60,7 @@ conventional route.
 
 Menu-bar glyph: filled bird with a green dot while intercepting, orange when the proxy is up but
 not intercepting, and an outlined bird with no dot when stopped.
-Click for a scenario picker, Start/Stop (`lyrebird up|down`), a Relaunch-app button, the requests
+Click for a scenario menu, Start/Stop (`lyrebird up|down`), a Relaunch-app button, the requests
 the proxy has seen, and settings.
 
 Lyrebird is a regular app: a Dock icon and a menu bar extra, both from launch. **Show in Dock only
@@ -80,7 +80,7 @@ Sequence rules appear in configured order, with each response state followed by 
 request. These are configured transitions, not a traffic trace: reads can repeat, and an advance
 matcher may have different conditions from the rule that answers that request. The detail pane
 shows those conditions and any candidate response rules. Other rules are listed separately.
-Scenario notes provide context above the list. ⌘F searches the current list.
+Scenario notes provide context above the list.
 
 **Recent** shows recorded requests newest first, with status and override/sequence metadata.
 Request and response bodies are not captured. **Clear** removes recent traffic only; it leaves
@@ -108,7 +108,7 @@ the wrong profile. Left blank, the engine falls back to its own default.
 
 One proxy holds the control port, so the menu says which profile it means on every call it makes.
 It learns that profile's fingerprint from `lyrebird status --json` — at launch and again when the
-Settings sheet closes — and never computes it: the fingerprint is the engine's own
+Settings are saved — and never computes it: the fingerprint is the engine's own
 `sha256(profile dir)[:12]`, and with the profile left blank the app cannot even see which directory
 the engine picked. It travels as `X-Lyrebird-Profile`, the header the control API compares against
 the running profile. A proxy running someone else's profile is then shown as exactly that, with
@@ -133,3 +133,24 @@ names simctl's `booted`. To bind a run to a particular device, start it from the
 
 If the `lyrebird` path is unset, the app searches the inherited `PATH`, then `/usr/local/bin`,
 `/opt/homebrew/bin`, `~/.local/bin` and `~/bin`. CLI failures are shown in the menu rather than swallowed.
+
+## Native window implementation
+
+The browser uses an `NSWindowController`, `NSSplitViewController`, `NSOutlineView` sidebar,
+`NSTableView` request list and selectable `NSTextView` detail. The sidebar background extends
+through the native toolbar; safe-area constraints keep list content and headers below the window
+controls. JSON wraps within the detail pane; Copy body/patch preserves the original JSON formatting. The menu-bar item and Settings window also use AppKit. No SwiftUI hosting remains.
+
+Settings changes apply together when Save is pressed; Cancel leaves the configuration unchanged.
+The browser keeps selection and scroll positions across unchanged polls. Selecting a scenario
+browses it; double-click or Activate scenario in its context menu makes it active.
+
+Debug builds use a separate bundle identifier and preferences from the installed Release app,
+so UI automation can run while the installed app is being tried. The tests launch Debug with
+`--preview` (and optionally `--dark`), using a synthetic in-memory control API and separate
+preview settings. This preview is excluded from Release builds. It loads no profile and its
+launcher path is deliberately nonexistent.
+
+`make test-app` runs model/controller tests and native UI automation, including navigation, window
+reopening and full screen. UI automation requires an unlocked macOS desktop. Synthetic light/dark
+screenshots are attached to its Xcode test result.

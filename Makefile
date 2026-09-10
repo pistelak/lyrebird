@@ -5,7 +5,7 @@ PYTHON ?= python3
 ENGINE_PYTHON := .venv/bin/python
 SWIFT_FORMAT := .build/tools/bin/swift-format
 XCODEGEN := .build/tools/bin/xcodegen
-SWIFT_SOURCES := menubar/Lyrebird menubar/LyrebirdTests acceptance/FixtureApp/FixtureApp
+SWIFT_SOURCES := menubar/Lyrebird menubar/LyrebirdTests menubar/LyrebirdUITests acceptance/FixtureApp/FixtureApp
 SHELL_SCRIPTS := bin/lyrebird scripts/setup-tools.sh scripts/check-tools.sh scripts/check-swift-format.sh \
 	menubar/scripts/verify-version.sh menubar/scripts/install-app.sh
 

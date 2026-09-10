@@ -95,10 +95,8 @@ final class AppModel {
 
     /// The settings a piece of work was started under.
     ///
-    /// `@AppStorage` writes on every keystroke, so the profile can change halfway through a
-    /// typed-in path and long before the sheet is dismissed. The generation counters cannot catch
-    /// that — nothing has bumped them yet — so a read begun under one profile would commit its
-    /// answer under another's name, which is the whole failure this file is about.
+    /// Configuration can change while a request is in flight. Check the actual values as well as
+    /// the generation so a reading cannot arrive under another profile's name; see ProfileScopingTests.
     private struct Settings: Equatable {
         var profilePath: String
         var lyrebirdPath: String
@@ -184,8 +182,7 @@ final class AppModel {
         }
     }
 
-    /// Re-reads everything after the Settings sheet closes. `@AppStorage` has already written the
-    /// new values, so what is on screen describes the old ones until this runs.
+    /// Invalidates old readings and discovers the profile after Settings saves its values.
     func settingsChanged() async {
         configGeneration &+= 1
         healthRead = nil
@@ -259,7 +256,7 @@ final class AppModel {
     /// Stop reading rules when the last window closes; ignore duplicate close notifications.
     /// See `RulesReadTests`.
     func windowClosed() {
-        openWindows = max(0, openWindows - 1)  // `onDisappear` can arrive for a window that never counted
+        openWindows = max(0, openWindows - 1)  // Duplicate close notifications must not make the count negative.
         guard openWindows == 0 else { return }
         rulesGeneration &+= 1
         rulesRead = nil
@@ -369,7 +366,7 @@ final class AppModel {
     }
 
     func toggle() async {
-        guard !busy else { return }  // guard here, not only via .disabled: SwiftUI re-renders late
+        guard !busy else { return }  // Guard here too: a menu action can arrive before its enabled state updates.
         busy = true
         defer { busy = false }
         // `up` is what repairs a disabled PAC, so anything short of intercepting starts — except
@@ -379,7 +376,7 @@ final class AppModel {
         await refresh()
     }
 
-    /// Settings write on each keystroke, before profile rediscovery. Refuse writes in that gap.
+    /// Refuse writes between a settings save and profile rediscovery.
     private var writeRefusal: String? {
         guard expectedFingerprint != nil else {
             return "the app does not know which profile it is configured for — check the launcher path in Settings"
