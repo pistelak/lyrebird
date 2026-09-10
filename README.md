@@ -177,6 +177,12 @@ your iOS app. **Recent** shows the requests recorded during the run and which ru
 *In this synthetic example, GET returns three items. DELETE advances the sequence, and subsequent
 GETs return the remaining two.*
 
+![The browser's sidebar listing scenarios at the root and inside an `orders` folder, beside a rule
+that patches a real response.](docs/images/scenarios.png)
+
+*Scenarios that live in a folder appear under it. A rule can replace a response outright, patch the
+real one, or step through a sequence — the detail pane says which, and what it answers with.*
+
 See the [macOS app guide](menubar/README.md) for installation, menu-bar controls, and configuration.
 
 ## Profiles
