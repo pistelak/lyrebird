@@ -192,24 +192,31 @@ final class RequestListController: NSViewController {
         {
         case .vacancy(let vacancy): appendNote("vacancy", vacancy.message + "\n" + vacancy.hint, to: &next)
         case .list(let snapshot, let vacancy):
-            if let notes = RuleFormatting.scenarioNotes(snapshot.scenario, in: content.scenarios) {
-                next.append(
-                    Row(
-                        id: "notes-heading",
-                        text: NativeStyle.text(
-                            "About this scenario", size: 12, weight: .semibold, color: .secondaryLabelColor),
-                        kind: .heading))
-                next.append(Row(id: "notes", text: NativeStyle.text(notes)))
-            }
-            if let vacancy { appendNote("vacancy", vacancy.message + "\n" + vacancy.hint, to: &next) }
-            let sections = RuleFormatting.flowSections(snapshot, query: state.query)
-            appendFlowSections(sections, to: &next)
-            if sections.isEmpty && vacancy == nil { appendNote("empty", "No requests match your search.", to: &next) }
-            if let selected = state.ruleSelection,
-                !sections.flatMap(\.rows).contains(where: { $0.selection == selected })
-            {
-                appendNote("hidden", "The selected rule is hidden by the search.", to: &next)
-            }
+            appendSnapshotRows(snapshot, vacancy: vacancy, scenarios: content.scenarios, state: state, to: &next)
+        }
+    }
+
+    private func appendSnapshotRows(
+        _ snapshot: RulesSnapshot, vacancy: RuleFormatting.Vacancy?, scenarios: ScenarioList?, state: BrowserState,
+        to next: inout [Row]
+    ) {
+        if let notes = RuleFormatting.scenarioNotes(snapshot.scenario, in: scenarios) {
+            next.append(
+                Row(
+                    id: "notes-heading",
+                    text: NativeStyle.text(
+                        "About this scenario", size: 12, weight: .semibold, color: .secondaryLabelColor),
+                    kind: .heading))
+            next.append(Row(id: "notes", text: NativeStyle.text(notes)))
+        }
+        if let vacancy { appendNote("vacancy", vacancy.message + "\n" + vacancy.hint, to: &next) }
+        let sections = RuleFormatting.flowSections(snapshot, query: state.query)
+        appendFlowSections(sections, to: &next)
+        if sections.isEmpty && vacancy == nil { appendNote("empty", "No requests match your search.", to: &next) }
+        if let selected = state.ruleSelection,
+            !sections.flatMap(\.rows).contains(where: { $0.selection == selected })
+        {
+            appendNote("hidden", "The selected rule is hidden by the search.", to: &next)
         }
     }
 

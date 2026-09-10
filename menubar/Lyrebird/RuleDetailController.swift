@@ -216,15 +216,7 @@ final class RuleDetailController: NSViewController {
     ) {
         let shown = flow?.step ?? RuleFormatting.shownStep(rule, in: scenario, pick: pick)
         if flow?.step == nil && !sequence.steps.isEmpty {
-            let titles = sequence.steps.enumerated().map {
-                RuleFormatting.stepMenuLabel(number: $0.offset + 1, step: $0.element)
-            }
-            if stepPicker.itemTitles != titles {
-                stepPicker.removeAllItems()
-                stepPicker.addItems(withTitles: titles)
-            }
-            if let shown { stepPicker.selectItem(at: shown - 1) }
-            stepPicker.isHidden = false
+            updateStepPicker(sequence.steps, shown: shown)
         }
         guard let shown, sequence.steps.indices.contains(shown - 1) else {
             document.line("This sequence has no steps.", secondary: true)
@@ -232,7 +224,23 @@ final class RuleDetailController: NSViewController {
         }
         let step = sequence.steps[shown - 1]
         if flow?.step == nil { document.line("Step \(shown) of \(sequence.steps.count)", secondary: true) }
-        document.line(RuleFormatting.stepBehaviourLine(step) + RuleFormatting.delayPhrase(rule.rewrite))
+        appendStepResponse(step, rewrite: rule.rewrite, to: document)
+    }
+
+    private func updateStepPicker(_ steps: [StepSummary], shown: Int?) {
+        let titles = steps.enumerated().map {
+            RuleFormatting.stepMenuLabel(number: $0.offset + 1, step: $0.element)
+        }
+        if stepPicker.itemTitles != titles {
+            stepPicker.removeAllItems()
+            stepPicker.addItems(withTitles: titles)
+        }
+        if let shown { stepPicker.selectItem(at: shown - 1) }
+        stepPicker.isHidden = false
+    }
+
+    private func appendStepResponse(_ step: StepSummary, rewrite: Rewrite, to document: DetailDocument) {
+        document.line(RuleFormatting.stepBehaviourLine(step) + RuleFormatting.delayPhrase(rewrite))
         document.line(RuleFormatting.metaLine(kind: step.bodyKind, bytes: step.bodyBytes), secondary: true)
         if let note = RuleFormatting.inheritedCaption(step, field: "status") {
             document.line("Status " + note, secondary: true)

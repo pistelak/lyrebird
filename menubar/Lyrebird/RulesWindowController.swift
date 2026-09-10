@@ -123,22 +123,7 @@ final class RulesWindowController: NSWindowController {
         let snapshot: RulesSnapshot?
         if case .ok(let value) = content.rulesRead { snapshot = value } else { snapshot = nil }
         state.reconcile(snapshot, activeScenario: model.ownHealth?.activeScenario)
-        if let destination = pendingDestination, snapshot?.scenario == destination.scenario {
-            let rows = snapshot.map { RuleFormatting.flowSections($0).flatMap(\.rows) } ?? []
-            if case .rule(let id) = destination.selection,
-                let row = rows.first(where: {
-                    $0.ruleId == id && (destination.step == nil || $0.step == destination.step)
-                })
-            {
-                state.ruleSelection = row.selection
-            } else {
-                state.ruleSelection = destination.selection
-            }
-            if case .rule(let id) = destination.selection, let step = destination.step {
-                state.pickStep(step, rule: id)
-            }
-            pendingDestination = nil
-        }
+        reconcilePendingDestination(in: snapshot)
         // Browsing an initially active scenario makes subsequent activation changes independent.
         if registered, let scenario = state.scenario, model.browsedScenario != scenario, !state.showsRecent {
             browsingTask?.cancel()
@@ -149,14 +134,7 @@ final class RulesWindowController: NSWindowController {
         }
         statusBadge.update(content.status, scenario: model.ownHealth?.activeScenario, help: model.statusLine)
         updateInterceptionItem()
-        if let toolbar = window?.toolbar {
-            let dismissIndex = toolbar.items.firstIndex { $0.itemIdentifier.rawValue == "dismiss" }
-            if RuleFormatting.actionFailure(content.lastError) != nil, dismissIndex == nil {
-                toolbar.insertItem(withItemIdentifier: .init("dismiss"), at: max(0, toolbar.items.count - 1))
-            } else if content.lastError == nil, let dismissIndex {
-                toolbar.removeItem(at: dismissIndex)
-            }
-        }
+        updateDismissItem(for: content.lastError)
         sidebar.update(
             content.scenarios ?? model.lastScenarios, selection: state.destination,
             problems: model.ownHealth?.scenariosNotWhole ?? [:], stale: content.scenarios == nil)
@@ -164,10 +142,39 @@ final class RulesWindowController: NSWindowController {
         detail.update(content, state: state)
     }
 
+    private func reconcilePendingDestination(in snapshot: RulesSnapshot?) {
+        guard let destination = pendingDestination, snapshot?.scenario == destination.scenario else { return }
+        let rows = snapshot.map { RuleFormatting.flowSections($0).flatMap(\.rows) } ?? []
+        if case .rule(let id) = destination.selection,
+            let row = rows.first(where: {
+                $0.ruleId == id && (destination.step == nil || $0.step == destination.step)
+            })
+        {
+            state.ruleSelection = row.selection
+        } else {
+            state.ruleSelection = destination.selection
+        }
+        if case .rule(let id) = destination.selection, let step = destination.step {
+            state.pickStep(step, rule: id)
+        }
+        pendingDestination = nil
+    }
+
+    private func updateDismissItem(for error: String?) {
+        guard let toolbar = window?.toolbar else { return }
+        let dismissIndex = toolbar.items.firstIndex { $0.itemIdentifier.rawValue == "dismiss" }
+        if RuleFormatting.actionFailure(error) != nil, dismissIndex == nil {
+            toolbar.insertItem(withItemIdentifier: .init("dismiss"), at: max(0, toolbar.items.count - 1))
+        } else if error == nil, let dismissIndex {
+            toolbar.removeItem(at: dismissIndex)
+        }
+    }
+
     private func openRule(_ destination: RuleFormatting.Destination) {
         pendingDestination = destination
         select(.scenario(destination.scenario))
     }
+
     var canActivateSelection: Bool {
         guard !model.busy, let name = state.scenario, !state.showsRecent, let scenarios = model.scenarios else {
             return false
