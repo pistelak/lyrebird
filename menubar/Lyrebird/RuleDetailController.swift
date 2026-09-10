@@ -1,7 +1,7 @@
 import AppKit
 
 @MainActor
-final class RuleDetailController: NSViewController, NSTextViewDelegate {
+final class RuleDetailController: NSViewController {
     let textView: DetailTextView = {
         let storage = NSTextStorage()
         let manager = DetailLayoutManager()
@@ -432,6 +432,9 @@ final class RuleDetailController: NSViewController, NSTextViewDelegate {
         NSPasteboard.general.setString(copyText, forType: .string)
     }
 
+}
+
+extension RuleDetailController: NSTextViewDelegate {
     func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
         let key = (link as? URL)?.absoluteString ?? link as? String ?? ""
         guard let destination = links[key] else { return false }

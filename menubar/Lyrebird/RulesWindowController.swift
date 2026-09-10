@@ -1,7 +1,7 @@
 import AppKit
 
 @MainActor
-final class RulesWindowController: NSWindowController, NSWindowDelegate, NSToolbarDelegate, NSMenuItemValidation {
+final class RulesWindowController: NSWindowController {
     let model: AppModel
     let state = BrowserState()
     let split = NSSplitViewController()
@@ -105,15 +105,6 @@ final class RulesWindowController: NSWindowController, NSWindowDelegate, NSToolb
         window?.makeKeyAndOrderFront(sender)
     }
 
-    func windowWillClose(_ notification: Notification) {
-        guard registered else { return }
-        registered = false
-        observation.stop()
-        browsingTask?.cancel()
-        model.windowClosed()
-        DockPresence.windowClosed()
-    }
-
     func select(_ destination: BrowserState.Destination?) {
         state.select(destination)
         if let name = state.scenario, !state.showsRecent {
@@ -189,18 +180,6 @@ final class RulesWindowController: NSWindowController, NSWindowDelegate, NSToolb
         Task { await model.activate(name) }
     }
 
-    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-        if menuItem.action == #selector(toggleInterception) {
-            menuItem.title = model.stopsRatherThanStarts ? "Stop Interception" : "Start Interception"
-            return !model.busy
-        }
-        if menuItem.action == #selector(activateSelectedScenario) { return canActivateSelection }
-        if menuItem.action == #selector(toggleSidebar) {
-            menuItem.title = split.splitViewItems.first?.isCollapsed == true ? "Show Sidebar" : "Hide Sidebar"
-        }
-        return true
-    }
-
     @objc func refresh(_ sender: Any?) {
         Task { await model.refresh() }
     }
@@ -232,6 +211,20 @@ final class RulesWindowController: NSWindowController, NSWindowDelegate, NSToolb
         model.dismissError()
     }
 
+}
+
+extension RulesWindowController: NSWindowDelegate {
+    func windowWillClose(_ notification: Notification) {
+        guard registered else { return }
+        registered = false
+        observation.stop()
+        browsingTask?.cancel()
+        model.windowClosed()
+        DockPresence.windowClosed()
+    }
+}
+
+extension RulesWindowController: NSToolbarDelegate {
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         toolbarDefaultItemIdentifiers(toolbar) + [.init("dismiss"), .init("refresh")]
     }
@@ -292,5 +285,19 @@ final class RulesWindowController: NSWindowController, NSWindowDelegate, NSToolb
         default: return nil
         }
         return item
+    }
+}
+
+extension RulesWindowController: NSMenuItemValidation {
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(toggleInterception) {
+            menuItem.title = model.stopsRatherThanStarts ? "Stop Interception" : "Start Interception"
+            return !model.busy
+        }
+        if menuItem.action == #selector(activateSelectedScenario) { return canActivateSelection }
+        if menuItem.action == #selector(toggleSidebar) {
+            menuItem.title = split.splitViewItems.first?.isCollapsed == true ? "Show Sidebar" : "Hide Sidebar"
+        }
+        return true
     }
 }

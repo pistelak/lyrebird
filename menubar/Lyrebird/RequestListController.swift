@@ -1,7 +1,7 @@
 import AppKit
 
 @MainActor
-final class RequestListController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
+final class RequestListController: NSViewController {
     struct Row {
         enum Kind {
             case note
@@ -241,11 +241,15 @@ final class RequestListController: NSViewController, NSTableViewDataSource, NSTa
             table.deselectAll(nil)
         }
     }
+}
 
+extension RequestListController: NSTableViewDataSource {
     func numberOfRows(in tableView: NSTableView) -> Int {
         rows.count
     }
+}
 
+extension RequestListController: NSTableViewDelegate {
     func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool {
         rows[row].selectable
     }

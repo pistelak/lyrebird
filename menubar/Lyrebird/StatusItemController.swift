@@ -1,7 +1,7 @@
 import AppKit
 
 @MainActor
-final class StatusItemController: NSObject, NSMenuDelegate {
+final class StatusItemController: NSObject {
     struct Content {
         var status: AppModel.Status
         var statusLine: String
@@ -72,11 +72,6 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         image.isTemplate = true
         image.accessibilityDescription = description
         return image
-    }
-
-    func menuWillOpen(_ menu: NSMenu) {
-        if let menuContent { content = menuContent() }
-        rebuildMenu()
     }
 
     private func rebuildMenu() {
@@ -171,5 +166,12 @@ private final class StatusDotView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         color?.setFill()
         NSBezierPath(ovalIn: bounds).fill()
+    }
+}
+
+extension StatusItemController: NSMenuDelegate {
+    func menuWillOpen(_ menu: NSMenu) {
+        if let menuContent { content = menuContent() }
+        rebuildMenu()
     }
 }

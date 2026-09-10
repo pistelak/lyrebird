@@ -1,8 +1,7 @@
 import AppKit
 
 @MainActor
-final class ScenarioSidebarController: NSViewController, NSOutlineViewDataSource, NSOutlineViewDelegate, NSMenuDelegate
-{
+final class ScenarioSidebarController: NSViewController {
     final class Item: NSObject {
         let id: String
         let title: String
@@ -140,6 +139,53 @@ final class ScenarioSidebarController: NSViewController, NSOutlineViewDataSource
         return roots.flatMap(descend)
     }
 
+    @objc private func activateClicked() {
+        activate(row: outline.clickedRow >= 0 ? outline.clickedRow : outline.selectedRow)
+    }
+
+    private func activate(row: Int) {
+        guard let item = outline.item(atRow: row) as? Item, case .scenario(let name) = item.destination,
+            canActivate(name)
+        else { return }
+        onActivate(name)
+    }
+
+    @objc private func activateMenu(_ sender: NSMenuItem) {
+        guard let name = sender.representedObject as? String, canActivate(name) else { return }
+        onActivate(name)
+    }
+}
+
+@MainActor
+private final class SidebarCell: NSTableCellView {
+    var isGroup = false
+    var isActive = false
+    var iconWidth: NSLayoutConstraint?
+    var iconHeight: NSLayoutConstraint?
+    var textLeading: NSLayoutConstraint?
+
+    // AppKit forwards changes to the system sidebar size to existing cells as well as new ones.
+    override var rowSizeStyle: NSTableView.RowSizeStyle {
+        didSet {
+            let textSize: CGFloat
+            let iconSize: CGFloat
+            switch rowSizeStyle {
+            case .small: (textSize, iconSize) = (11, 12)
+            case .large: (textSize, iconSize) = (15, 18)
+            default: (textSize, iconSize) = (13, 14)
+            }
+            textField?.font = .systemFont(
+                ofSize: isGroup ? textSize - 2 : textSize,
+                weight: isGroup || isActive ? .semibold : .regular)
+            iconWidth?.constant = iconSize
+            iconHeight?.constant = iconSize
+            textLeading?.constant = isGroup ? 2 : iconSize + 8
+            imageView?.symbolConfiguration = .init(pointSize: iconSize, weight: .regular)
+        }
+    }
+}
+
+extension ScenarioSidebarController: NSOutlineViewDataSource {
     func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
         (item as? Item)?.children.count ?? roots.count
     }
@@ -151,7 +197,9 @@ final class ScenarioSidebarController: NSViewController, NSOutlineViewDataSource
     func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool {
         !(item as! Item).children.isEmpty
     }
+}
 
+extension ScenarioSidebarController: NSOutlineViewDelegate {
     func outlineView(_ outlineView: NSOutlineView, shouldSelectItem item: Any) -> Bool {
         (item as! Item).destination != nil
     }
@@ -222,18 +270,9 @@ final class ScenarioSidebarController: NSViewController, NSOutlineViewDataSource
         else { return }
         onSelect(destination)
     }
+}
 
-    @objc private func activateClicked() {
-        activate(row: outline.clickedRow >= 0 ? outline.clickedRow : outline.selectedRow)
-    }
-
-    private func activate(row: Int) {
-        guard let item = outline.item(atRow: row) as? Item, case .scenario(let name) = item.destination,
-            canActivate(name)
-        else { return }
-        onActivate(name)
-    }
-
+extension ScenarioSidebarController: NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
         guard let item = outline.item(atRow: outline.clickedRow) as? Item, case .scenario(let name) = item.destination
@@ -244,39 +283,5 @@ final class ScenarioSidebarController: NSViewController, NSOutlineViewDataSource
         action.isEnabled = canActivate(name)
         menu.autoenablesItems = false
         menu.addItem(action)
-    }
-
-    @objc private func activateMenu(_ sender: NSMenuItem) {
-        guard let name = sender.representedObject as? String, canActivate(name) else { return }
-        onActivate(name)
-    }
-}
-
-@MainActor
-private final class SidebarCell: NSTableCellView {
-    var isGroup = false
-    var isActive = false
-    var iconWidth: NSLayoutConstraint?
-    var iconHeight: NSLayoutConstraint?
-    var textLeading: NSLayoutConstraint?
-
-    // AppKit forwards changes to the system sidebar size to existing cells as well as new ones.
-    override var rowSizeStyle: NSTableView.RowSizeStyle {
-        didSet {
-            let textSize: CGFloat
-            let iconSize: CGFloat
-            switch rowSizeStyle {
-            case .small: (textSize, iconSize) = (11, 12)
-            case .large: (textSize, iconSize) = (15, 18)
-            default: (textSize, iconSize) = (13, 14)
-            }
-            textField?.font = .systemFont(
-                ofSize: isGroup ? textSize - 2 : textSize,
-                weight: isGroup || isActive ? .semibold : .regular)
-            iconWidth?.constant = iconSize
-            iconHeight?.constant = iconSize
-            textLeading?.constant = isGroup ? 2 : iconSize + 8
-            imageView?.symbolConfiguration = .init(pointSize: iconSize, weight: .regular)
-        }
     }
 }
