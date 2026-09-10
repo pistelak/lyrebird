@@ -4,7 +4,10 @@ import AppKit
 final class StatusItemController: NSObject, NSMenuDelegate {
     private let model: AppModel
     private let item: NSStatusItem
-    private let menu = NSMenu()
+    // Not private: the folder-scoping tests drive `menuWillOpen` and read the items it built, which is
+    // the only way to catch a menu that stops following the active folder — see
+    // menuOpeningScopesScenariosToTheActiveFolder.
+    let menu = NSMenu()
     private let observation = ModelObservation()
     private let dotView = StatusDotView()
     var onBrowse: () -> Void = {}
@@ -75,9 +78,11 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         menu.addItem(.separator())
         _ = command("Scenarios…", #selector(browse))
         if let list = model.scenarios {
-            for scenario in list.scenarios {
+            let folder = list.shownFolder()
+            if let caption = folder.caption { _ = command(caption, nil) }
+            for scenario in folder.scenarios {
                 let entry = command(
-                    scenario.name + "  (\(scenario.overrideCount))" + (scenario.verified ? "  ✓" : ""),
+                    scenario.leaf + "  (\(scenario.overrideCount))" + (scenario.verified ? "  ✓" : ""),
                     #selector(activate(_:)), enabled: !model.busy, object: scenario.name)
                 entry.state = scenario.name == list.active ? .on : .off
             }
