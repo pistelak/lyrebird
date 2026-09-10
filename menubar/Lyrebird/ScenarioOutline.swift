@@ -109,18 +109,17 @@ extension RuleFormatting {
     /// `theBehaviourLineLeavesTheDelayToTheBadgeBesideIt`. A pane that draws no badge wants
     /// `behaviourSentence`.
     static func behaviourLine(_ rewrite: Rewrite) -> String {
-        let head: String
         if let sequence = rewrite.sequence {
-            head = "Sequence · \(sequence.steps.count) \(sequence.steps.count == 1 ? "step" : "steps")"
-        } else if rewrite.mode == "patch" {
-            let keys = rewrite.patchKeys.map { " · \($0) \($0 == 1 ? "key" : "keys")" } ?? ""
-            head = "Patches the real response" + keys
-        } else if let status = rewrite.status {
-            head = "Returns \(status)"
-        } else {
-            return ""
+            return "Sequence · \(sequence.steps.count) \(sequence.steps.count == 1 ? "step" : "steps")"
         }
-        return head
+        if rewrite.mode == "patch" {
+            let keys = rewrite.patchKeys.map { " · \($0) \($0 == 1 ? "key" : "keys")" } ?? ""
+            return "Patches the real response" + keys
+        }
+        if let status = rewrite.status {
+            return "Returns \(status)"
+        }
+        return ""
     }
 
     /// `60 s (capped)` — how long the proxy holds a matched response, and whether that is less than
@@ -313,7 +312,4 @@ extension RuleFormatting {
         let label = "Step \(number)"
         return step.status.map { "\(label) · \($0)" } ?? label
     }
-
-    /// Six is where a segmented control stops being one glance and starts being a row of digits.
-    static let segmentedStepLimit = 6
 }

@@ -101,22 +101,6 @@ enum RuleFormatting {
         }
     }
 
-    // MARK: - Spacing
-    //
-    // Four steps, used everywhere, so that "these two things belong together" is said by distance
-    // rather than by a number somebody picked at the moment they wrote the view.
-
-    enum Space {
-        /// Between the lines of one thing.
-        static let tight: CGFloat = 4
-        /// Between neighbouring things in a row.
-        static let snug: CGFloat = 8
-        /// Between a label and what it labels.
-        static let step: CGFloat = 12
-        /// Between sections that are about different things.
-        static let section: CGFloat = 16
-    }
-
     // MARK: - Numbers and colours
 
     /// `512 B`, `1.2 KB`, `3.0 MB`. Binary units, matching what the engine counts: `bodyBytes` is
