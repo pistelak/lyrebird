@@ -114,7 +114,7 @@
         }
     }
 
-    private final class PreviewProtocol: URLProtocol, @unchecked Sendable {
+    private final class PreviewProtocol: URLProtocol {
         private static let lock = NSLock()
         private static var active = BrowserPreview.initialScenario
         private static var cleared = false

@@ -1,5 +1,6 @@
 import AppKit
 
+@MainActor
 enum BrowserTypography {
     static let badge = NSFont.systemFont(ofSize: 11, weight: .semibold)
 
