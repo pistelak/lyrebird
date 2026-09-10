@@ -7,6 +7,7 @@ final class RequestListController: NSViewController, NSTableViewDataSource, NSTa
         var text: NSAttributedString
         var selection: RuleFormatting.ListSelection?
         var recent: RecentEntry.Key?
+        var traffic: RecentEntry?
         var flow: RuleFormatting.FlowListRow?
         var isHeading = false
         var selectable: Bool { selection != nil || recent != nil }
@@ -130,7 +131,8 @@ final class RequestListController: NSViewController, NSTableViewDataSource, NSTa
                         NativeStyle.text(
                             entry.matched == nil ? "No override answered" : "Answered by an override", size: 12,
                             color: .secondaryLabelColor))
-                    next.append(Row(id: String(describing: item.id), text: text, recent: entry.selectionKey))
+                    next.append(
+                        Row(id: String(describing: item.id), text: text, recent: entry.selectionKey, traffic: entry))
                 }
                 if next.allSatisfy({ $0.recent == nil }) && model.recent.isEmpty {
                     note("empty", model.recentPlaceholder)
@@ -191,7 +193,10 @@ final class RequestListController: NSViewController, NSTableViewDataSource, NSTa
         }
         let newScope = state.showsRecent ? "recent" : "scenario:" + (state.scenario ?? "")
         let changed =
-            next.count != rows.count || zip(next, rows).contains { $0.id != $1.id || !$0.text.isEqual(to: $1.text) }
+            next.count != rows.count
+            || zip(next, rows).contains {
+                $0.id != $1.id || !$0.text.isEqual(to: $1.text) || $0.traffic != $1.traffic
+            }
         applying = true
         defer { applying = false }
         if changed {
@@ -223,6 +228,7 @@ final class RequestListController: NSViewController, NSTableViewDataSource, NSTa
     func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
     func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool { rows[row].selectable }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        if let entry = rows[row].traffic { return RecentRequestCell(entry) }
         if let flow = rows[row].flow { return FlowRequestCell(flow) }
         let cell = TextCell(frame: .zero)
         cell.label.attributedStringValue = rows[row].text
@@ -230,6 +236,7 @@ final class RequestListController: NSViewController, NSTableViewDataSource, NSTa
         return cell
     }
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
+        if let entry = rows[row].traffic { return RecentRequestCell.height(entry, width: scrollView.contentSize.width) }
         if let flow = rows[row].flow { return FlowRequestCell.height(flow, width: scrollView.contentSize.width) }
         if rows[row].isHeading { return rows[row].id == "notes-heading" ? 28 : 42 }
         let width = max(100, scrollView.contentSize.width - 32)
@@ -241,7 +248,9 @@ final class RequestListController: NSViewController, NSTableViewDataSource, NSTa
     }
     func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
         let view = BrowserTableRow()
-        view.separates = rows[row].flow != nil || rows[row].id == "notes" || rows[row].id == "notes-heading"
+        view.separates =
+            rows[row].flow != nil || rows[row].traffic != nil || rows[row].id == "notes"
+            || rows[row].id == "notes-heading"
         return view
     }
     func tableViewColumnDidResize(_ notification: Notification) {

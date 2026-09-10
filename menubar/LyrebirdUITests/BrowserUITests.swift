@@ -1,6 +1,30 @@
 import XCTest
 
 final class BrowserUITests: XCTestCase {
+    func testRecentTrafficLayout() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--preview"]
+        app.launch()
+        defer { app.terminate() }
+        let window = app.windows["Lyrebird"]
+        XCTAssertTrue(window.waitForExistence(timeout: 10))
+        app.staticTexts["recent"].click()
+        let table = app.tables["request-list"]
+        expectation(
+            for: NSPredicate { _, _ in table.descendants(matching: .tableRow).count == 4 }, evaluatedWith: table)
+        waitForExpectations(timeout: 10)
+        table.descendants(matching: .tableRow).element(boundBy: 1).click()
+        let detail = app.textViews["response-detail"]
+        expectation(
+            for: NSPredicate(format: "value CONTAINS %@", "/api/v1/catalog/items/example-item/availability"),
+            evaluatedWith: detail)
+        waitForExpectations(timeout: 5)
+        let screenshot = XCTAttachment(screenshot: window.screenshot())
+        screenshot.name = "Recent traffic layout"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+    }
+
     func testNativeBrowserNavigationAndWindowReopening() {
         let app = XCUIApplication()
         app.launchArguments = ["--preview"]

@@ -176,7 +176,14 @@
                                 RecentEntry(
                                     id: "event-1", time: "2026-01-01T12:00:00Z", method: "GET",
                                     path: "/api/v1/orders/pending", status: 200, matched: "ovr_orders", selectedStep: 1,
-                                    runId: "synthetic-run")
+                                    runId: "synthetic-run"),
+                                RecentEntry(
+                                    id: "event-2", method: "GET",
+                                    path: "/api/v1/catalog/items/example-item/availability", status: 200),
+                                RecentEntry(id: "event-3", method: "POST", path: "/api/v1/orders", status: 404),
+                                RecentEntry(
+                                    id: "event-4", method: "PATCH", path: "/api/v1/settings", status: 200,
+                                    patchSkipped: "Response was not JSON"),
                             ]
                         return try encoder.encode(entries)
                     default: return Data("{}".utf8)
