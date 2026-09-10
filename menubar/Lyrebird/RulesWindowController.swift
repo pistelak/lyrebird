@@ -267,7 +267,6 @@ extension RulesWindowController: NSToolbarDelegate {
             return interceptionItem
         }
         let item = NSToolbarItem(itemIdentifier: id)
-        item.isBordered = false
         item.target = self
         switch id.rawValue {
         case "title":
@@ -292,6 +291,9 @@ extension RulesWindowController: NSToolbarDelegate {
             item.action = #selector(dismissError)
         default: return nil
         }
+        // Bordered so the symbol buttons get the system's material, the way the interception
+        // control already does; the items that host their own view keep their own background.
+        item.isBordered = item.view == nil
         return item
     }
 }
