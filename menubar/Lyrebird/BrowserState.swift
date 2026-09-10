@@ -3,29 +3,29 @@ import Foundation
 /// Selection belongs to the reader; activation belongs to the engine.
 @MainActor
 final class BrowserState {
-    enum Destination: Hashable {
+    enum Destination {
         case recent
+
         case scenario(String)
     }
 
     var destination: Destination?
+
     var ruleSelection: RuleFormatting.ListSelection?
+
     var pickedStep: RuleFormatting.StepPick?
+
     var recentSelection: RecentEntry.Key?
-    var rulesQuery = ""
-    var recentQuery = ""
+
     private var selectionScenario: String?
 
-    var showsRecent: Bool { destination == .recent }
+    var showsRecent: Bool {
+        destination == .recent
+    }
+
     var scenario: String? {
         if case .scenario(let name) = destination { return name }
         return nil
-    }
-    var query: String {
-        get { showsRecent ? recentQuery : rulesQuery }
-        set {
-            if showsRecent { recentQuery = newValue } else { rulesQuery = newValue }
-        }
     }
 
     func select(_ destination: Destination?) {
@@ -48,3 +48,5 @@ final class BrowserState {
         pickedStep = .init(scenario: scenario ?? "", rule: rule, step: step)
     }
 }
+
+extension BrowserState.Destination: Hashable {}

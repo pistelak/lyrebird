@@ -82,7 +82,7 @@ Sequence rules appear in configured order, with each response state followed by 
 request. These are configured transitions, not a traffic trace: reads can repeat, and an advance
 matcher may have different conditions from the rule that answers that request. The detail pane
 shows those conditions and any candidate response rules. Other rules are listed separately.
-Scenario notes provide context above the list.
+Scenario notes provide context above the list. Search has been removed.
 
 **Recent** shows recorded requests newest first, with status and override/sequence metadata.
 Request and response bodies are not captured. **Clear** removes recent traffic only; it leaves
@@ -104,6 +104,11 @@ failed reads from empty results, preserves selection across polls, and does not 
 
 ## Configuration
 
+The control URL must use HTTP on `127.0.0.1` or `localhost` with an explicit port,
+without credentials, a path other than `/`, a query, or a fragment. An absent setting uses
+`http://127.0.0.1:8088`; an invalid saved setting is reported and blocks control operations
+until corrected in Settings.
+
 Settings holds the control URL, the `lyrebird` launcher path, and the **profile directory**. When
 that is set the app passes `--profile` explicitly on every CLI call, because an app launched
 from Finder inherits no shell environment — relying on `LYREBIRD_PROFILE` would silently select
@@ -119,8 +124,8 @@ that profile's fingerprint and no scenario list, traffic or Relaunch button borr
 proxy that answers something unreadable is shown as unreadable rather than as stopped. If the
 fingerprint cannot be established at all — a wrong launcher path, usually — the menu says the
 profile is unknown and sends nothing: an unscoped request is answered by whichever profile holds
-the port, which is the reading this is here to avoid. Start and Stop keep working in all of those,
-since the CLI does its own checking.
+the port, which is the reading this is here to avoid. With a valid control URL, Start and Stop
+keep working in all of those states, since the CLI does its own checking.
 
 The simulator bundle id to relaunch comes from the engine (`simBundleId` in your `profile.json`,
 surfaced via `GET /__mock__/health`), so the app ships with no app identifier of its own. Relaunch

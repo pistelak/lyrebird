@@ -13,6 +13,10 @@ alone does not establish visual completion.
 - [Accessibility](https://developer.apple.com/design/human-interface-guidelines/accessibility): contrast, readable text, multiple status cues, keyboard access, and VoiceOver descriptions.
 - [Color](https://developer.apple.com/design/human-interface-guidelines/color): semantic colors and adaptation to light, dark, and increased contrast appearances.
 
+## Settled decisions
+
+Search is removed, including its state, filtering, keyboard shortcut, and toolbar field.
+
 ## Verification ledger
 
 | Area | Finding or requirement | Evidence needed |
@@ -23,7 +27,7 @@ alone does not establish visual completion.
 | Selection | Colored badges must remain readable in focused and unfocused selected rows. | Screenshots and contrast checks for both selection states. |
 | Sidebar | System sizing and disclosure behavior must remain usable with many grouped scenarios. | Small/medium/large sizing review; keyboard expand/collapse and selection checks. |
 | Commands | Browsing and activating scenarios must be distinct and activation discoverable without a mouse-only gesture. | Menu and keyboard interaction checks, with no accidental activation on selection. |
-| Toolbar | Search stays removed; status remains legible; divider stops below toolbar. | Windowed/full-screen screenshots at narrow and wide sizes. |
+| Toolbar | Status remains legible; divider stops below toolbar. | Windowed/full-screen screenshots at narrow and wide sizes. |
 | Settings | Fields, explanatory text, errors, and buttons must fit and be keyboard accessible. | Rendered settings window, invalid-input and save/cancel checks. |
 | Accessibility | Controls have meaningful names and navigation order; information is not color-only. | Accessibility tree and keyboard review for every window and menu. |
 | Appearance | Surfaces, text, separators, and controls adapt without stale rendering. | Light/dark and increased contrast review, including live appearance changes. |

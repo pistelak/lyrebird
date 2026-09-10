@@ -131,9 +131,7 @@ extension RuleFormatting {
         return seconds(delay) + (rewrite.delayCapped == true ? " (capped)" : "")
     }
 
-    /// ` after 3 s`, the delay spelled into a sentence rather than drawn as a badge. One
-    /// construction, so the response pane, the candidate button and the text a search reads cannot
-    /// come to word the same wait differently.
+    /// Keep response and candidate delay wording consistent; see theResponsePaneStillSaysTheWaitTheRowShowsAsABadge.
     static func delaySuffix(_ label: String?) -> String {
         label.map { " after \($0)" } ?? ""
     }

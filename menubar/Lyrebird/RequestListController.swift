@@ -136,28 +136,21 @@ final class RequestListController: NSViewController {
             appendNote("error", failure, error: true, to: &next)
         }
         if state.showsRecent {
-            appendRecentRows(content, state: state, to: &next)
+            appendRecentRows(content, to: &next)
         } else {
             appendRuleRows(content, state: state, to: &next)
         }
         applyRows(next, state: state)
     }
 
-    private func appendRecentRows(_ content: BrowserContent, state: BrowserState, to next: inout [Row]) {
+    private func appendRecentRows(_ content: BrowserContent, to next: inout [Row]) {
         if let vacancy = RuleFormatting.proxyVacancy(status: content.status, controlPort: content.controlPort) {
             appendNote("vacancy", vacancy.message + "\n" + vacancy.hint, to: &next)
         } else if case .unavailable(let reason) = content.recentRead {
             appendNote("vacancy", "Traffic could not be read.\n" + reason, to: &next)
         } else {
-            let needle = state.query.trimmingCharacters(in: .whitespacesAndNewlines)
             for item in RecentTrafficItem.items(content.recent) {
                 let entry = item.entry
-                guard
-                    needle.isEmpty
-                        || [entry.method, entry.path, String(entry.status), entry.matched ?? ""].contains(where: {
-                            $0.localizedCaseInsensitiveContains(needle)
-                        })
-                else { continue }
                 let text = NSMutableAttributedString(
                     attributedString: NativeStyle.text(
                         entry.method + "  " + RuleFormatting.statusText(entry.status) + "  " + entry.path + "\n",
@@ -171,8 +164,6 @@ final class RequestListController: NSViewController {
             }
             if next.allSatisfy({ $0.recent == nil }) && content.recent.isEmpty {
                 appendNote("empty", content.recentPlaceholder, to: &next)
-            } else if !next.contains(where: { $0.id != "error" }) {
-                appendNote("empty", "No requests match your search.", to: &next)
             }
         }
     }
@@ -192,12 +183,12 @@ final class RequestListController: NSViewController {
         {
         case .vacancy(let vacancy): appendNote("vacancy", vacancy.message + "\n" + vacancy.hint, to: &next)
         case .list(let snapshot, let vacancy):
-            appendSnapshotRows(snapshot, vacancy: vacancy, scenarios: content.scenarios, state: state, to: &next)
+            appendSnapshotRows(snapshot, vacancy: vacancy, scenarios: content.scenarios, to: &next)
         }
     }
 
     private func appendSnapshotRows(
-        _ snapshot: RulesSnapshot, vacancy: RuleFormatting.Vacancy?, scenarios: ScenarioList?, state: BrowserState,
+        _ snapshot: RulesSnapshot, vacancy: RuleFormatting.Vacancy?, scenarios: ScenarioList?,
         to next: inout [Row]
     ) {
         if let notes = RuleFormatting.scenarioNotes(snapshot.scenario, in: scenarios) {
@@ -210,14 +201,8 @@ final class RequestListController: NSViewController {
             next.append(Row(id: "notes", text: NativeStyle.text(notes)))
         }
         if let vacancy { appendNote("vacancy", vacancy.message + "\n" + vacancy.hint, to: &next) }
-        let sections = RuleFormatting.flowSections(snapshot, query: state.query)
+        let sections = RuleFormatting.flowSections(snapshot)
         appendFlowSections(sections, to: &next)
-        if sections.isEmpty && vacancy == nil { appendNote("empty", "No requests match your search.", to: &next) }
-        if let selected = state.ruleSelection,
-            !sections.flatMap(\.rows).contains(where: { $0.selection == selected })
-        {
-            appendNote("hidden", "The selected rule is hidden by the search.", to: &next)
-        }
     }
 
     private func appendFlowSections(_ sections: [RuleFormatting.FlowListSection], to next: inout [Row]) {

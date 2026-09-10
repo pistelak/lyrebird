@@ -19,11 +19,6 @@ extension RuleFormatting {
         var endingTransition: ScenarioOutline.Transition? = nil
         var responseKind: ResponseKind? = nil
         var id: ListSelection { selection }
-
-        /// What a search reads: the subtitle with the delay spelled back into it. The delay used to
-        /// be part of the subtitle, and a search for `after 3 s` has to keep finding the row that
-        /// waits it — see `aSearchStillFindsARowByTheDelayItUsedToSpellOut`.
-        var searchText: String { subtitle + RuleFormatting.delaySuffix(delay) }
     }
 
     struct FlowListSection: Identifiable {
@@ -38,8 +33,8 @@ extension RuleFormatting {
         var footer: String?
     }
 
-    /// Keep configured numbers through search; see flowListRowsOpenTheCorrectRuleAndStepAndDoNotDuplicateTheTrigger.
-    static func flowSections(_ snapshot: RulesSnapshot, query: String = "") -> [FlowListSection] {
+    /// Preserve configured order and trigger identity; see flowListRowsOpenTheCorrectRuleAndStepAndDoNotDuplicateTheTrigger.
+    static func flowSections(_ snapshot: RulesSnapshot) -> [FlowListSection] {
         let outline = outline(snapshot)
         let kinds = Dictionary(
             snapshot.rules.map { ($0.id, responseKind($0.rewrite)) }, uniquingKeysWith: { first, _ in first })
@@ -67,7 +62,7 @@ extension RuleFormatting {
                 FlowListSection(
                     id: .responses, title: sections.isEmpty ? "Responses" : "Other rules", rows: others))
         }
-        return matchingSections(sections, snapshot: snapshot, query: query)
+        return sections
     }
 
     private static func sequenceRow(
@@ -121,26 +116,6 @@ extension RuleFormatting {
             }
         }
         return footer
-    }
-
-    private static func matchingSections(
-        _ sections: [FlowListSection], snapshot: RulesSnapshot, query: String
-    ) -> [FlowListSection] {
-        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !needle.isEmpty else { return sections }
-        let matchingRules = Set(filter(snapshot.rules, query: query).map(\.id))
-        return sections.compactMap { section in
-            var section = section
-            section.rows = section.rows.filter { row in
-                row.ruleId.map { matchingRules.contains($0) } == true
-                    || [
-                        row.request.method, row.request.path, row.searchText,
-                        row.status.map(String.init) ?? "",
-                    ]
-                    .contains { $0.localizedCaseInsensitiveContains(needle) }
-            }
-            return section.rows.isEmpty ? nil : section
-        }
     }
 
     static func flowRow(_ selection: ListSelection?, in snapshot: RulesSnapshot?) -> FlowListRow? {

@@ -144,26 +144,6 @@ enum RuleFormatting {
         return jsonText(value)
     }
 
-    // MARK: - Searching and grouping
-
-    /// Substring over the fields someone would search by: the id they wrote in a test, the path they
-    /// are debugging, the method, and the notes they left themselves.
-    /// See `RuleFormattingTests`.
-    static func matches(_ rule: RuleRow, query: String) -> Bool {
-        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !needle.isEmpty else { return true }
-        let haystack = [rule.id, rule.match?.path, rule.match?.method, rule.notes]
-            .compactMap { $0 }
-            .joined(separator: "\n")
-        return haystack.range(of: needle, options: [.caseInsensitive, .diacriticInsensitive]) != nil
-    }
-
-    /// The rules a query leaves, in the order the snapshot listed them — which is the order the
-    /// proxy holds them in, and the one an operator looking for a rule by position needs.
-    static func filter(_ rows: [RuleRow], query: String) -> [RuleRow] {
-        rows.filter { matches($0, query: query) }
-    }
-
     /// Split for the list: the rules that can answer, and the ones switched off. Inactive rules are
     /// still listed — a rule you cannot find is a rule you will write a second time — but they go
     /// below, under a header of their own, because they cannot explain anything the proxy just did.
@@ -171,7 +151,7 @@ enum RuleFormatting {
         (rows.filter(\.isActive), rows.filter { !$0.isActive })
     }
 
-    /// Resolve against the full snapshot so filtering never changes the response being read.
+    /// Resolve missing selections as nil; see theDetailPaneResolvesSelectionsAndRejectsMissingRules.
     static func detailRule(selection: ListSelection?, in snapshot: RulesSnapshot?) -> RuleRow? {
         guard let snapshot else { return nil }
         let id: String?
@@ -341,7 +321,7 @@ enum RuleFormatting {
         case .profileUnknown(let reason):
             return Vacancy(
                 message: "Lyrebird does not know which profile this is.",
-                hint: "\(reason) — check the launcher path in Settings.")
+                hint: "\(reason) — check Settings.")
         case .intercepting, .pacDisabled:
             return nil
         }

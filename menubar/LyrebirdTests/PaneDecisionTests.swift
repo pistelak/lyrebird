@@ -6,6 +6,35 @@ import Testing
 extension AppTests {
     @MainActor
     struct PaneDecisionTests {
+        @Test func requestListShowsEveryRuleAndTrafficEntryAcrossNavigation() {
+            let rules = [
+                RuleRow(
+                    id: "inactive", match: RuleMatch(method: "DELETE", path: "/api/items/*"),
+                    rewrite: Rewrite(active: false, mode: "replace", status: 503, bodyKind: "none")),
+                RuleRow(
+                    id: "active", match: RuleMatch(method: "GET", path: "/api/orders"),
+                    rewrite: Rewrite(active: true, mode: "replace", status: 200, bodyKind: "none")),
+            ]
+            let snapshot = RulesSnapshot(scenario: "baseline", notWhole: [], rules: rules)
+            let entries = [
+                RecentEntry(id: "newest", method: "PATCH", path: "/api/cart", status: 204),
+                RecentEntry(id: "older", method: "GET", path: "/api/orders", status: 200),
+            ]
+            let content = BrowserContent(
+                status: .intercepting, controlPort: 8088, rulesRead: .ok(snapshot), recentRead: .ok(entries),
+                recentPlaceholder: "No recorded requests", scenarios: nil, busy: false, lastError: nil)
+            let state = BrowserState()
+            let list = RequestListController()
+            for _ in 0..<2 {
+                state.select(.scenario("baseline"))
+                list.update(content, state: state)
+                #expect(list.rows.compactMap { $0.flow?.ruleId } == ["active", "inactive"])
+                state.select(.recent)
+                list.update(content, state: state)
+                #expect(list.rows.compactMap { $0.traffic?.id } == ["newest", "older"])
+            }
+        }
+
         /// Building a candidate rule before deciding which pane wins can leave its copy payload,
         /// step target or related links live behind a vacancy; exercise the actions after each losing branch.
         @Test func aRuleThatLosesThePaneLeavesNoActionsBehind() throws {
@@ -122,7 +151,7 @@ extension AppTests {
                 ])
         }
 
-        /// An error note must not suppress the empty-search message, and replacing traffic with a
+        /// An error note must not suppress the empty-traffic message, and replacing traffic with a
         /// read failure must clear native selection without sending a user-selection callback.
         @Test func trafficVacanciesKeepErrorOrderingAndSuppressSelectionCallbacks() {
             let entry = RecentEntry(id: "recorded", method: "GET", path: "/api/items", status: 200)
@@ -139,18 +168,12 @@ extension AppTests {
             #expect(list.rows.map(\.id).first == "error")
             #expect(list.table.selectedRow == 1)
 
-            state.query = "missing-request"
-            list.update(content, state: state)
-            #expect(list.rows.map(\.id) == ["error", "empty"])
-            #expect(list.rows.last?.text.string == "No requests match your search.")
-            #expect(list.table.selectedRow == -1)
-
             content.recentRead = .ok([])
             list.update(content, state: state)
             #expect(list.rows.map(\.id) == ["error", "empty"])
             #expect(list.rows.last?.text.string == "No recorded requests")
+            #expect(list.table.selectedRow == -1)
 
-            state.query = ""
             content.recentRead = .ok([entry])
             list.update(content, state: state)
             #expect(list.table.selectedRow == 1)
