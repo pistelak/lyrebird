@@ -111,7 +111,8 @@ final class BrowserTableRow: NSTableRowView {
     override func drawSelection(in dirtyRect: NSRect) {
         (isEmphasized ? NSColor.selectedContentBackgroundColor : NSColor.unemphasizedSelectedContentBackgroundColor)
             .setFill()
-        NSBezierPath(roundedRect: bounds.intersection(visibleRect).insetBy(dx: 8, dy: 1), xRadius: 8, yRadius: 8).fill()
+        // AppKit clips the drawing; rounding the visible slice creates seams in cached scroll pixels.
+        NSBezierPath(roundedRect: bounds.insetBy(dx: 8, dy: 1), xRadius: 8, yRadius: 8).fill()
     }
     override func drawBackground(in dirtyRect: NSRect) {
         super.drawBackground(in: dirtyRect)

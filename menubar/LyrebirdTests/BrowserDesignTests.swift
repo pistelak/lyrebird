@@ -6,6 +6,34 @@ import Testing
 extension AppTests {
     @MainActor
     struct BrowserDesignTests {
+        @Test func selectionShapeDoesNotChangeWhenARowIsPartiallyVisible() throws {
+            let row = BrowserTableRow(frame: NSRect(x: 0, y: 0, width: 200, height: 80))
+            row.isSelected = true
+            row.isEmphasized = true
+            func render() throws -> Data {
+                let bitmap = try #require(
+                    NSBitmapImageRep(
+                        bitmapDataPlanes: nil, pixelsWide: 200, pixelsHigh: 80, bitsPerSample: 8,
+                        samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
+                        bytesPerRow: 0, bitsPerPixel: 0))
+                let context = try #require(NSGraphicsContext(bitmapImageRep: bitmap))
+                NSGraphicsContext.saveGraphicsState()
+                defer { NSGraphicsContext.restoreGraphicsState() }
+                NSGraphicsContext.current = context
+                NSColor.white.setFill()
+                row.bounds.fill()
+                row.drawSelection(in: row.bounds)
+                return try #require(bitmap.representation(using: .png, properties: [:]))
+            }
+            let full = try render()
+            let clip = NSClipView(frame: NSRect(x: 0, y: 0, width: 200, height: 30))
+            clip.documentView = row
+            clip.scroll(to: NSPoint(x: 0, y: 20))
+            #expect(row.visibleRect.height < row.bounds.height)
+            #expect(row.visibleRect.minY > 0)
+            #expect(try render() == full)
+        }
+
         @Test func menuBarBirdRemainsATemplateInEveryStatus() throws {
             let states: [AppModel.Status] = [
                 .intercepting, .pacDisabled, .down, .foreignProfile(running: "example"),
