@@ -38,7 +38,16 @@ enum Config {
         else {
             throw ControlURLProblem()
         }
-        return url
+        // Resolved to the address the CLI uses, not left as written: `localhost` may resolve to ::1,
+        // and the CLI is handed only a port and always addresses 127.0.0.1 — so reads could describe
+        // a listener that Stop would not stop.
+        // See aLocalhostControlURLReadsTheSameEndpointTheCLIStops.
+        guard var resolved = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            throw ControlURLProblem()
+        }
+        resolved.host = "127.0.0.1"
+        guard let address = resolved.url else { throw ControlURLProblem() }
+        return address
     }
 
     // Invalid preferences must not select another endpoint; see invalidPersistedControlURLIsReportedWithoutIO.

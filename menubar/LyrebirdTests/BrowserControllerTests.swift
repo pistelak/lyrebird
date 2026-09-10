@@ -111,12 +111,17 @@ extension AppTests {
             }
         }
 
-        @Test(arguments: ["http://127.0.0.1:9000", "http://localhost:9000/"])
-        func validPersistedControlURLKeepsTheCLIPort(address: String) async throws {
+        /// The reads go to the URL and the commands go to a port the CLI resolves itself against
+        /// 127.0.0.1. Left as written, `localhost` may resolve to ::1, so the window could describe a
+        /// listener that Stop would not stop — the two have to name one endpoint.
+        @Test(arguments: ["http://127.0.0.1:9000", "http://localhost:9000/", "http://LOCALHOST:9000"])
+        func aLocalhostControlURLReadsTheSameEndpointTheCLIStops(address: String) async throws {
             try await withAppTestEnvironment {
                 Config.defaults.set(address, forKey: Config.controlURLKey)
                 let url = try Config.controlURL.get()
-                #expect(url.absoluteString == address)
+                #expect(url.host == "127.0.0.1", "reads would address \(url.host ?? "nothing") instead")
+                #expect(url.port == 9000)
+                #expect(url.scheme == "http")
                 #expect(try Control.controlEnvironment(for: url) == ["LYREBIRD_CONTROL_PORT": "9000"])
             }
         }
@@ -574,7 +579,9 @@ extension AppTests {
                 #expect(settings.window?.isVisible == true)
                 let view = try #require(settings.window?.contentView)
                 #expect(fields(view).contains { $0.stringValue.contains("Invalid control URL") })
-                #expect(try Config.controlURL.get().absoluteString == "http://localhost:8088")
+                // The stored preference, not the resolved endpoint: a refused save must leave what the
+                // user typed alone, and resolving it to a loopback address is a separate question.
+                #expect(Config.defaults.string(forKey: Config.controlURLKey) == "http://localhost:8088")
                 #expect(Config.profilePath.isEmpty)
                 settings.close()
                 #expect(Config.profilePath.isEmpty)
