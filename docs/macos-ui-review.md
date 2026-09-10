@@ -30,3 +30,25 @@ alone does not establish visual completion.
 | Lifecycle | Launch, reopen, resize, collapse, and full-screen transitions remain stable. | App tests and installed Release smoke check. |
 
 Open rows remain part of the work; they are not waived by the existing test suite.
+
+## Verified changes
+
+- Sidebar rows now use AppKit's default sizing preference. Existing cells receive
+  the effective size through `NSTableCellView.rowSizeStyle`; labels and symbols
+  follow it. Header-fit checks pass at small, medium, and large sizes. The light
+  browser screenshot from the UI suite was inspected; live system-preference
+  changes and keyboard disclosure still need review.
+- Browsing does not activate a scenario. A visible Activate button and a File
+  menu command with Command-Return provide explicit activation; validation rejects
+  active, missing, or stale selections. Controller tests cover those conditions.
+- Patch details explain merging once, label the payload as Changes, and retain
+  configured status, array strategy, and delay. A detail-rendering test checks
+  both the removed repetition and retained behavior information.
+- Menu-bar glyphs remain template images in every status. The colored indicator
+  is a separate, non-interactive view, allowing AppKit to tint the glyph for the
+  menu-bar background and selection. Template tests cover all six status cases;
+  installed appearance still requires visual confirmation.
+
+The latest `make check-app` run passed 206 tests (241 executions including
+parameters), with no failures or skips. This does not close the remaining visual,
+keyboard, Settings, or accessibility review items above.

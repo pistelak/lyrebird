@@ -317,12 +317,18 @@ final class RuleDetailController: NSViewController, NSTextViewDelegate {
                     line("This sequence has no steps.", secondary: true)
                 }
             } else {
-                line(RuleFormatting.behaviourSentence(rule.rewrite))
-                line(RuleFormatting.clauseLine(rule.rewrite), secondary: true)
+                if rule.rewrite.mode == "patch" {
+                    let clauses = RuleFormatting.clauseLine(rule.rewrite, includeApplicability: false)
+                    if !clauses.isEmpty { line(clauses, secondary: true) }
+                    if let delay = RuleFormatting.delayLabel(rule.rewrite) { line("Delay: " + delay) }
+                } else {
+                    line(RuleFormatting.behaviourSentence(rule.rewrite))
+                }
                 if let meta = RuleFormatting.metaLine(rule.rewrite) { line(meta, secondary: true) }
                 facts(RuleFormatting.headerRows(rule.headers))
                 if rule.rewrite.mode == "patch", let patch = rule.patch {
-                    body(patch, title: "Patch", note: "merged into the real response")
+                    let count = rule.rewrite.patchKeys.map { " · \($0) \($0 == 1 ? "key" : "keys")" } ?? ""
+                    body(patch, title: "Changes" + count)
                 } else if rule.rewrite.mode != "patch", let value = rule.body {
                     body(value)
                 }

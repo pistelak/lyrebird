@@ -6,6 +6,45 @@ import Testing
 extension AppTests {
     @MainActor
     struct BrowserDesignTests {
+        @Test func menuBarBirdRemainsATemplateInEveryStatus() throws {
+            let states: [AppModel.Status] = [
+                .intercepting, .pacDisabled, .down, .foreignProfile(running: "example"),
+                .unreadable("Unavailable"), .profileUnknown("Choose a profile"),
+            ]
+            for status in states {
+                let image = try #require(StatusItemController.templateImage(for: status, description: status.word))
+                #expect(image.isTemplate)
+            }
+        }
+
+        @Test func patchDetailExplainsMergingOnceAndKeepsBehaviorOptions() async throws {
+            try await withAppTestEnvironment {
+                let model = AppModel(autoStart: false, expectedFingerprint: "design")
+                model.healthRead = .up(Health(proxyUp: true, intercepting: true, profileFingerprint: "design"))
+                var snapshot = BrowserPreview.snapshot("orders-pending")
+                let index = try #require(snapshot.rules.firstIndex { $0.id == "ovr_patch" })
+                snapshot.rules[index].rewrite.status = 202
+                snapshot.rules[index].rewrite.patchKeys = 1
+                snapshot.rules[index].rewrite.patchStrategy = "appendToArray"
+                snapshot.rules[index].rewrite.delayMs = 250
+                model.rulesRead = .ok(snapshot)
+                let state = BrowserState()
+                state.select(.scenario(snapshot.scenario))
+                state.ruleSelection = .rule("ovr_patch")
+                let detail = RuleDetailController()
+                detail.update(model: model, state: state)
+                let text = detail.textView.string
+                #expect(text.contains("Merges changes into the server’s JSON response."))
+                #expect(!text.contains("Patches the real response"))
+                #expect(!text.contains("merged into the real response"))
+                #expect(!text.contains("JSON responses only"))
+                #expect(text.contains("Changes · 1 key"))
+                #expect(text.contains("sets status to 202 · appends to arrays"))
+                #expect(text.contains("Delay: 250 ms"))
+                #expect(text.contains("enabled"))
+            }
+        }
+
         @Test func selectedFlowUsesSystemSelectionTextAndRestoresItsColors() throws {
             let row = try #require(
                 RuleFormatting.flowSections(BrowserPreview.snapshot("remove-an-item")).first?.rows.first)

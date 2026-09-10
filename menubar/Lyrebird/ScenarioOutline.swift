@@ -162,7 +162,7 @@ extension RuleFormatting {
 
     /// A patch's supplementary clauses: `sets status to 503 · appends to arrays · JSON responses
     /// only`. Empty for anything else, and each clause only where the field is set.
-    static func clauseLine(_ rewrite: Rewrite) -> String {
+    static func clauseLine(_ rewrite: Rewrite, includeApplicability: Bool = true) -> String {
         guard rewrite.mode == "patch" else { return "" }
         var clauses: [String] = []
         // Only when the rule forces one: a patch that names no status keeps the real response's, and
@@ -173,7 +173,7 @@ extension RuleFormatting {
             // rather than translated into it.
             clauses.append(strategy == "appendToArray" ? "appends to arrays" : strategy)
         }
-        clauses.append("JSON responses only")
+        if includeApplicability { clauses.append("JSON responses only") }
         return clauses.joined(separator: " · ")
     }
 
