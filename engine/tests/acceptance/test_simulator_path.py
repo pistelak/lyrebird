@@ -74,7 +74,7 @@ def launch_traffic_is_answered_by_the_scenario_up_selected(harness):
     different status, so the launch that follows `up --use fixture-replaced` getting the replaced
     body cannot be luck: it is the scenario `up` selected, not the one that was active a moment
     before. (That `up` *runs* the selection before the launch rather than merely fast enough is
-    pinned deterministically in engine/tests/test_cli.py; what this adds is that the app really is
+    pinned deterministically in engine/tests/test_cli_launch.py; what this adds is that the app really is
     answered by it.)
     """
     harness.phase("launch traffic is answered by the scenario `up` selected")
