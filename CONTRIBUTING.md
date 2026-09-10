@@ -2,9 +2,10 @@
 
 ## Setup
 
-Use Python 3.12 (the patch version is in `.tool-versions`) and Xcode 16 or newer, with
-Command Line Tools selected via `xcode-select`. Source builds of the formatter require
-Swift 6 or newer, which setup checks before downloading and compiling. From the repository root:
+Use macOS 26 or newer, Python 3.12 (the patch version is in `.tool-versions`), and Xcode 26 or newer,
+with Command Line Tools selected via `xcode-select`. The app deployment target is macOS 26.
+Source builds of the formatter require Swift 6 or newer, which setup checks before downloading
+and compiling. From the repository root:
 
 ```bash
 make setup
@@ -27,7 +28,7 @@ patch releases in `.tool-versions` may not have GitHub-hosted macOS binaries. Th
 development dependency locks are the same locally and in CI, but the interpreter patch can differ.
 
 The pinned tools are XcodeGen 2.46.0 and swift-format 602.0.0. Xcode itself is supplied by the
-machine; `make doctor` reports its version. The workflow uses the `macos-15` runner image,
+machine; `make doctor` reports its version. The workflow uses the `macos-26` runner image,
 so the Xcode build environment is not completely locked. Use the same selected Xcode for
 local builds and investigate compiler-version differences when reproducing CI failures.
 
@@ -46,6 +47,16 @@ make check-engine
 make test-engine TEST_ARGS="-k reset"
 make check-app
 ```
+
+The UI tests under `menubar/LyrebirdUITests` drive the real app through XCUIAutomation and do run
+on CI — with one exception. `testDarkAppearanceAndFullscreenKeepContentVisible` enters full screen,
+which is an animated Space transition that a runner's virtual framebuffer never completes, so CI
+passes `APP_TEST_SKIP=-skip-testing:LyrebirdUITests/BrowserUITests/testDarkAppearanceAndFullscreenKeepContentVisible`.
+A local `make check` runs it, and every UI test needs the screen left alone while it does —
+clicking around during a run fails them for reasons that have nothing to do with the code.
+
+Skip the case, not the target: the other UI tests exercise the real app on a runner, and dropping
+them to avoid one environment-bound assertion would cost coverage that works.
 
 `make help` lists the main targets. Checks do not install dependencies or change network
 settings. Tests bind local sockets, so an agent sandbox must allow that. Build output stays in
@@ -68,10 +79,9 @@ format-on-save if desired. Generated projects, virtualenvs and build output are 
 formatter targets.
 
 Only use Python `# fmt: off` / `# fmt: on` around a statement when table alignment carries
-meaning. Swift's `OnlyOneTrailingClosureArgument` rule is disabled to retain idiomatic SwiftUI
-calls with an `onDismiss` closure and trailing view content. Other enabled Swift lint rules
-fail the check via `--strict`. Keep the complete rule map: swift-format replaces that map
-instead of merging it with defaults. Negative naming and indentation probes in `make lint-app`
+meaning. Swift's `OnlyOneTrailingClosureArgument` rule is disabled to allow multiple trailing
+closures. Other enabled Swift lint rules fail the check via `--strict`. Keep the complete rule map:
+swift-format replaces that map instead of merging it with defaults. Negative naming and indentation probes in `make lint-app`
 verify that both style rules and whitespace checks remain enforced.
 
 ## Updating dependencies

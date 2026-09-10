@@ -109,18 +109,17 @@ extension RuleFormatting {
     /// `theBehaviourLineLeavesTheDelayToTheBadgeBesideIt`. A pane that draws no badge wants
     /// `behaviourSentence`.
     static func behaviourLine(_ rewrite: Rewrite) -> String {
-        let head: String
         if let sequence = rewrite.sequence {
-            head = "Sequence · \(sequence.steps.count) \(sequence.steps.count == 1 ? "step" : "steps")"
-        } else if rewrite.mode == "patch" {
-            let keys = rewrite.patchKeys.map { " · \($0) \($0 == 1 ? "key" : "keys")" } ?? ""
-            head = "Patches the real response" + keys
-        } else if let status = rewrite.status {
-            head = "Returns \(status)"
-        } else {
-            return ""
+            return "Sequence · \(sequence.steps.count) \(sequence.steps.count == 1 ? "step" : "steps")"
         }
-        return head
+        if rewrite.mode == "patch" {
+            let keys = rewrite.patchKeys.map { " · \($0) \($0 == 1 ? "key" : "keys")" } ?? ""
+            return "Patches the real response" + keys
+        }
+        if let status = rewrite.status {
+            return "Returns \(status)"
+        }
+        return ""
     }
 
     /// `60 s (capped)` — how long the proxy holds a matched response, and whether that is less than
@@ -132,12 +131,14 @@ extension RuleFormatting {
         return seconds(delay) + (rewrite.delayCapped == true ? " (capped)" : "")
     }
 
-    /// ` after 3 s`, the delay spelled into a sentence rather than drawn as a badge. One
-    /// construction, so the response pane, the candidate button and the text a search reads cannot
-    /// come to word the same wait differently.
-    static func delaySuffix(_ label: String?) -> String { label.map { " after \($0)" } ?? "" }
+    /// Keep response and candidate delay wording consistent; see theResponsePaneStillSaysTheWaitTheRowShowsAsABadge.
+    static func delaySuffix(_ label: String?) -> String {
+        label.map { " after \($0)" } ?? ""
+    }
 
-    static func delayPhrase(_ rewrite: Rewrite) -> String { delaySuffix(delayLabel(rewrite)) }
+    static func delayPhrase(_ rewrite: Rewrite) -> String {
+        delaySuffix(delayLabel(rewrite))
+    }
 
     /// What the rule does *and* how long it is held, for a pane that draws a line of text where a
     /// row draws a badge. The detail pane lost the delay entirely when it was split out of
@@ -162,7 +163,7 @@ extension RuleFormatting {
 
     /// A patch's supplementary clauses: `sets status to 503 · appends to arrays · JSON responses
     /// only`. Empty for anything else, and each clause only where the field is set.
-    static func clauseLine(_ rewrite: Rewrite) -> String {
+    static func clauseLine(_ rewrite: Rewrite, includeApplicability: Bool = true) -> String {
         guard rewrite.mode == "patch" else { return "" }
         var clauses: [String] = []
         // Only when the rule forces one: a patch that names no status keeps the real response's, and
@@ -173,7 +174,7 @@ extension RuleFormatting {
             // rather than translated into it.
             clauses.append(strategy == "appendToArray" ? "appends to arrays" : strategy)
         }
-        clauses.append("JSON responses only")
+        if includeApplicability { clauses.append("JSON responses only") }
         return clauses.joined(separator: " · ")
     }
 
@@ -300,14 +301,13 @@ extension RuleFormatting {
     // MARK: - The detail's step selector
 
     /// `Step 2 of 9`, the label above a sequence rule's response.
-    static func stepSelectorLabel(step: Int, of total: Int) -> String { "Step \(step) of \(total)" }
+    static func stepSelectorLabel(step: Int, of total: Int) -> String {
+        "Step \(step) of \(total)"
+    }
 
     /// `Step 3 · 200`, for the menu a sequence too long to segment uses.
     static func stepMenuLabel(number: Int, step: StepSummary) -> String {
         let label = "Step \(number)"
         return step.status.map { "\(label) · \($0)" } ?? label
     }
-
-    /// Six is where a segmented control stops being one glance and starts being a row of digits.
-    static let segmentedStepLimit = 6
 }

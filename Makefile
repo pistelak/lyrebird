@@ -5,7 +5,7 @@ PYTHON ?= python3
 ENGINE_PYTHON := .venv/bin/python
 SWIFT_FORMAT := .build/tools/bin/swift-format
 XCODEGEN := .build/tools/bin/xcodegen
-SWIFT_SOURCES := menubar/Lyrebird menubar/LyrebirdTests acceptance/FixtureApp/FixtureApp
+SWIFT_SOURCES := menubar/Lyrebird menubar/LyrebirdTests menubar/LyrebirdUITests acceptance/FixtureApp/FixtureApp
 SHELL_SCRIPTS := bin/lyrebird scripts/setup-tools.sh scripts/check-tools.sh scripts/check-swift-format.sh \
 	menubar/scripts/verify-version.sh menubar/scripts/install-app.sh
 
@@ -83,11 +83,17 @@ lint-app:
 	$(SWIFT_FORMAT) lint --strict --recursive --configuration .swift-format $(SWIFT_SOURCES)
 	bash scripts/check-swift-format.sh
 
+# CI skips the one UI test that enters full screen: that is an animated Space transition, and a
+# runner's virtual framebuffer never completes it. The rest of the UI tests do pass there, so this
+# stays a named exclusion rather than dropping the target — a runner that can drive the app should
+# go on driving it.
+APP_TEST_SKIP ?=
 test-app:
 	bash scripts/check-tools.sh
 	cd menubar && ../$(XCODEGEN) generate
 	cd menubar && xcodebuild -quiet -project Lyrebird.xcodeproj -scheme Lyrebird \
-		-configuration Debug -derivedDataPath .build -destination 'platform=macOS' build test
+		-configuration Debug -derivedDataPath .build -destination 'platform=macOS' \
+		$(APP_TEST_SKIP) build test
 
 # APP_INSTALL_DIR=/path/to/dir to install somewhere other than /Applications.
 APP_INSTALL_DIR ?= /Applications

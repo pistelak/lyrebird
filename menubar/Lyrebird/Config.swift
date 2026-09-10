@@ -2,13 +2,16 @@ import Foundation
 
 enum Config {
     static let controlURLKey = "controlURL"
+
     static let lyrebirdPathKey = "lyrebirdPath"
+
     static let profilePathKey = "profilePath"
+
     static let dockOnlyWhileWindowOpenKey = "dockOnlyWhileWindowOpen"
 
     static let defaultControlURL = "http://127.0.0.1:8088"
 
-    /// The store every setting is read from, and the one `SettingsView` writes to.
+    /// The store every setting is read from, and the one `SettingsWindowController` writes to.
     ///
     /// A `var` only so the tests can point it somewhere else: they run hosted inside Lyrebird.app,
     /// so `UserDefaults.standard` in a test is the user's real `com.lyrebird.Lyrebird` domain — a
@@ -22,9 +25,44 @@ enum Config {
         return (value?.isEmpty == false) ? value! : fallback
     }
 
-    static var controlURL: URL {
-        URL(string: string(controlURLKey, default: defaultControlURL))
-            ?? URL(string: defaultControlURL)!
+    struct ControlURLProblem {}
+
+    static func validateControlURL(_ text: String) throws -> URL {
+        guard let url = URL(string: text, encodingInvalidCharacters: false),
+            let parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
+            parts.scheme?.lowercased() == "http",
+            ["127.0.0.1", "localhost"].contains(parts.host?.lowercased() ?? ""),
+            let port = parts.port, (1...65535).contains(port),
+            parts.user == nil, parts.password == nil,
+            parts.path.isEmpty || parts.path == "/", parts.query == nil, parts.fragment == nil
+        else {
+            throw ControlURLProblem()
+        }
+        // Resolved to the address the CLI uses, not left as written: `localhost` may resolve to ::1,
+        // and the CLI is handed only a port and always addresses 127.0.0.1 — so reads could describe
+        // a listener that Stop would not stop.
+        // See aLocalhostControlURLReadsTheSameEndpointTheCLIStops.
+        guard var resolved = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            throw ControlURLProblem()
+        }
+        resolved.host = "127.0.0.1"
+        guard let address = resolved.url else { throw ControlURLProblem() }
+        return address
+    }
+
+    // Invalid preferences must not select another endpoint; see invalidPersistedControlURLIsReportedWithoutIO.
+    static var controlURL: Result<URL, ControlURLProblem> {
+        guard defaults.object(forKey: controlURLKey) != nil else {
+            return .success(URL(string: defaultControlURL)!)
+        }
+        guard let text = defaults.string(forKey: controlURLKey) else {
+            return .failure(ControlURLProblem())
+        }
+        do {
+            return .success(try validateControlURL(text))
+        } catch {
+            return .failure(ControlURLProblem())
+        }
     }
 
     /// Resolved by searching PATH when unset, so a clone anywhere still works. There is no default
@@ -65,3 +103,11 @@ enum Config {
     /// The menu re-reads health, scenarios and recent traffic at this interval.
     static let pollSeconds = 2.0
 }
+
+extension Config.ControlURLProblem: LocalizedError {
+    var errorDescription: String? {
+        "Invalid control URL: use http://127.0.0.1:PORT or http://localhost:PORT (1–65535) in Settings."
+    }
+}
+
+extension Config.ControlURLProblem: Equatable {}

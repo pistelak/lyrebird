@@ -1,4 +1,4 @@
-import Foundation
+import AppKit
 import Testing
 
 @testable import Lyrebird
@@ -174,7 +174,7 @@ struct JSONPrinterTests {
     @Test
     func everyKindOfValueIsColouredSoTheBlockCanBeSkimmed() {
         let printed = RuleFormatting.attributedJSON(.object(["a": .string("s"), "b": .int(1), "c": .null]))
-        let colours = Set(printed.runs.compactMap(\.foregroundColor))
+        let colours = Set(printed.runs.compactMap(\.appKit.foregroundColor))
 
         // Keys, strings, numbers, literals and punctuation: five readings, five colours, or the
         // colouring is decoration rather than information.

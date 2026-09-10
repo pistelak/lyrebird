@@ -9,11 +9,11 @@ import Testing
 /// runtime at all — because a field silently lost in decoding does not look like a bug in a
 /// read-only window: it looks like a rule that does less than it does.
 struct RulesDecodingTests {
-
     private func decoded() throws -> RulesSnapshot {
         try JSONDecoder().decode(RulesSnapshot.self, from: Data(RulesFixture.snapshot.utf8))
     }
 
+    /// Unknown engine fields must not reject the snapshot; ordered IDs also pin every surviving rule.
     @Test
     func aSnapshotDecodesTheScenarioItsProblemsAndEveryRuleInOrder() throws {
         let snapshot = try decoded()
@@ -195,11 +195,9 @@ struct RulesDecodingTests {
         #expect(RuleFormatting.clauseLine(rule.rewrite) == "JSON responses only")
     }
 
+    /// A browsed snapshot with null runtime fields must still decode its name and configured response.
     @Test
     func aBrowsedScenarioDecodesItsRulesWithNoRuntimeAtAll() throws {
-        // `?scenario=NAME` sends the rules and the engine's description of them, and null for every
-        // cursor and count: those belong to the scenario the proxy is serving. Null and not zero —
-        // "this rule answered nothing" is a claim about a run that happened.
         let snapshot = try JSONDecoder().decode(
             RulesSnapshot.self, from: Data(RulesFixture.browsed.utf8))
 
@@ -234,13 +232,6 @@ struct RulesDecodingTests {
         let updated = try JSONDecoder().decode(
             RulesSnapshot.self, from: JSONSerialization.data(withJSONObject: payload))
         #expect(original == updated)
-    }
-
-    @Test
-    func fieldsThisAppDoesNotRenderAreIgnoredRatherThanFailingTheWholeSnapshot() throws {
-        // The fixture carries keys no version of this window reads. A newer engine adding one must
-        // not turn the rules read into `.unavailable`, which is what a strict decode would do.
-        #expect(try decoded().rules.count == 3)
     }
 
     @Test func aStepSBodyPrintsAsTheJSONItWasWrittenAs() throws {

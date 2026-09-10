@@ -43,7 +43,7 @@ extension AppTests {
                     let (_, body) = Stub.read(request)
                     return (Stub.response(request, 500), body)
                 }
-                let client = MockClient(base: Stub.base, session: StubURLProtocol.session())
+                let client = Stub.makeClient()
                 let list = await client.scenarios()
                 #expect(list == nil)
             }
@@ -53,9 +53,7 @@ extension AppTests {
         func clearUsesScopedDeleteAndRefreshesTraffic() async throws {
             try await withAppTestEnvironment {
                 StubURLProtocol.install { request in Stub.read(request) }
-                let model = AppModel(
-                    client: MockClient(base: Stub.base, session: StubURLProtocol.session()),
-                    autoStart: false, expectedFingerprint: "abc123")
+                let model = makeModel(expecting: "abc123")
                 await model.clearRecent()
                 let request = StubURLProtocol.requests.first
                 #expect(request?.httpMethod == "DELETE")
@@ -79,9 +77,7 @@ extension AppTests {
                     }
                     return Stub.read(request)
                 }
-                let model = AppModel(
-                    client: MockClient(base: Stub.base, session: StubURLProtocol.session()),
-                    autoStart: false, expectedFingerprint: "abc123")
+                let model = makeModel(expecting: "abc123")
                 await model.clearRecent()
                 #expect(model.lastError?.contains("clear recent traffic") == true)
                 #expect(model.lastError?.contains("profile_mismatch") == true)
@@ -93,7 +89,7 @@ extension AppTests {
         func clearWithoutProfileDoesNotSendRequest() async throws {
             try await withAppTestEnvironment {
                 let model = AppModel(
-                    client: MockClient(base: Stub.base, session: StubURLProtocol.session()), autoStart: false)
+                    client: Stub.makeClient(), autoStart: false)
                 await model.clearRecent()
                 #expect(model.lastError != nil)
                 #expect(StubURLProtocol.requests.isEmpty)

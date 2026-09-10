@@ -33,16 +33,20 @@ enum DockPresence {
     }
 
     static func windowClosed() {
-        openWindows = max(0, openWindows - 1)  // `onDisappear` can arrive for a window that never counted
+        openWindows = max(0, openWindows - 1)  // Duplicate close notifications must not make the count negative.
         applyCurrent()
     }
 
-    static func settingChanged() { applyCurrent() }
+    static func settingChanged() {
+        applyCurrent()
+    }
 
     private static func applyCurrent() {
         apply(policy(forOpenWindows: openWindows, dockOnlyWhileWindowOpen: Config.dockOnlyWhileWindowOpen))
     }
 
     /// For a test to start from a known state; the app never calls it.
-    static func reset() { openWindows = 0 }
+    static func reset() {
+        openWindows = 0
+    }
 }

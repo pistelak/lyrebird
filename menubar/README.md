@@ -1,6 +1,6 @@
 # Lyrebird — menu-bar app
 
-Native SwiftUI `MenuBarExtra` client for the Lyrebird engine — a thin client over the control API
+Native AppKit client for the Lyrebird engine — a thin client over the control API
 on `:8088` and the `lyrebird` CLI. No proxy logic in Swift; the engine stays the single source of
 truth.
 
@@ -8,6 +8,8 @@ Use it to browse scenarios prepared by a coding agent, inspect configured respon
 and choose which scenario to activate while testing your iOS app.
 
 ## Build
+
+The app requires macOS 26 or newer. Building requires Xcode 26 or newer with the macOS 26 SDK.
 
 The Xcode project is generated from `project.yml` via
 [XcodeGen](https://github.com/yonaskolb/XcodeGen), so it isn't committed:
@@ -60,7 +62,7 @@ conventional route.
 
 Menu-bar glyph: filled bird with a green dot while intercepting, orange when the proxy is up but
 not intercepting, and an outlined bird with no dot when stopped.
-Click for a scenario picker, Start/Stop (`lyrebird up|down`), a Relaunch-app button, the requests
+Click for a scenario menu, Start/Stop (`lyrebird up|down`), a Relaunch app command, the requests
 the proxy has seen, and settings.
 
 Lyrebird is a regular app: a Dock icon and a menu bar extra, both from launch. **Show in Dock only
@@ -80,7 +82,7 @@ Sequence rules appear in configured order, with each response state followed by 
 request. These are configured transitions, not a traffic trace: reads can repeat, and an advance
 matcher may have different conditions from the rule that answers that request. The detail pane
 shows those conditions and any candidate response rules. Other rules are listed separately.
-Scenario notes provide context above the list. ⌘F searches the current list.
+Scenario notes provide context above the list. Search has been removed.
 
 **Recent** shows recorded requests newest first, with status and override/sequence metadata.
 Request and response bodies are not captured. **Clear** removes recent traffic only; it leaves
@@ -92,14 +94,20 @@ without the folder and the full name in the tooltip. **Reload from disk** in the
 the scenario files, for a profile edited outside the app; it refuses whole if any file cannot be
 read, and it resets run evidence.
 
-The menu-bar popover lists only the folder the active scenario is in, because that is the set one
-run is about — this window is where the whole profile is. Switching to a scenario in another folder
-happens here, or with `lyrebird use <folder>/<name>`.
+The menu lists only the folder the active scenario is in — the set one run is about — or the root
+scenarios when the active one is at the root. An active scenario missing from the list is said to be
+missing rather than shown as an empty profile. This window is where the whole profile is; switching
+to a scenario in another folder happens here, or with `lyrebird use <folder>/<name>`.
 
 The browser reads the engine's rule descriptions through `GET /__mock__/rules`. It distinguishes
 failed reads from empty results, preserves selection across polls, and does not edit rules.
 
 ## Configuration
+
+The control URL must use HTTP on `127.0.0.1` or `localhost` with an explicit port,
+without credentials, a path other than `/`, a query, or a fragment. An absent setting uses
+`http://127.0.0.1:8088`; an invalid saved setting is reported and blocks control operations
+until corrected in Settings.
 
 Settings holds the control URL, the `lyrebird` launcher path, and the **profile directory**. When
 that is set the app passes `--profile` explicitly on every CLI call, because an app launched
@@ -108,7 +116,7 @@ the wrong profile. Left blank, the engine falls back to its own default.
 
 One proxy holds the control port, so the menu says which profile it means on every call it makes.
 It learns that profile's fingerprint from `lyrebird status --json` — at launch and again when the
-Settings sheet closes — and never computes it: the fingerprint is the engine's own
+Settings are saved — and never computes it: the fingerprint is the engine's own
 `sha256(profile dir)[:12]`, and with the profile left blank the app cannot even see which directory
 the engine picked. It travels as `X-Lyrebird-Profile`, the header the control API compares against
 the running profile. A proxy running someone else's profile is then shown as exactly that, with
@@ -116,8 +124,8 @@ that profile's fingerprint and no scenario list, traffic or Relaunch button borr
 proxy that answers something unreadable is shown as unreadable rather than as stopped. If the
 fingerprint cannot be established at all — a wrong launcher path, usually — the menu says the
 profile is unknown and sends nothing: an unscoped request is answered by whichever profile holds
-the port, which is the reading this is here to avoid. Start and Stop keep working in all of those,
-since the CLI does its own checking.
+the port, which is the reading this is here to avoid. With a valid control URL, Start and Stop
+keep working in all of those states, since the CLI does its own checking.
 
 The simulator bundle id to relaunch comes from the engine (`simBundleId` in your `profile.json`,
 surfaced via `GET /__mock__/health`), so the app ships with no app identifier of its own. Relaunch
@@ -133,3 +141,24 @@ names simctl's `booted`. To bind a run to a particular device, start it from the
 
 If the `lyrebird` path is unset, the app searches the inherited `PATH`, then `/usr/local/bin`,
 `/opt/homebrew/bin`, `~/.local/bin` and `~/bin`. CLI failures are shown in the menu rather than swallowed.
+
+## Native window implementation
+
+The browser uses an `NSWindowController`, `NSSplitViewController`, `NSOutlineView` sidebar,
+`NSTableView` request list and selectable `NSTextView` detail. The sidebar background extends
+through the native toolbar; safe-area constraints keep list content and headers below the window
+controls. JSON wraps within the detail pane; Copy body/patch preserves the original JSON formatting. The menu-bar item and Settings window also use AppKit. No SwiftUI hosting remains.
+
+Settings changes apply together when Save is pressed; Cancel leaves the configuration unchanged.
+The browser keeps selection and scroll positions across unchanged polls. Selecting a scenario
+browses it; double-click or Activate scenario in its context menu makes it active.
+
+Debug builds use a separate bundle identifier and preferences from the installed Release app,
+so UI automation can run while the installed app is being tried. The tests launch Debug with
+`--preview` (and optionally `--dark`), using a synthetic in-memory control API and separate
+preview settings. This preview is excluded from Release builds. It loads no profile and its
+launcher path is deliberately nonexistent.
+
+`make test-app` runs model/controller tests and native UI automation, including navigation, window
+reopening and full screen. UI automation requires an unlocked macOS desktop. Synthetic light/dark
+screenshots are attached to its Xcode test result.

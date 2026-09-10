@@ -1,4 +1,4 @@
-import SwiftUI
+import AppKit
 
 /// How a rule reads on screen. Pure functions over the decoded models and nothing else, so every
 /// line the window shows can be checked without standing a view up — see `RuleFormattingTests`.
@@ -47,10 +47,14 @@ enum RuleFormatting {
 
     /// `ANY` rather than a blank, because a rule with no method matches every one of them, and a gap
     /// there reads as a missing value instead of as the constraint it is not.
-    static func method(of match: RuleMatch?) -> String { match?.method?.uppercased() ?? "ANY" }
+    static func method(of match: RuleMatch?) -> String {
+        match?.method?.uppercased() ?? "ANY"
+    }
 
     /// `*` for the same reason: a rule with no path answers every intercepted request.
-    static func path(of match: RuleMatch?) -> String { match?.path ?? "*" }
+    static func path(of match: RuleMatch?) -> String {
+        match?.path ?? "*"
+    }
 
     /// The toolbar's status item: `intercepting · orders-outage`.
     /// See `RuleFormattingTests`.
@@ -97,22 +101,6 @@ enum RuleFormatting {
         }
     }
 
-    // MARK: - Spacing
-    //
-    // Four steps, used everywhere, so that "these two things belong together" is said by distance
-    // rather than by a number somebody picked at the moment they wrote the view.
-
-    enum Space {
-        /// Between the lines of one thing.
-        static let tight: CGFloat = 4
-        /// Between neighbouring things in a row.
-        static let snug: CGFloat = 8
-        /// Between a label and what it labels.
-        static let step: CGFloat = 12
-        /// Between sections that are about different things.
-        static let section: CGFloat = 16
-    }
-
     // MARK: - Numbers and colours
 
     /// `512 B`, `1.2 KB`, `3.0 MB`. Binary units, matching what the engine counts: `bodyBytes` is
@@ -129,21 +117,23 @@ enum RuleFormatting {
     // sRGB values that look the same in both appearances, and the red one sits at 3.0:1 on a dark
     // pane. The system ones are resolved against the appearance the view is drawn in, so they also
     // follow Increase Contrast — see `RuleFormattingTests`.
-    static let danger = Color(nsColor: .systemRed)
-    static let success = Color(nsColor: .systemGreen)
-    static let warning = Color(nsColor: .systemOrange)
+    static let danger = NSColor.systemRed
+    static let success = NSColor.systemGreen
+    static let warning = NSColor.systemOrange
 
     /// Green below 400, red at or above — the menu's reading of what happened to a request. The
     /// configured rules use neutral status badges; Recent colours observed outcomes.
     /// See `RuleFormattingTests`.
-    static func statusColor(_ status: Int) -> Color {
-        guard status > 0 else { return .secondary }
+    static func statusColor(_ status: Int) -> NSColor {
+        guard status > 0 else { return .secondaryLabelColor }
         return status < 400 ? success : danger
     }
 
     /// The status as the menu prints it. `0` is the engine's "no status", which every one of the
     /// three digits it looks like would be a lie about.
-    static func statusText(_ status: Int) -> String { status > 0 ? String(status) : "no response" }
+    static func statusText(_ status: Int) -> String {
+        status > 0 ? String(status) : "no response"
+    }
 
     /// A query pin's value as written. The engine compares `str(value)`, so `2` and `"2"` pin the
     /// same request — and the bare text is what the rule's author typed, without the quotes a JSON
@@ -154,26 +144,6 @@ enum RuleFormatting {
         return jsonText(value)
     }
 
-    // MARK: - Searching and grouping
-
-    /// Substring over the fields someone would search by: the id they wrote in a test, the path they
-    /// are debugging, the method, and the notes they left themselves.
-    /// See `RuleFormattingTests`.
-    static func matches(_ rule: RuleRow, query: String) -> Bool {
-        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !needle.isEmpty else { return true }
-        let haystack = [rule.id, rule.match?.path, rule.match?.method, rule.notes]
-            .compactMap { $0 }
-            .joined(separator: "\n")
-        return haystack.range(of: needle, options: [.caseInsensitive, .diacriticInsensitive]) != nil
-    }
-
-    /// The rules a query leaves, in the order the snapshot listed them — which is the order the
-    /// proxy holds them in, and the one an operator looking for a rule by position needs.
-    static func filter(_ rows: [RuleRow], query: String) -> [RuleRow] {
-        rows.filter { matches($0, query: query) }
-    }
-
     /// Split for the list: the rules that can answer, and the ones switched off. Inactive rules are
     /// still listed — a rule you cannot find is a rule you will write a second time — but they go
     /// below, under a header of their own, because they cannot explain anything the proxy just did.
@@ -181,7 +151,7 @@ enum RuleFormatting {
         (rows.filter(\.isActive), rows.filter { !$0.isActive })
     }
 
-    /// Resolve against the full snapshot so filtering never changes the response being read.
+    /// Resolve missing selections as nil; see theDetailPaneResolvesSelectionsAndRejectsMissingRules.
     static func detailRule(selection: ListSelection?, in snapshot: RulesSnapshot?) -> RuleRow? {
         guard let snapshot else { return nil }
         let id: String?
@@ -204,11 +174,11 @@ enum RuleFormatting {
 
     // MARK: - Printing stored JSON
 
-    private static let punctuationColor = Color.secondary
-    private static let keyColor = Color.primary
-    private static let stringColor = Color(nsColor: .systemGreen)
-    private static let numberColor = Color(nsColor: .systemBlue)
-    private static let literalColor = Color(nsColor: .systemPurple)
+    private static let punctuationColor = NSColor.secondaryLabelColor
+    private static let keyColor = NSColor.labelColor
+    private static let stringColor = BrowserAppearance.jsonString
+    private static let numberColor = BrowserAppearance.jsonNumber
+    private static let literalColor = BrowserAppearance.jsonLiteral
 
     /// A rule's body, patch or step exactly as stored: two-space indent, keys sorted so two reads of
     /// the same rule look the same, one space after a colon and none before, and empty containers on
@@ -222,17 +192,17 @@ enum RuleFormatting {
 
     /// The same print as plain text, for the Copy button — derived from the one printer rather than
     /// written twice, so what lands on the pasteboard is exactly what the pane shows.
-    static func jsonText(_ value: JSONValue) -> String { String(attributedJSON(value).characters) }
+    static func jsonText(_ value: JSONValue) -> String {
+        String(attributedJSON(value).characters)
+    }
 
-    private static func token(_ text: String, _ color: Color) -> AttributedString {
+    private static func token(_ text: String, _ color: NSColor) -> AttributedString {
         var piece = AttributedString(text)
-        piece.foregroundColor = color
+        piece.appKit.foregroundColor = color
         return piece
     }
 
     private static func append(_ value: JSONValue, to out: inout AttributedString, indent: Int) {
-        let pad = String(repeating: "  ", count: indent)
-        let inner = pad + "  "
         switch value {
         case .null:
             out += token("null", literalColor)
@@ -245,33 +215,45 @@ enum RuleFormatting {
         case .string(let text):
             out += token(quoted(text), stringColor)
         case .array(let values):
-            guard !values.isEmpty else {
-                out += token("[]", punctuationColor)
-                return
-            }
-            out += token("[\n", punctuationColor)
-            for (offset, element) in values.enumerated() {
-                out += token(inner, punctuationColor)
-                append(element, to: &out, indent: indent + 1)
-                out += token(offset == values.count - 1 ? "\n" : ",\n", punctuationColor)
-            }
-            out += token(pad + "]", punctuationColor)
+            appendArray(values, to: &out, indent: indent)
         case .object(let members):
-            guard !members.isEmpty else {
-                out += token("{}", punctuationColor)
-                return
-            }
-            out += token("{\n", punctuationColor)
-            let keys = members.keys.sorted()
-            for (offset, key) in keys.enumerated() {
-                out += token(inner, punctuationColor)
-                out += token(quoted(key), keyColor)
-                out += token(": ", punctuationColor)
-                append(members[key] ?? .null, to: &out, indent: indent + 1)
-                out += token(offset == keys.count - 1 ? "\n" : ",\n", punctuationColor)
-            }
-            out += token(pad + "}", punctuationColor)
+            appendObject(members, to: &out, indent: indent)
         }
+    }
+
+    private static func appendArray(_ values: [JSONValue], to out: inout AttributedString, indent: Int) {
+        let pad = String(repeating: "  ", count: indent)
+        let inner = pad + "  "
+        guard !values.isEmpty else {
+            out += token("[]", punctuationColor)
+            return
+        }
+        out += token("[\n", punctuationColor)
+        for (offset, element) in values.enumerated() {
+            out += token(inner, punctuationColor)
+            append(element, to: &out, indent: indent + 1)
+            out += token(offset == values.count - 1 ? "\n" : ",\n", punctuationColor)
+        }
+        out += token(pad + "]", punctuationColor)
+    }
+
+    private static func appendObject(_ members: [String: JSONValue], to out: inout AttributedString, indent: Int) {
+        let pad = String(repeating: "  ", count: indent)
+        let inner = pad + "  "
+        guard !members.isEmpty else {
+            out += token("{}", punctuationColor)
+            return
+        }
+        out += token("{\n", punctuationColor)
+        let keys = members.keys.sorted()
+        for (offset, key) in keys.enumerated() {
+            out += token(inner, punctuationColor)
+            out += token(quoted(key), keyColor)
+            out += token(": ", punctuationColor)
+            append(members[key] ?? .null, to: &out, indent: indent + 1)
+            out += token(offset == keys.count - 1 ? "\n" : ",\n", punctuationColor)
+        }
+        out += token(pad + "}", punctuationColor)
     }
 
     /// JSON string escaping: the six named escapes, `\u00XX` for any other control character, and
@@ -339,7 +321,7 @@ enum RuleFormatting {
         case .profileUnknown(let reason):
             return Vacancy(
                 message: "Lyrebird does not know which profile this is.",
-                hint: "\(reason) — check the launcher path in Settings.")
+                hint: "\(reason) — check Settings.")
         case .intercepting, .pacDisabled:
             return nil
         }

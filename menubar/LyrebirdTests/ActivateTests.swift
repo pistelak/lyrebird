@@ -14,11 +14,6 @@ import Testing
 extension AppTests {
     @MainActor
     struct ActivateTests {
-
-        private func makeClient() -> MockClient {
-            MockClient(base: Stub.base, session: StubURLProtocol.session())
-        }
-
         /// Fails the test unless `activate` threw an HTTP error, and hands back its message.
         private func messageFromFailedActivate(
             _ client: MockClient,
@@ -51,7 +46,7 @@ extension AppTests {
                     )
                 }
 
-                try await makeClient().activate("orders-outage")
+                try await Stub.makeClient().activate("orders-outage")
 
                 let request = try #require(StubURLProtocol.requests.first)
                 #expect(request.httpMethod == "PUT")
@@ -72,7 +67,7 @@ extension AppTests {
                     (Stub.response(request, 404), Data(#"{"error":"unknown_scenario","name":"orders-outage"}"#.utf8))
                 }
 
-                let message = try await messageFromFailedActivate(makeClient(), expecting: 404)
+                let message = try await messageFromFailedActivate(Stub.makeClient(), expecting: 404)
 
                 #expect(message == "unknown_scenario")
             }
@@ -88,7 +83,7 @@ extension AppTests {
                     )
                 }
 
-                let message = try await messageFromFailedActivate(makeClient(), expecting: 400)
+                let message = try await messageFromFailedActivate(Stub.makeClient(), expecting: 400)
 
                 #expect(message == "body must be a JSON object")
             }
@@ -103,7 +98,7 @@ extension AppTests {
                     (Stub.response(request, 409), Data(#"{"error":"profile_mismatch","detail":""}"#.utf8))
                 }
 
-                let message = try await messageFromFailedActivate(makeClient(), expecting: 409)
+                let message = try await messageFromFailedActivate(Stub.makeClient(), expecting: 409)
 
                 #expect(message == "profile_mismatch")
             }
@@ -116,7 +111,7 @@ extension AppTests {
                     (Stub.response(request, 421), Data(#"{"error":"","detail":""}"#.utf8))
                 }
 
-                let message = try await messageFromFailedActivate(makeClient(), expecting: 421)
+                let message = try await messageFromFailedActivate(Stub.makeClient(), expecting: 421)
 
                 #expect(message != nil)
                 #expect(message?.hasPrefix("HTTP 421") == true, "got \(message ?? "nil")")
@@ -130,7 +125,7 @@ extension AppTests {
                     (Stub.response(request, 500), Data("<html>gateway barfed</html>".utf8))
                 }
 
-                let message = try await messageFromFailedActivate(makeClient(), expecting: 500)
+                let message = try await messageFromFailedActivate(Stub.makeClient(), expecting: 500)
 
                 #expect(message != nil)
                 #expect(message?.hasPrefix("HTTP 500") == true, "got \(message ?? "nil")")
@@ -144,7 +139,7 @@ extension AppTests {
 
                 let error = try #require(
                     await #expect(throws: MockClient.ClientError.self) {
-                        try await makeClient().activate("orders-outage")
+                        try await Stub.makeClient().activate("orders-outage")
                     })
                 guard case .transport(let message) = error else {
                     Issue.record("expected a transport error, got \(error)")
@@ -164,11 +159,11 @@ extension AppTests {
                     return (
                         Stub.response(request, 404),
                         Data(
-                            #"{"error":"unknown_scenario","detail":"no scenario named 'orders-outage' — it was deleted"}"#
-                                .utf8)
+                            (#"{"error":"unknown_scenario","detail":"no scenario named 'orders-outage'"#
+                                + #" — it was deleted"}"#).utf8)
                     )
                 }
-                let model = AppModel(client: makeClient(), autoStart: false, expectedFingerprint: "a1b2c3")
+                let model = makeModel(expecting: "a1b2c3")
 
                 await model.activate("orders-outage")
 
@@ -189,7 +184,7 @@ extension AppTests {
                     guard request.httpMethod == "PUT" else { return Stub.read(request) }
                     return (Stub.response(request, 404), Data(#"{"error":"unknown_scenario"}"#.utf8))
                 }
-                let model = AppModel(client: makeClient(), autoStart: false, expectedFingerprint: "a1b2c3")
+                let model = makeModel(expecting: "a1b2c3")
                 await model.activate("orders-outage")
                 #expect(model.lastError != nil)
 
@@ -210,7 +205,7 @@ extension AppTests {
                     guard request.httpMethod == "PUT" else { return Stub.read(request) }
                     return (Stub.response(request, 404), Data(#"{"error":"unknown_scenario"}"#.utf8))
                 }
-                let model = AppModel(client: makeClient(), autoStart: false, expectedFingerprint: "a1b2c3")
+                let model = makeModel(expecting: "a1b2c3")
 
                 await model.activate("orders-outage")
 

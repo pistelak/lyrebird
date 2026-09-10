@@ -161,7 +161,8 @@ cost the most time.
 
 ## macOS app
 
-The optional macOS app is a companion for browsing scenarios your coding agent has prepared.
+The optional macOS app requires **macOS 26 or newer** and is a companion for browsing scenarios
+your coding agent has prepared. Building it requires Xcode 26 or newer with the macOS 26 SDK.
 Its menu-bar controls manage interception; the scenario browser lets you inspect what each
 scenario will do before trying it. Open
 **Scenarios** from the menu bar to explore the saved requests, responses, and sequence transitions.
@@ -175,6 +176,12 @@ your iOS app. **Recent** shows the requests recorded during the run and which ru
 
 *In this synthetic example, GET returns three items. DELETE advances the sequence, and subsequent
 GETs return the remaining two.*
+
+![The browser's sidebar listing scenarios at the root and inside an `orders` folder, with a sequence
+selected and a separate patch rule listed below it.](docs/images/scenarios.png)
+
+*Scenarios that live in a folder appear under it. A rule can replace a response outright, patch the
+real one, or step through a sequence — the detail pane says which, and what it answers with.*
 
 See the [macOS app guide](menubar/README.md) for installation, menu-bar controls, and configuration.
 

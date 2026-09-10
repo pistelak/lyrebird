@@ -3,7 +3,7 @@
 For changes to this repository, read [CONTRIBUTING.md](CONTRIBUTING.md) first.
 
 - `engine/`: flat Python runtime modules, with tests in `engine/tests/`.
-- `menubar/`: SwiftUI macOS app and unit tests; `project.yml` generates the Xcode project.
+- `menubar/`: AppKit macOS app and unit tests; `project.yml` generates the Xcode project.
 - `acceptance/`: synthetic iOS fixture; real interception checks are opt-in.
 - `make setup` installs dependencies; `make doctor` checks the toolchain.
 - `make format` formats sources; `make check` runs the ordinary local/CI checks.

@@ -92,12 +92,15 @@ struct MockClient: Sendable {
         guard (200..<300).contains(http.statusCode) else {
             return .unreadable(Self.message(status: http.statusCode, body: data))
         }
+        return Self.decodeHealth(data)
+    }
+
+    private static func decodeHealth(_ data: Data) -> HealthRead {
         guard let health = try? JSONDecoder().decode(Health.self, from: data) else {
             return .unreadable("the control API's health was not the JSON object it should be")
         }
-        // Every field of `Health` is optional, so an unrelated JSON object decodes into an all-nil
-        // reading that would render as a proxy up and idle. `proxyUp` is the one field the engine
-        // always sends; without it this is not a health response.
+        // Reject unrelated objects that decode as all-nil health — see
+        // `aBodyThatIsNotAHealthReadingIsUnreadableRatherThanAnIdleProxy`.
         guard health.proxyUp != nil else {
             return .unreadable("the control API's health did not say whether the proxy is up")
         }

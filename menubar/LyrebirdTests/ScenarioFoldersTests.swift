@@ -10,11 +10,6 @@ import Testing
 extension AppTests {
     @MainActor
     struct ScenarioFoldersTests {
-
-        private func makeClient() -> MockClient {
-            MockClient(base: Stub.base, session: StubURLProtocol.session())
-        }
-
         private func summary(_ name: String, overrides: Int = 0, verified: Bool = false) -> ScenarioSummary {
             ScenarioSummary(name: name, overrideCount: overrides, verified: verified, notes: nil)
         }
@@ -127,7 +122,7 @@ extension AppTests {
                     return (Stub.response(request, 200), Data(#"{"active":"default","reloaded":2}"#.utf8))
                 }
 
-                try await makeClient().reloadScenarios()
+                try await Stub.makeClient().reloadScenarios()
 
                 let request = try #require(StubURLProtocol.requests.first)
                 #expect(request.httpMethod == "POST")
@@ -147,7 +142,7 @@ extension AppTests {
                             #"{"error":"reload_refused","detail":"skipped broken.json: Expecting value"}"#.utf8)
                     )
                 }
-                let model = AppModel(client: makeClient(), autoStart: false, expectedFingerprint: "a1b2c3")
+                let model = makeModel(expecting: "a1b2c3")
 
                 await model.reloadScenarios()
 
@@ -170,7 +165,7 @@ extension AppTests {
                 StubURLProtocol.install { request in Stub.read(request) }
                 // No expected fingerprint: the app cannot say which profile a proxy on this port is
                 // running, and a reload sent anyway would re-read somebody else's.
-                let model = AppModel(client: makeClient(), autoStart: false, expectedFingerprint: nil)
+                let model = makeModel(expecting: nil)
 
                 await model.reloadScenarios()
 

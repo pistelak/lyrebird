@@ -3,7 +3,6 @@ import Testing
 @testable import Lyrebird
 
 struct ScenarioOutlineTests {
-
     // MARK: - Fixtures
 
     private func replaceRule(
@@ -338,9 +337,6 @@ struct ScenarioOutlineTests {
         #expect(RuleFormatting.flowRow(rows[2].selection, in: shot)?.step == 2)
         #expect(RuleFormatting.selection(current: nil, in: shot) == rows[0].selection)
         #expect(RuleFormatting.selection(current: rows[2].selection, in: shot) == rows[2].selection)
-        let filtered = RuleFormatting.flowSections(shot, query: "PATCH").flatMap(\.rows)
-        #expect(filtered.map(\.number) == [2], "search must not renumber configured order")
-        #expect(RuleFormatting.detailRule(selection: rows[2].selection, in: shot)?.id == "ovr_orders")
     }
 
     @Test
@@ -359,18 +355,6 @@ struct ScenarioOutlineTests {
         #expect(
             rows.allSatisfy { row in row.delay.map { !row.subtitle.contains($0) } ?? true },
             "a subtitle repeating the badge states one wait twice")
-    }
-
-    @Test
-    func aSearchStillFindsARowByTheDelayItUsedToSpellOut() {
-        // `after 3 s` was part of the subtitle before the badge existed, so a search for it found
-        // the row. Matching the badge's bare `3 s` alone would have quietly narrowed that.
-        let found = RuleFormatting.flowSections(delayedScenario, query: "after 3 s").flatMap(\.rows)
-
-        #expect(found.map(\.ruleId) == ["ovr_update", "ovr_slow"])
-        #expect(
-            RuleFormatting.flowSections(delayedScenario, query: "250 ms").flatMap(\.rows).map(\.step) == [1, 2],
-            "the sequence's own wait names its steps")
     }
 
     @Test

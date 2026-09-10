@@ -6,17 +6,6 @@ import Testing
 extension AppTests {
     @MainActor
     struct RulesReadTests {
-
-        private func makeClient() -> MockClient {
-            MockClient(base: Stub.base, profile: RulesFixture.ours, session: StubURLProtocol.session())
-        }
-
-        private func makeModel() -> AppModel {
-            AppModel(
-                client: MockClient(base: Stub.base, session: StubURLProtocol.session()),
-                autoStart: false, expectedFingerprint: RulesFixture.ours)
-        }
-
         private var requestedPaths: [String] {
             StubURLProtocol.requests.compactMap { $0.url?.path }
         }
@@ -37,7 +26,7 @@ extension AppTests {
             try await withAppTestEnvironment {
                 StubURLProtocol.install { request in RulesFixture.serve(request) }
 
-                guard case .ok(let snapshot) = await makeClient().rules() else {
+                guard case .ok(let snapshot) = await Stub.makeClient(profile: RulesFixture.ours).rules() else {
                     Issue.record("a well-formed snapshot read as something other than ok")
                     return
                 }
@@ -55,7 +44,10 @@ extension AppTests {
             try await withAppTestEnvironment {
                 StubURLProtocol.install { request in RulesFixture.serve(request) }
 
-                guard case .ok(let snapshot) = await makeClient().rules(scenario: "checkout") else {
+                guard
+                    case .ok(let snapshot) = await Stub.makeClient(profile: RulesFixture.ours).rules(
+                        scenario: "checkout")
+                else {
                     Issue.record("browsing a loaded scenario read as something other than ok")
                     return
                 }
@@ -73,7 +65,7 @@ extension AppTests {
                 // `a` happens to be — a different scenario, presented under the name that was asked for.
                 StubURLProtocol.install { request in RulesFixture.serve(request) }
 
-                _ = await makeClient().rules(scenario: "orders&outage=1")
+                _ = await Stub.makeClient(profile: RulesFixture.ours).rules(scenario: "orders&outage=1")
 
                 #expect(rulesQueries == ["orders&outage=1"])
             }
@@ -93,7 +85,7 @@ extension AppTests {
                     )
                 }
 
-                guard case .unavailable(let reason) = await makeClient().rules() else {
+                guard case .unavailable(let reason) = await Stub.makeClient(profile: RulesFixture.ours).rules() else {
                     Issue.record("a refusal was accepted as an answer about this profile's rules")
                     return
                 }
@@ -109,7 +101,7 @@ extension AppTests {
                 // a different thing to do from "the read failed".
                 StubURLProtocol.install { request in (Stub.response(request, 404), Data("404: Not Found".utf8)) }
 
-                guard case .unsupported = await makeClient().rules() else {
+                guard case .unsupported = await Stub.makeClient(profile: RulesFixture.ours).rules() else {
                     Issue.record("an engine that predates this view was reported as something else")
                     return
                 }
@@ -124,7 +116,10 @@ extension AppTests {
                 // reader to update software over a scenario somebody deleted between two polls.
                 StubURLProtocol.install { request in RulesFixture.serve(request) }
 
-                guard case .unavailable(let reason) = await makeClient().rules(scenario: "gone") else {
+                guard
+                    case .unavailable(let reason) = await Stub.makeClient(profile: RulesFixture.ours).rules(
+                        scenario: "gone")
+                else {
                     Issue.record("a scenario that is not there was reported as a missing route")
                     return
                 }
@@ -137,7 +132,7 @@ extension AppTests {
             try await withAppTestEnvironment {
                 StubURLProtocol.install { _ in throw URLError(.cannotConnectToHost) }
 
-                guard case .unavailable(let reason) = await makeClient().rules() else {
+                guard case .unavailable(let reason) = await Stub.makeClient(profile: RulesFixture.ours).rules() else {
                     Issue.record("a refused connection says nothing about how many rules a scenario has")
                     return
                 }
@@ -157,7 +152,7 @@ extension AppTests {
                     + #""id":"ovr_orders","rewrite":\#(rewrite),"answer":null,"sequenceState":null}]}"#
                 StubURLProtocol.install { request in (Stub.response(request, 200), Data(payload.utf8)) }
 
-                guard case .unavailable(let reason) = await makeClient().rules() else {
+                guard case .unavailable(let reason) = await Stub.makeClient(profile: RulesFixture.ours).rules() else {
                     Issue.record("'\(rewrite)' was accepted as a rule this app can describe")
                     return
                 }
@@ -172,10 +167,11 @@ extension AppTests {
                 // person looking at the network when the proxy was simply older than the app.
                 let payload =
                     #"{"scenario":"orders-outage","active":true,"notWhole":[],"rules":[{"id":"ovr_orders","#
-                    + #""rewrite":{"mode":"replace","status":200,"bodyKind":"json","sequence":null},"answer":null,"sequenceState":null}]}"#
+                    + #""rewrite":{"mode":"replace","status":200,"bodyKind":"json","sequence":null},"#
+                    + #""answer":null,"sequenceState":null}]}"#
                 StubURLProtocol.install { request in (Stub.response(request, 200), Data(payload.utf8)) }
 
-                guard case .unavailable(let reason) = await makeClient().rules() else {
+                guard case .unavailable(let reason) = await Stub.makeClient(profile: RulesFixture.ours).rules() else {
                     Issue.record("accepted")
                     return
                 }
@@ -190,7 +186,7 @@ extension AppTests {
             try await withAppTestEnvironment {
                 StubURLProtocol.install { request in (Stub.response(request, 200), Data(body.utf8)) }
 
-                guard case .unavailable = await makeClient().rules() else {
+                guard case .unavailable = await Stub.makeClient(profile: RulesFixture.ours).rules() else {
                     Issue.record("'\(body)' was accepted as a rules snapshot")
                     return
                 }
@@ -207,7 +203,7 @@ extension AppTests {
                 // `refresh` has refused to read under it since profile scoping went in; the write only
                 // checked for nil, so it landed on the old profile's proxy and reported success.
                 StubURLProtocol.install { request in RulesFixture.serve(request) }
-                let model = makeModel()
+                let model = makeModel(expecting: RulesFixture.ours)
                 Config.defaults.set("/tmp/another-profile", forKey: Config.profilePathKey)
 
                 await model.activate("orders-outage")
@@ -219,21 +215,6 @@ extension AppTests {
             }
         }
 
-        @Test
-        func activateRefusesRatherThanSwitchingWhicheverProfileHoldsThePort() async throws {
-            try await withAppTestEnvironment {
-                StubURLProtocol.install { request in RulesFixture.serve(request) }
-                let model = AppModel(
-                    client: MockClient(base: Stub.base, session: StubURLProtocol.session()),
-                    autoStart: false, expectedFingerprint: nil)
-
-                await model.activate("orders-outage")
-
-                #expect(StubURLProtocol.requests.isEmpty, "the PUT went out unscoped")
-                #expect(model.lastError != nil)
-            }
-        }
-
         // MARK: - Whose reading the window may describe
 
         @Test
@@ -242,7 +223,7 @@ extension AppTests {
                 // A header built from `health` — whatever answered — printed a foreign proxy's scenario and
                 // "intercepting" directly above the line saying that proxy is not this one's.
                 StubURLProtocol.install { request in RulesFixture.serve(request, fingerprint: RulesFixture.theirs) }
-                let model = makeModel()
+                let model = makeModel(expecting: RulesFixture.ours)
 
                 await model.refresh()
 
@@ -256,7 +237,7 @@ extension AppTests {
         func ourOwnProxySReadingIsTheOneTheToolbarMayDescribe() async throws {
             try await withAppTestEnvironment {
                 StubURLProtocol.install { request in RulesFixture.serve(request) }
-                let model = makeModel()
+                let model = makeModel(expecting: RulesFixture.ours)
 
                 await model.refresh()
 
@@ -281,7 +262,7 @@ extension AppTests {
                         )
                         : RulesFixture.serve(request)
                 }
-                let model = makeModel()
+                let model = makeModel(expecting: RulesFixture.ours)
 
                 await model.refresh()
 
@@ -296,7 +277,7 @@ extension AppTests {
         func aClosedWindowIsNeverPolledForRules() async throws {
             try await withAppTestEnvironment {
                 StubURLProtocol.install { request in RulesFixture.serve(request) }
-                let model = makeModel()
+                let model = makeModel(expecting: RulesFixture.ours)
 
                 await model.refresh()
 
@@ -309,7 +290,7 @@ extension AppTests {
         func anOpenWindowIsPolledForRulesAndGetsASnapshot() async throws {
             try await withAppTestEnvironment {
                 StubURLProtocol.install { request in RulesFixture.serve(request) }
-                let model = makeModel()
+                let model = makeModel(expecting: RulesFixture.ours)
 
                 await model.windowAppeared()
 
@@ -328,7 +309,7 @@ extension AppTests {
                 // The same gate the scenario list and the recent traffic are behind: another profile's
                 // rules under this profile's name is the same mistake as its health.
                 StubURLProtocol.install { request in RulesFixture.serve(request, fingerprint: RulesFixture.theirs) }
-                let model = makeModel()
+                let model = makeModel(expecting: RulesFixture.ours)
 
                 await model.windowAppeared()
 
@@ -342,7 +323,7 @@ extension AppTests {
         func closingTheWindowStopsTheReadAndForgetsTheSnapshot() async throws {
             try await withAppTestEnvironment {
                 StubURLProtocol.install { request in RulesFixture.serve(request) }
-                let model = makeModel()
+                let model = makeModel(expecting: RulesFixture.ours)
 
                 await model.windowAppeared()
                 model.windowClosed()
@@ -361,7 +342,7 @@ extension AppTests {
                 // `onDisappear` from one of two windows blanked the pane of the one still on screen, and
                 // stopped polling underneath it.
                 StubURLProtocol.install { request in RulesFixture.serve(request) }
-                let model = makeModel()
+                let model = makeModel(expecting: RulesFixture.ours)
                 await model.windowAppeared()
                 model.windowOpened()
 
@@ -383,7 +364,7 @@ extension AppTests {
                 // `onDisappear` can arrive for a window that never counted, and a count allowed to go
                 // negative would need two opens before the next window was read at all.
                 StubURLProtocol.install { request in RulesFixture.serve(request) }
-                let model = makeModel()
+                let model = makeModel(expecting: RulesFixture.ours)
 
                 model.windowClosed()
                 await model.windowAppeared()
@@ -416,7 +397,8 @@ extension AppTests {
                 for (what, handler) in cases {
                     StubURLProtocol.install(handler)
 
-                    guard case .unavailable(let reason) = await makeClient().recent() else {
+                    guard case .unavailable(let reason) = await Stub.makeClient(profile: RulesFixture.ours).recent()
+                    else {
                         Issue.record("\(what) was accepted as a proxy that has seen nothing")
                         return
                     }
@@ -430,7 +412,7 @@ extension AppTests {
             try await withAppTestEnvironment {
                 StubURLProtocol.install { request in RulesFixture.serve(request) }
 
-                guard case .ok(let entries) = await makeClient().recent() else {
+                guard case .ok(let entries) = await Stub.makeClient(profile: RulesFixture.ours).recent() else {
                     Issue.record("a well-formed list read as something other than ok")
                     return
                 }
@@ -447,7 +429,7 @@ extension AppTests {
                     guard request.url?.path == "/__mock__/recent" else { return RulesFixture.serve(request) }
                     return (Stub.response(request, 409), Data(#"{"error":"profile_mismatch"}"#.utf8))
                 }
-                let model = makeModel()
+                let model = makeModel(expecting: RulesFixture.ours)
 
                 await model.refresh()
 
@@ -471,7 +453,7 @@ extension AppTests {
                 // the window opened was missing from the sidebar for as long as the reads kept failing —
                 // and the reader looked at a list that had been wrong for minutes.
                 StubURLProtocol.install { request in RulesFixture.serve(request) }
-                let model = makeModel()
+                let model = makeModel(expecting: RulesFixture.ours)
                 await model.refresh()
                 #expect(model.lastScenarios?.scenarios.count == 2)
 
@@ -502,9 +484,8 @@ extension AppTests {
                 // is the same mistake as showing its health, one settings edit later. Discovery is injected
                 // so the fingerprint moves without shelling out to the CLI.
                 StubURLProtocol.install { request in RulesFixture.serve(request) }
-                let model = AppModel(
-                    client: MockClient(base: Stub.base, session: StubURLProtocol.session()),
-                    autoStart: false, expectedFingerprint: RulesFixture.ours,
+                let model = makeModel(
+                    expecting: RulesFixture.ours,
                     discover: { RulesFixture.theirs })
                 await model.refresh()
                 #expect(model.lastScenarios != nil)
@@ -525,7 +506,7 @@ extension AppTests {
                 // what it was asked to show would repoint the running proxy at every scenario a user
                 // glanced at.
                 StubURLProtocol.install { request in RulesFixture.serve(request) }
-                let model = makeModel()
+                let model = makeModel(expecting: RulesFixture.ours)
                 await model.windowAppeared()
 
                 await model.browse("checkout")
@@ -550,7 +531,7 @@ extension AppTests {
                 // "Reading the rules…" on screen for a poll every time the window was opened — which is why
                 // this is asserted while the next read is still in flight, the only moment it shows.
                 StubURLProtocol.install { request in RulesFixture.serve(request) }
-                let model = makeModel()
+                let model = makeModel(expecting: RulesFixture.ours)
                 await model.windowAppeared()
                 let gate = DispatchSemaphore(value: 0)
                 StubURLProtocol.install { request in
@@ -559,10 +540,7 @@ extension AppTests {
                 }
 
                 let browse = Task { await model.browse("orders-outage") }
-                for _ in 0..<200 where !StubURLProtocol.requests.contains(where: { $0.url?.path == "/__mock__/rules" })
-                {
-                    try await Task.sleep(for: .milliseconds(5))
-                }
+                try await StubURLProtocol.waitForRequest("/__mock__/rules", releasing: gate, task: browse)
 
                 guard case .ok(let snapshot) = model.rulesRead else {
                     gate.signal()
@@ -583,7 +561,7 @@ extension AppTests {
                 // of a different scenario left up during the read is that scenario's rules under this
                 // scenario's header.
                 StubURLProtocol.install { request in RulesFixture.serve(request) }
-                let model = makeModel()
+                let model = makeModel(expecting: RulesFixture.ours)
                 await model.windowAppeared()
                 let gate = DispatchSemaphore(value: 0)
                 StubURLProtocol.install { request in
@@ -592,10 +570,7 @@ extension AppTests {
                 }
 
                 let browse = Task { await model.browse("checkout") }
-                for _ in 0..<200 where !StubURLProtocol.requests.contains(where: { $0.url?.path == "/__mock__/rules" })
-                {
-                    try await Task.sleep(for: .milliseconds(5))
-                }
+                try await StubURLProtocol.waitForRequest("/__mock__/rules", releasing: gate, task: browse)
                 let duringTheRead = model.rulesRead
 
                 gate.signal()
@@ -605,26 +580,21 @@ extension AppTests {
             }
         }
 
+        /// Closing the window during a rules read must discard the arriving snapshot, even when
+        /// neither the configured profile nor the poll generation changed.
         @Test
-        func aSnapshotThatArrivesAfterTheWindowMovesOnIsDropped() async throws {
+        func aSnapshotThatArrivesAfterTheWindowClosesIsDropped() async throws {
             try await withAppTestEnvironment {
-                // A `client.rules()` already in flight when the sidebar moves commits afterwards, and
-                // committing it puts the scenario that was being read under the name of the one that is.
-                // Neither of the other generation counters catches this: nothing about the poll or the
-                // profile changed, only what the window is looking at.
                 let gate = DispatchSemaphore(value: 0)
                 StubURLProtocol.install { request in
                     if request.url?.path == "/__mock__/rules" { gate.wait() }
                     return RulesFixture.serve(request)
                 }
-                let model = makeModel()
+                let model = makeModel(expecting: RulesFixture.ours)
                 model.windowOpened()
 
                 let refresh = Task { await model.refresh() }
-                for _ in 0..<200 where !StubURLProtocol.requests.contains(where: { $0.url?.path == "/__mock__/rules" })
-                {
-                    try await Task.sleep(for: .milliseconds(5))
-                }
+                try await StubURLProtocol.waitForRequest("/__mock__/rules", releasing: gate, task: refresh)
                 model.windowClosed()
                 gate.signal()
                 await refresh.value
@@ -643,14 +613,11 @@ extension AppTests {
                     if request.url?.path == "/__mock__/rules" { gate.wait() }
                     return RulesFixture.serve(request)
                 }
-                let model = makeModel()
+                let model = makeModel(expecting: RulesFixture.ours)
                 model.windowOpened()
 
                 let refresh = Task { await model.refresh() }
-                for _ in 0..<200 where !StubURLProtocol.requests.contains(where: { $0.url?.path == "/__mock__/rules" })
-                {
-                    try await Task.sleep(for: .milliseconds(5))
-                }
+                try await StubURLProtocol.waitForRequest("/__mock__/rules", releasing: gate, task: refresh)
                 Config.defaults.set("/tmp/another-profile", forKey: Config.profilePathKey)
                 gate.signal()
                 await refresh.value
@@ -659,6 +626,5 @@ extension AppTests {
                 #expect(model.healthRead == nil)
             }
         }
-
     }
 }

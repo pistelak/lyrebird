@@ -1,12 +1,10 @@
+import AppKit
 import Foundation
-import SwiftUI
 import Testing
 
 @testable import Lyrebird
 
-/// What the window says when it is not describing a rule: the header, the toolbar, the states where
-/// there is nothing to list and why, and the search that narrows what there is.
-/// `ScenarioOutlineTests` covers the lines a rule is described with.
+/// Keep vacant states distinct from successful reads; see eachReasonThereIsNoListSaysWhichOneItIs.
 struct RuleFormattingTests {
 
     // MARK: - What the header and the toolbar say
@@ -51,9 +49,9 @@ struct RuleFormattingTests {
         // in both appearances, and the red one sits near 3:1 on a dark pane. AppKit's system
         // colours are resolved against the appearance the view is drawn in, and follow Increase
         // Contrast with it, which is what makes the dark renders legible.
-        #expect(RuleFormatting.danger == Color(nsColor: .systemRed))
-        #expect(RuleFormatting.success == Color(nsColor: .systemGreen))
-        #expect(RuleFormatting.warning == Color(nsColor: .systemOrange))
+        #expect(RuleFormatting.danger == NSColor.systemRed)
+        #expect(RuleFormatting.success == NSColor.systemGreen)
+        #expect(RuleFormatting.warning == NSColor.systemOrange)
         #expect(RuleFormatting.danger != .red, "a fixed sRGB red does not adapt to the appearance")
     }
 
@@ -144,7 +142,7 @@ struct RuleFormattingTests {
         // where the window says what a rule is set to. A green 0 claims a request succeeded when
         // what happened is that it produced no response at all.
         #expect(RuleFormatting.statusText(0) == "no response")
-        #expect(RuleFormatting.statusColor(0) == .secondary)
+        #expect(RuleFormatting.statusColor(0) == .secondaryLabelColor)
         #expect(RuleFormatting.statusText(200) == "200")
         #expect(RuleFormatting.statusColor(204) == RuleFormatting.success)
         #expect(RuleFormatting.statusColor(503) == RuleFormatting.danger)
@@ -165,7 +163,7 @@ struct RuleFormattingTests {
             RuleFormatting.actionFailure("   \n ") == nil, "a cleared error must not leave a bar of blank red behind")
     }
 
-    // MARK: - Searching and grouping
+    // MARK: - Grouping and selection
 
     /// Thirty rules, built here rather than decoded, so the counts below are arithmetic a reader can
     /// check: every 7th is switched off, and every 5th carries a note.
@@ -178,62 +176,6 @@ struct RuleFormattingTests {
                 notes: index % 5 == 0 ? "checkout note " + number : nil,
                 rewrite: Rewrite(active: index % 7 != 0, mode: "replace", status: 200, bodyKind: "none"))
         }
-    }
-
-    private func rule(id: String, method: String? = nil, path: String? = nil, notes: String? = nil) -> RuleRow {
-        RuleRow(
-            id: id, match: RuleMatch(method: method, path: path), notes: notes,
-            rewrite: Rewrite(active: true, mode: "replace", status: 200, bodyKind: "none"))
-    }
-
-    @Test
-    func searchLooksAtThePathTheMethodTheIdAndTheNotes() {
-        // Four fields because four are what someone has to hand: the id they wrote in a test, the
-        // path they are debugging, the method, and the note they left themselves.
-        let rows = [
-            rule(id: "ovr_orders", method: "GET", path: "/api/v1/orders"),
-            rule(id: "ovr_flags", method: "POST", path: "/api/v1/features", notes: "checkout toggle"),
-        ]
-
-        #expect(RuleFormatting.filter(rows, query: "orders").map(\.id) == ["ovr_orders"])
-        #expect(RuleFormatting.filter(rows, query: "features").map(\.id) == ["ovr_flags"])
-        #expect(RuleFormatting.filter(rows, query: "post").map(\.id) == ["ovr_flags"])
-        #expect(RuleFormatting.filter(rows, query: "checkout").map(\.id) == ["ovr_flags"])
-        #expect(RuleFormatting.filter(rows, query: "").count == 2, "an empty query hides nothing")
-    }
-
-    @Test(arguments: ["orders", "ORDERS", "  Orders  "])
-    func searchIgnoresCaseAndSurroundingSpace(query: String) {
-        let rows = [rule(id: "ovr_orders", method: "GET", path: "/api/v1/Orders")]
-
-        #expect(RuleFormatting.filter(rows, query: query).count == 1)
-    }
-
-    @Test func searchDoesNotMatchAcrossTwoFields() {
-        // The fields are joined for one substring test, and without a separator a query could span
-        // the end of the id and the start of the path and report a rule that contains no such text.
-        let rows = [rule(id: "ovr_a", method: "GET", path: "/b")]
-
-        #expect(RuleFormatting.filter(rows, query: "ovr_a/b").isEmpty)
-    }
-
-    @Test(arguments: ["cafe", "café", "CAFE", "CAFÉ"])
-    func searchIgnoresAccentsTheReaderDidNotType(query: String) {
-        // Neither case nor accents are a distinction the person typing made on purpose, and a note
-        // reading "café" that `cafe` does not find is how someone concludes the rule is not there.
-        let rows = [rule(id: "ovr_a", path: "/api/v1/a", notes: "café outage")]
-
-        #expect(RuleFormatting.filter(rows, query: query).count == 1)
-    }
-
-    @Test func filteringKeepsTheOrderTheSnapshotListedThemIn() {
-        // The snapshot's order is the order the proxy holds the rules in, which is what an operator
-        // looking for a rule by position is counting on.
-        let rows = manyRules()
-
-        let shown = RuleFormatting.filter(rows, query: "api")
-
-        #expect(shown.map(\.id) == rows.map(\.id))
     }
 
     @Test
@@ -250,15 +192,11 @@ struct RuleFormattingTests {
             "every rule is in exactly one of the two, and none in both")
     }
 
-    @Test func theDetailPaneResolvesASelectionTheFilterHides() {
-        // The pane looks the rule up in every rule the snapshot carries, not in the shown ones:
-        // reading it from the filtered list would blank the pane while every filter test passed.
+    @Test func theDetailPaneResolvesSelectionsAndRejectsMissingRules() {
         let rows = manyRules()
         let snapshot = RulesSnapshot(scenario: "orders-outage", notWhole: [], rules: rows)
-        let shown = RuleFormatting.filter(rows, query: "items/12")
 
         #expect(RuleFormatting.detailRule(selection: .rule("ovr_r07"), in: snapshot)?.id == "ovr_r07")
-        #expect(!(shown.contains { $0.id == "ovr_r07" }))
         #expect(RuleFormatting.detailRule(selection: .rule("ovr_gone"), in: snapshot) == nil)
         #expect(RuleFormatting.detailRule(selection: nil, in: snapshot) == nil)
         #expect(RuleFormatting.detailRule(selection: .rule("ovr_r07"), in: nil) == nil)

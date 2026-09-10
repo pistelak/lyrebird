@@ -1,11 +1,14 @@
 import Foundation
+import Testing
+
+@testable import Lyrebird
 
 /// Answers the client's requests from the test that installed the handler, and records what was
 /// sent. Registered on an ephemeral `URLSessionConfiguration`, so nothing here reaches a network.
 ///
 /// The handler and the recording live behind a lock: `URLSession` calls `startLoading()` on its
-/// own queue while the test reads `requests` on the main actor. Every test that uses it lives in
-/// one class and awaits its requests before returning, so no two tests share the handler at once.
+/// own queue while the test reads `requests` on the main actor. Every test that uses it lives under
+/// the serialized AppTests suite and awaits its requests before returning.
 final class StubURLProtocol: URLProtocol {
     typealias Handler = @Sendable (URLRequest) throws -> (HTTPURLResponse, Data)
 
@@ -58,9 +61,13 @@ final class StubURLProtocol: URLProtocol {
         return data
     }
 
-    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canInit(with request: URLRequest) -> Bool {
+        true
+    }
 
-    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
 
     override func startLoading() {
         Self.lock.lock()
@@ -87,10 +94,14 @@ final class StubURLProtocol: URLProtocol {
     override func stopLoading() {}
 }
 
-/// Fixture helpers shared by the activate tests.
+/// HTTP fixtures shared by the serialized app tests.
 enum Stub {
     /// RFC 2606 reserved: no fixture may name a host somebody actually runs.
     static let base = URL(string: "http://lyrebird.test:8088")!
+
+    static func makeClient(profile: String? = nil) -> MockClient {
+        MockClient(base: base, profile: profile, session: StubURLProtocol.session())
+    }
 
     static func response(_ request: URLRequest, _ status: Int) -> HTTPURLResponse {
         HTTPURLResponse(
@@ -112,5 +123,29 @@ enum Stub {
             body = "[]"
         }
         return (response(request, 200), Data(body.utf8))
+    }
+}
+
+extension StubURLProtocol {
+    /// A race test must reach its blocked request before changing state. On timeout or cancellation,
+    /// release and join the pending read before the shared test environment is restored.
+    @MainActor
+    static func waitForRequest(
+        _ path: String, releasing gate: DispatchSemaphore, task: Task<Void, Never>,
+        sourceLocation: SourceLocation = SourceLocation(
+            fileID: #fileID, filePath: #filePath, line: #line, column: #column)
+    ) async throws {
+        do {
+            for _ in 0..<200 where !requests.contains(where: { $0.url?.path == path }) {
+                try await Task.sleep(for: .milliseconds(5))
+            }
+            try #require(
+                requests.contains { $0.url?.path == path }, "The pending read never requested \(path)",
+                sourceLocation: sourceLocation)
+        } catch {
+            gate.signal()
+            await task.value
+            throw error
+        }
     }
 }

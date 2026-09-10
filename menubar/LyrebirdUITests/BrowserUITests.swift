@@ -1,0 +1,127 @@
+import XCTest
+
+final class BrowserUITests: XCTestCase {
+    func testRecentTrafficLayout() {
+        withPreview(["--preview"]) { app, window in
+            app.staticTexts["recent"].click()
+            let table = app.tables["request-list"]
+            expectation(
+                for: NSPredicate { _, _ in table.descendants(matching: .tableRow).count == 4 }, evaluatedWith: table)
+            waitForExpectations(timeout: 10)
+            table.descendants(matching: .tableRow).element(boundBy: 1).click()
+            let detail = app.textViews["response-detail"]
+            expectation(
+                for: NSPredicate(format: "value CONTAINS %@", "/api/v1/catalog/items/example-item/availability"),
+                evaluatedWith: detail)
+            waitForExpectations(timeout: 5)
+            attachScreenshot(window, named: "Recent traffic layout")
+        }
+    }
+
+    func testNativeBrowserNavigationAndWindowReopening() {
+        withPreview(["--preview"]) { app, window in
+            let pending = app.staticTexts["scenario:orders-pending"]
+            XCTAssertTrue(pending.waitForExistence(timeout: 10))
+            let detail = app.textViews["response-detail"]
+            XCTAssertTrue(detail.waitForExistence(timeout: 5))
+            let populated = NSPredicate(format: "value CONTAINS %@", "Example order")
+            expectation(for: populated, evaluatedWith: detail)
+            waitForExpectations(timeout: 10)
+            XCTAssertGreaterThan(detail.frame.minY, window.frame.minY + 40)
+            let before = window.frame
+            app.staticTexts["scenario:empty"].click()
+            let empty = NSPredicate(format: "value CONTAINS %@", "has no rules")
+            expectation(for: empty, evaluatedWith: detail)
+            waitForExpectations(timeout: 5)
+            XCTAssertEqual(window.frame, before)
+            pending.click()
+            expectation(for: populated, evaluatedWith: detail)
+            waitForExpectations(timeout: 5)
+            XCTAssertEqual(app.searchFields.count, 0)
+            let interception = app.toolbars.buttons["Stop interception"]
+            XCTAssertTrue(interception.isHittable)
+            XCTAssertTrue(interception.isEnabled)
+            XCTAssertEqual(interception.label, "Stop interception")
+            let title = app.toolbars.staticTexts["Lyrebird"]
+            XCTAssertGreaterThanOrEqual(interception.frame.minX, title.frame.maxX)
+            XCTAssertLessThan(interception.frame.minX - title.frame.maxX, 50)
+            attachScreenshot(window, named: "AppKit browser light")
+            app.typeKey("w", modifierFlags: .command)
+            XCTAssertFalse(window.exists)
+            app.menuBars.menuBarItems["File"].click()
+            app.menuItems["Scenarios"].click()
+            XCTAssertTrue(window.waitForExistence(timeout: 5))
+            app.typeKey(",", modifierFlags: .command)
+            let settings = app.windows["Lyrebird Settings"]
+            XCTAssertTrue(settings.waitForExistence(timeout: 5))
+            settings.buttons["Cancel"].click()
+            XCTAssertFalse(settings.exists)
+        }
+    }
+
+    func testDarkAppearanceAndFullscreenKeepContentVisible() {
+        withPreview(["--preview", "--dark"]) { app, window in
+            let detail = app.textViews["response-detail"]
+            expectation(for: NSPredicate(format: "value CONTAINS %@", "Example order"), evaluatedWith: detail)
+            waitForExpectations(timeout: 10)
+            attachScreenshot(window, named: "AppKit browser dark")
+            let original = window.frame
+            app.typeKey("f", modifierFlags: [.command, .control])
+            expectation(for: NSPredicate { _, _ in window.frame.height > original.height }, evaluatedWith: window)
+            waitForExpectations(timeout: 10)
+            XCTAssertGreaterThanOrEqual(detail.frame.minY, window.frame.minY)
+            XCTAssertLessThanOrEqual(detail.frame.maxY, window.frame.maxY + 1)
+            // A full-screen menu bar is hidden; use the native keyboard equivalent to exit.
+            app.typeKey("f", modifierFlags: [.command, .control])
+            expectation(
+                for: NSPredicate { _, _ in abs(window.frame.height - original.height) < 2 }, evaluatedWith: window)
+            waitForExpectations(timeout: 10)
+        }
+    }
+
+    func testOriginalScenarioDesignAndCopyPlacement() {
+        withPreview(["--preview", "--dark", "--design-preview"]) { app, window in
+            let detail = app.textViews["response-detail"]
+            expectation(for: NSPredicate(format: "value CONTAINS %@", "Notebook"), evaluatedWith: detail)
+            waitForExpectations(timeout: 10)
+            let copy = app.buttons["Copy body"]
+            XCTAssertTrue(copy.exists)
+            XCTAssertGreaterThan(copy.frame.minY, detail.frame.minY + 100)
+            XCTAssertLessThan(copy.frame.maxY, detail.frame.maxY)
+            let toggle = app.toolbars.buttons["Sidebar"]
+            XCTAssertTrue(toggle.isHittable)
+            let scenario = app.staticTexts["scenario:remove-an-item"]
+            let expandedX = toggle.frame.midX
+            XCTAssertLessThanOrEqual(toggle.frame.maxX, app.tables["request-list"].frame.minX + 1)
+            toggle.click()
+            expectation(for: NSPredicate { _, _ in !scenario.isHittable }, evaluatedWith: window)
+            waitForExpectations(timeout: 5)
+            XCTAssertTrue(toggle.isHittable)
+            XCTAssertLessThan(toggle.frame.midX, expandedX)
+            toggle.click()
+            expectation(for: NSPredicate { _, _ in scenario.isHittable }, evaluatedWith: window)
+            waitForExpectations(timeout: 5)
+            attachScreenshot(window, named: "Original scenario — AppKit design")
+        }
+    }
+
+    private func withPreview(
+        _ arguments: [String], file: StaticString = #filePath, line: UInt = #line,
+        _ body: (XCUIApplication, XCUIElement) -> Void
+    ) {
+        let app = XCUIApplication()
+        app.launchArguments = arguments
+        app.launch()
+        defer { app.terminate() }
+        let window = app.windows["Lyrebird"]
+        XCTAssertTrue(window.waitForExistence(timeout: 10), file: file, line: line)
+        body(app, window)
+    }
+
+    private func attachScreenshot(_ window: XCUIElement, named name: String) {
+        let attachment = XCTAttachment(screenshot: window.screenshot())
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+}

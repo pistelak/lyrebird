@@ -95,14 +95,12 @@ final class AppModel {
 
     /// The settings a piece of work was started under.
     ///
-    /// `@AppStorage` writes on every keystroke, so the profile can change halfway through a
-    /// typed-in path and long before the sheet is dismissed. The generation counters cannot catch
-    /// that — nothing has bumped them yet — so a read begun under one profile would commit its
-    /// answer under another's name, which is the whole failure this file is about.
+    /// Configuration can change while a request is in flight. Check the actual values as well as
+    /// the generation so a reading cannot arrive under another profile's name; see ProfileScopingTests.
     private struct Settings: Equatable {
         var profilePath: String
         var lyrebirdPath: String
-        var controlURL: URL
+        var controlURL: Result<URL, Config.ControlURLProblem>
     }
 
     private static var currentSettings: Settings {
@@ -122,9 +120,12 @@ final class AppModel {
     /// the client always carries the fingerprint the model currently holds. A test injects one
     /// instead, built on a stub session.
     private var client: MockClient {
-        var client = injectedClient ?? MockClient(base: Config.controlURL)
-        client.profile = expectedFingerprint
-        return client
+        get throws {
+            let url = try Config.controlURL.get()
+            var client = injectedClient ?? MockClient(base: url)
+            client.profile = expectedFingerprint
+            return client
+        }
     }
 
     /// The app calls this with no arguments. `autoStart: false` lets a test exercise one action
@@ -166,6 +167,7 @@ final class AppModel {
         let generation = configGeneration
         let settings = Self.currentSettings
         do {
+            _ = try settings.controlURL.get()
             let fingerprint = try await discover()
             guard generation == configGeneration, settings == Self.currentSettings else { return }
             expectedFingerprint = fingerprint
@@ -177,21 +179,14 @@ final class AppModel {
             fingerprintSettings = nil
             profileProblem = error.localizedDescription
             lastError = "could not determine the profile: \(error.localizedDescription)"
-            healthRead = nil
-            scenarios = nil
-            recentRead = nil
-            rulesRead = nil
+            clearReadings()
         }
     }
 
-    /// Re-reads everything after the Settings sheet closes. `@AppStorage` has already written the
-    /// new values, so what is on screen describes the old ones until this runs.
+    /// Invalidates old readings and discovers the profile after Settings saves its values.
     func settingsChanged() async {
         configGeneration &+= 1
-        healthRead = nil
-        scenarios = nil
-        recentRead = nil
-        rulesRead = nil
+        clearReadings()
         expectedFingerprint = nil
         fingerprintSettings = nil
         profileProblem = nil
@@ -199,6 +194,13 @@ final class AppModel {
         DockPresence.settingChanged()
         await discoverProfile()
         await refresh()
+    }
+
+    private func clearReadings() {
+        healthRead = nil
+        scenarios = nil
+        recentRead = nil
+        rulesRead = nil
     }
 
     /// Results from a superseded refresh are dropped, so a slow refresh cannot overwrite a newer
@@ -211,12 +213,22 @@ final class AppModel {
         let rulesRun = rulesGeneration
         let browsing = browsedScenario
         let settings = Self.currentSettings
+        let client: MockClient
+        do {
+            client = try self.client
+        } catch {
+            expectedFingerprint = nil
+            fingerprintSettings = nil
+            profileProblem = error.localizedDescription
+            lastError = error.localizedDescription
+            clearReadings()
+            return
+        }
         // Not merely "is there a fingerprint" but "is it this profile's". Between a Settings edit
         // and the sheet closing, the fingerprint on hand was discovered under the profile that was
         // configured a keystroke ago; scoping a call with it would name the wrong profile, and the
         // dismissal re-discovers anyway.
         guard let expected = expectedFingerprint, fingerprintSettings == settings else { return }
-        let client = self.client
 
         let read = await client.health()
         var scenarios: ScenarioList?
@@ -248,7 +260,9 @@ final class AppModel {
     }
 
     /// Register a window without waiting for a refresh.
-    func windowOpened() { openWindows += 1 }
+    func windowOpened() {
+        openWindows += 1
+    }
 
     /// Read immediately on opening instead of waiting for the next poll.
     func windowAppeared() async {
@@ -259,7 +273,7 @@ final class AppModel {
     /// Stop reading rules when the last window closes; ignore duplicate close notifications.
     /// See `RulesReadTests`.
     func windowClosed() {
-        openWindows = max(0, openWindows - 1)  // `onDisappear` can arrive for a window that never counted
+        openWindows = max(0, openWindows - 1)  // Duplicate close notifications must not make the count negative.
         guard openWindows == 0 else { return }
         rulesGeneration &+= 1
         rulesRead = nil
@@ -267,7 +281,9 @@ final class AppModel {
 
     /// Dismiss the last failure. The window shows it until it is read; the next action that succeeds
     /// clears it too.
-    func dismissError() { lastError = nil }
+    func dismissError() {
+        lastError = nil
+    }
 
     /// Browse without activating. Discard an unrelated snapshot while the new read is in flight.
     /// See `RulesReadTests`.
@@ -287,6 +303,9 @@ final class AppModel {
     }
 
     var status: Status {
+        if case .failure(let problem) = Config.controlURL {
+            return .profileUnknown(problem.localizedDescription)
+        }
         guard let expected = expectedFingerprint else {
             return .profileUnknown(profileProblem ?? "asking the CLI which profile this is")
         }
@@ -319,7 +338,7 @@ final class AppModel {
         case .unreadable(let reason):
             return "Could not read the proxy's health: \(reason)"
         case .profileUnknown(let reason):
-            return "Profile unknown: \(reason) — check the launcher path in Settings"
+            return "Profile unknown: \(reason) — check Settings"
         }
     }
 
@@ -369,18 +388,21 @@ final class AppModel {
     }
 
     func toggle() async {
-        guard !busy else { return }  // guard here, not only via .disabled: SwiftUI re-renders late
+        guard !busy else { return }  // Guard here too: a menu action can arrive before its enabled state updates.
         busy = true
         defer { busy = false }
         // `up` is what repairs a disabled PAC, so anything short of intercepting starts — except
         // the states where something else holds the port, which have to be stopped first.
         let result = stopsRatherThanStarts ? await Control.down() : await Control.up()
-        lastError = result.succeeded ? nil : result.output.trimmingCharacters(in: .whitespacesAndNewlines)
+        lastError = result.failure
         await refresh()
     }
 
-    /// Settings write on each keystroke, before profile rediscovery. Refuse writes in that gap.
+    /// Refuse writes between a settings save and profile rediscovery.
     private var writeRefusal: String? {
+        if case .failure(let problem) = Config.controlURL {
+            return problem.localizedDescription
+        }
         guard expectedFingerprint != nil else {
             return "the app does not know which profile it is configured for — check the launcher path in Settings"
         }
@@ -470,6 +492,6 @@ final class AppModel {
             return
         }
         let result = await Control.relaunch(bundleId: bundleId)
-        lastError = result.succeeded ? nil : result.output.trimmingCharacters(in: .whitespacesAndNewlines)
+        lastError = result.failure
     }
 }
