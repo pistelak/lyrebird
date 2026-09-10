@@ -10,18 +10,31 @@ final class RuleDetailController: NSViewController {
         manager.addTextContainer(container)
         return DetailTextView(frame: .zero, textContainer: container)
     }()
+
     private(set) var scrollView: NSScrollView!
+
     let stepPicker = NSPopUpButton(frame: .zero, pullsDown: false)
+
     private lazy var copyButton = ActionButton("Copy") { [weak self] in self?.copyBody() }
+
     private var copyText: String?
+
     private var links: [String: RuleFormatting.Destination] = [:]
+
     private var currentRule: String?
+
     private var identity = ""
+
     private var copyRange: NSRange?
+
     private var headerHeight: NSLayoutConstraint!
+
     private var tabWidth: CGFloat = 0
+
     private var responseRange = NSRange(location: 0, length: 0)
+
     var onOpenRule: (RuleFormatting.Destination) -> Void = { _ in }
+
     var onPickStep: (Int, String) -> Void = { _, _ in }
 
     override func loadView() {
@@ -71,147 +84,42 @@ final class RuleDetailController: NSViewController {
 
     func update(_ content: BrowserContent, state: BrowserState) {
         loadViewIfNeeded()
-        let document = NSMutableAttributedString()
+        let document = DetailDocument()
         links = [:]
         copyText = nil
         currentRule = nil
         stepPicker.isHidden = true
-        var cardStart: Int?
-        var cards: [NSRange] = []
-        var nextCopyRange: NSRange?
-
-        func paragraph(before: CGFloat = 0, after: CGFloat = 4) -> NSMutableParagraphStyle {
-            let value = NSMutableParagraphStyle()
-            value.firstLineHeadIndent = 10
-            value.headIndent = 10
-            value.tailIndent = -10
-            value.paragraphSpacingBefore = before
-            value.paragraphSpacing = after
-            value.lineBreakMode = .byWordWrapping
-            return value
-        }
-
-        func line(_ value: String, mono: Bool = false, secondary: Bool = false) {
-            guard !value.isEmpty else { return }
-            let color: NSColor = secondary ? .secondaryLabelColor : .labelColor
-            let text = NSMutableAttributedString(
-                attributedString: NativeStyle.text(value + "\n", color: color, mono: mono))
-            text.addAttribute(.paragraphStyle, value: paragraph(), range: NSRange(location: 0, length: text.length))
-            document.append(text)
-        }
-
-        func separator() {
-            let start = document.length
-            line(" ")
-            document.addAttributes(
-                [.detailSeparator: true, .font: NSFont.systemFont(ofSize: 6)],
-                range: NSRange(location: start, length: 1))
-        }
-
-        func section(_ title: String) {
-            if let cardStart, document.length > cardStart {
-                cards.append(NSRange(location: cardStart, length: document.length - cardStart))
-            }
-            let text = NSMutableAttributedString(
-                attributedString: NativeStyle.text(title + "\n", size: 13, weight: .semibold))
-            text.addAttribute(
-                .paragraphStyle, value: paragraph(before: document.length == 0 ? 0 : 30, after: 20),
-                range: NSRange(location: 0, length: text.length))
-            document.append(text)
-            cardStart = document.length
-        }
-
-        func request(_ method: String, _ path: String) {
-            let start = document.length
-            line(" " + method + "   " + path, mono: true)
-            document.addAttributes(
-                [.detailBadge: NSColor.labelColor, .font: NSFont.systemFont(ofSize: 11, weight: .semibold)],
-                range: NSRange(location: start, length: method.utf16.count + 2))
-        }
-
-        func mode(_ kind: RuleFormatting.ResponseKind) {
-            let start = document.length
-            line(" " + kind.title + " ")
-            document.addAttributes(
-                [
-                    .detailBadge: BrowserAppearance.tint(kind), .foregroundColor: BrowserAppearance.tint(kind),
-                    .font: NSFont.systemFont(ofSize: 11, weight: .medium),
-                ], range: NSRange(location: start, length: kind.title.utf16.count + 2))
-            line(kind.explanation, secondary: true)
-            line(" ")
-        }
-
-        func facts(_ facts: [RuleFormatting.Fact]) {
-            for fact in facts {
-                separator()
-                let start = document.length
-                line(fact.label + "\t" + fact.value)
-                let range = NSRange(location: start, length: document.length - start)
-                document.addAttribute(.detailHeaderRow, value: true, range: range)
-                document.addAttributes(
-                    [
-                        .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular),
-                        .foregroundColor: NSColor.secondaryLabelColor,
-                    ], range: NSRange(location: start + fact.label.utf16.count + 1, length: fact.value.utf16.count))
-            }
-            if !facts.isEmpty { separator() }
-        }
 
         func vacancy(_ value: RuleFormatting.Vacancy) {
-            section(value.message)
-            line(value.hint, secondary: true)
+            document.section(value.message)
+            document.line(value.hint, secondary: true)
         }
 
         func body(_ value: JSONValue, title: String = "Body", note: String? = nil) {
-            separator()
-            let start = document.length
-            line(title)
-            nextCopyRange = NSRange(location: start, length: title.utf16.count)
-            document.addAttributes(
-                [
-                    .font: NSFont.systemFont(ofSize: 12, weight: .semibold),
-                    .paragraphStyle: paragraph(before: 3, after: 12),
-                ], range: NSRange(location: start, length: title.utf16.count + 1))
-            if let note { line(note, secondary: true) }
-            let styled = NSMutableAttributedString(
-                attributedString: NSAttributedString(RuleFormatting.attributedJSON(value)))
-            let style = paragraph(after: 0)
-            style.lineSpacing = 2
-            styled.addAttributes(
-                [.font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular), .paragraphStyle: style],
-                range: NSRange(location: 0, length: styled.length))
-            document.append(styled)
-            document.append(
-                NSAttributedString(
-                    string: "\n",
-                    attributes: [.paragraphStyle: paragraph(after: 0), .font: NSFont.systemFont(ofSize: 4)]))
-            copyText = RuleFormatting.jsonText(value)
+            document.body(value, title: title, note: note)
             copyButton.setAccessibilityLabel("Copy body")
         }
 
         func transition(_ value: ScenarioOutline.Transition, ending: Bool = false, showRelated: Bool = false) {
-            section(ending ? "Advances past the final response" : "Advances the sequence")
-            request(value.request.method, value.request.path)
-            facts(value.conditions)
-            if value.conditions.isEmpty { line("Any query or body can advance this sequence.", secondary: true) }
+            document.section(ending ? "Advances past the final response" : "Advances the sequence")
+            document.request(value.request.method, value.request.path)
+            document.facts(value.conditions)
+            if value.conditions.isEmpty {
+                document.line("Any query or body can advance this sequence.", secondary: true)
+            }
             if showRelated || ending {
                 if value.relatedResponses.isEmpty {
-                    line(
+                    document.line(
                         "No response rule was identified. Advancement does not depend on a successful response.",
                         secondary: true)
                 }
                 for related in value.relatedResponses {
                     let token = "lyrebird-rule:\(links.count)"
                     links[token] = RuleFormatting.destination(rule: related.id, drawnFrom: state.scenario ?? "")
-                    let link = NSMutableAttributedString(
-                        attributedString: NativeStyle.text(
-                            (related.line.isEmpty ? "Open response rule" : related.line)
-                                + (related.inactive ? " · Inactive" : "") + "\n"))
-                    link.addAttribute(
-                        .paragraphStyle, value: paragraph(), range: NSRange(location: 0, length: link.length))
-                    link.addAttribute(.link, value: token, range: NSRange(location: 0, length: link.length - 1))
-                    document.append(link)
-                    facts(related.conditions)
+                    document.link(
+                        (related.line.isEmpty ? "Open response rule" : related.line)
+                            + (related.inactive ? " · Inactive" : ""), token: token)
+                    document.facts(related.conditions)
                 }
             }
         }
@@ -232,18 +140,18 @@ final class RuleDetailController: NSViewController {
             } else if let key = state.recentSelection,
                 let entry = content.recent.first(where: { $0.selectionKey == key })
             {
-                section("Recorded request")
-                request(entry.method, entry.path)
-                if let time = entry.time { line("Time: " + time) }
-                line("Status: " + RuleFormatting.statusText(entry.status))
-                section("What happened")
-                line(entry.matched.map { "Answered by rule: " + $0 } ?? "No override answered this request.")
-                if let reason = entry.patchSkipped { line("Patch skipped: " + reason) }
-                if let step = entry.selectedStep { line("Sequence response: \(step)") }
-                if entry.overrun == true { line("The sequence was exhausted.") }
-                for advanced in entry.advanced ?? [] { line("Advanced sequence: " + advanced) }
-                if let run = entry.runId { line("Run: " + run, mono: true) }
-                line("Request and response bodies are not captured.", secondary: true)
+                document.section("Recorded request")
+                document.request(entry.method, entry.path)
+                if let time = entry.time { document.line("Time: " + time) }
+                document.line("Status: " + RuleFormatting.statusText(entry.status))
+                document.section("What happened")
+                document.line(entry.matched.map { "Answered by rule: " + $0 } ?? "No override answered this request.")
+                if let reason = entry.patchSkipped { document.line("Patch skipped: " + reason) }
+                if let step = entry.selectedStep { document.line("Sequence response: \(step)") }
+                if entry.overrun == true { document.line("The sequence was exhausted.") }
+                for advanced in entry.advanced ?? [] { document.line("Advanced sequence: " + advanced) }
+                if let run = entry.runId { document.line("Run: " + run, mono: true) }
+                document.line("Request and response bodies are not captured.", secondary: true)
             } else {
                 vacancy(
                     .init(
@@ -255,44 +163,16 @@ final class RuleDetailController: NSViewController {
             vacancy(value)
         } else if let rule = RuleFormatting.detailRule(selection: state.ruleSelection, in: snapshot) {
             currentRule = rule.id
-            section("Request")
-            request(RuleFormatting.method(of: rule.match), RuleFormatting.path(of: rule.match))
-            if let query = rule.match?.query, !query.isEmpty {
-                separator()
-                let titleStart = document.length
-                line("Query parameters", secondary: true)
-                document.addAttribute(
-                    .font, value: NSFont.systemFont(ofSize: 11),
-                    range: NSRange(location: titleStart, length: document.length - titleStart))
-                for key in query.keys.sorted() {
-                    let start = document.length
-                    line(key + "  =  " + RuleFormatting.scalarText(query[key]), mono: true)
-                    document.addAttribute(
-                        .font, value: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular),
-                        range: NSRange(location: start, length: document.length - start))
-                    document.addAttribute(
-                        .foregroundColor, value: NSColor.secondaryLabelColor,
-                        range: NSRange(location: start, length: key.utf16.count))
-                    document.addAttribute(
-                        .foregroundColor, value: NSColor.tertiaryLabelColor,
-                        range: NSRange(location: start + key.utf16.count, length: 5))
-                }
-            }
-            if let contains = rule.match?.bodyContains, !contains.isEmpty {
-                separator()
-                let start = document.length
-                line("Body contains", secondary: true)
-                document.addAttribute(
-                    .font, value: NSFont.systemFont(ofSize: 11),
-                    range: NSRange(location: start, length: document.length - start))
-                line(contains, mono: true)
-            }
-            if !rule.isActive { line("Inactive", secondary: true) }
+            document.section("Request")
+            document.request(RuleFormatting.method(of: rule.match), RuleFormatting.path(of: rule.match))
+            if let query = rule.match?.query, !query.isEmpty { document.query(query) }
+            if let contains = rule.match?.bodyContains, !contains.isEmpty { document.bodyContains(contains) }
+            if !rule.isActive { document.line("Inactive", secondary: true) }
             if let value = flow?.transition { transition(value) }
             responseRange = NSRange(location: document.length, length: 0)
-            section("Response")
+            document.section("Response")
             let kind = RuleFormatting.responseKind(rule.rewrite)
-            mode(kind)
+            document.mode(kind)
             if let sequence = rule.rewrite.sequence {
                 let shown = flow?.step ?? RuleFormatting.shownStep(rule, in: snapshot?.scenario, pick: state.pickedStep)
                 if flow?.step == nil && !sequence.steps.isEmpty {
@@ -308,34 +188,34 @@ final class RuleDetailController: NSViewController {
                 }
                 if let shown, sequence.steps.indices.contains(shown - 1) {
                     let step = sequence.steps[shown - 1]
-                    if flow?.step == nil { line("Step \(shown) of \(sequence.steps.count)", secondary: true) }
-                    line(RuleFormatting.stepBehaviourLine(step) + RuleFormatting.delayPhrase(rule.rewrite))
-                    line(RuleFormatting.metaLine(kind: step.bodyKind, bytes: step.bodyBytes), secondary: true)
+                    if flow?.step == nil { document.line("Step \(shown) of \(sequence.steps.count)", secondary: true) }
+                    document.line(RuleFormatting.stepBehaviourLine(step) + RuleFormatting.delayPhrase(rule.rewrite))
+                    document.line(RuleFormatting.metaLine(kind: step.bodyKind, bytes: step.bodyBytes), secondary: true)
                     if let note = RuleFormatting.inheritedCaption(step, field: "status") {
-                        line("Status " + note, secondary: true)
+                        document.line("Status " + note, secondary: true)
                     }
-                    facts(RuleFormatting.headerRows(step.headers))
+                    document.facts(RuleFormatting.headerRows(step.headers))
                     if let note = RuleFormatting.inheritedCaption(step, field: "headers") {
-                        line("Headers " + note, secondary: true)
+                        document.line("Headers " + note, secondary: true)
                     }
                     switch RuleFormatting.stepBody(step) {
-                    case .none: line("No body", secondary: true)
-                    case .omitted(let reason): line(reason, secondary: true)
+                    case .none: document.line("No body", secondary: true)
+                    case .omitted(let reason): document.line(reason, secondary: true)
                     case .json(let value): body(value, note: RuleFormatting.inheritedCaption(step, field: "body"))
                     }
                 } else {
-                    line("This sequence has no steps.", secondary: true)
+                    document.line("This sequence has no steps.", secondary: true)
                 }
             } else {
                 if rule.rewrite.mode == "patch" {
                     let clauses = RuleFormatting.clauseLine(rule.rewrite, includeApplicability: false)
-                    if !clauses.isEmpty { line(clauses, secondary: true) }
-                    if let delay = RuleFormatting.delayLabel(rule.rewrite) { line("Delay: " + delay) }
+                    if !clauses.isEmpty { document.line(clauses, secondary: true) }
+                    if let delay = RuleFormatting.delayLabel(rule.rewrite) { document.line("Delay: " + delay) }
                 } else {
-                    line(RuleFormatting.behaviourSentence(rule.rewrite))
+                    document.line(RuleFormatting.behaviourSentence(rule.rewrite))
                 }
-                if let meta = RuleFormatting.metaLine(rule.rewrite) { line(meta, secondary: true) }
-                facts(RuleFormatting.headerRows(rule.headers))
+                if let meta = RuleFormatting.metaLine(rule.rewrite) { document.line(meta, secondary: true) }
+                document.facts(RuleFormatting.headerRows(rule.headers))
                 if rule.rewrite.mode == "patch", let patch = rule.patch {
                     let count = rule.rewrite.patchKeys.map { " · \($0) \($0 == 1 ? "key" : "keys")" } ?? ""
                     body(patch, title: "Changes" + count)
@@ -345,8 +225,8 @@ final class RuleDetailController: NSViewController {
             }
             if let ending = flow?.endingTransition { transition(ending, ending: true) }
             if let notes = rule.notes, !notes.isEmpty {
-                section("Notes")
-                line(notes)
+                document.section("Notes")
+                document.line(notes)
             }
         } else if let value = flow?.transition {
             transition(value, showRelated: true)
@@ -357,17 +237,15 @@ final class RuleDetailController: NSViewController {
         } else {
             vacancy(.init(message: "No rule selected.", hint: "Pick one on the left to see what it answers with."))
         }
-        if let cardStart, document.length > cardStart {
-            cards.append(NSRange(location: cardStart, length: document.length - cardStart))
-        }
-        for (index, range) in cards.enumerated() { document.addAttribute(.detailCard, value: index, range: range) }
-        copyRange = nextCopyRange
+        let rendered = document.attributedString
+        copyRange = document.copyRange
+        copyText = document.copyText
         headerHeight.constant = stepPicker.isHidden ? 0 : 38
         copyButton.isHidden = copyText == nil
-        if !textView.attributedString().isEqual(to: document) {
+        if !textView.attributedString().isEqual(to: rendered) {
             let origin = scrollView.contentView.bounds.origin
             let selected = textView.selectedRange()
-            textView.textStorage?.setAttributedString(document)
+            textView.textStorage?.setAttributedString(rendered)
             // Text-only invalidation leaves stale card edges; see detailRepaintClearsOldDecorations.
             textView.needsDisplay = true
             scrollView.contentView.needsDisplay = true
@@ -402,7 +280,7 @@ final class RuleDetailController: NSViewController {
                         (storage.attribute(.paragraphStyle, at: range.location, effectiveRange: nil)
                         as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle
                 else { return }
-                style.tabStops = [NSTextTab(textAlignment: .right, location: width - 10)]
+                style.tabStops = [NSTextTab(textAlignment: .right, location: width - BrowserMetrics.detailContentInset)]
                 updates.append((range, style))
             }
             for (range, style) in updates { storage.addAttribute(.paragraphStyle, value: style, range: range) }
@@ -413,7 +291,8 @@ final class RuleDetailController: NSViewController {
             forGlyphRange: manager.glyphRange(forCharacterRange: copyRange, actualCharacterRange: nil), in: container)
         let origin = textView.textContainerOrigin
         copyButton.frame = NSRect(
-            x: origin.x + container.size.width - 62, y: origin.y + rect.minY - 3, width: 52, height: 22)
+            x: origin.x + container.size.width - (52 + BrowserMetrics.detailContentInset), y: origin.y + rect.minY - 3,
+            width: 52, height: 22)
     }
 
     func scrollToResponse() {
