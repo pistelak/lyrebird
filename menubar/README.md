@@ -60,7 +60,7 @@ conventional route.
 
 Menu-bar glyph: filled bird with a green dot while intercepting, orange when the proxy is up but
 not intercepting, and an outlined bird with no dot when stopped.
-Click for a scenario menu, Start/Stop (`lyrebird up|down`), a Relaunch-app button, the requests
+Click for a scenario menu, Start/Stop (`lyrebird up|down`), a Relaunch app command, the requests
 the proxy has seen, and settings.
 
 Lyrebird is a regular app: a Dock icon and a menu bar extra, both from launch. **Show in Dock only
@@ -92,9 +92,10 @@ without the folder and the full name in the tooltip. **Reload from disk** in the
 the scenario files, for a profile edited outside the app; it refuses whole if any file cannot be
 read, and it resets run evidence.
 
-The menu-bar popover lists only the folder the active scenario is in, because that is the set one
-run is about — this window is where the whole profile is. Switching to a scenario in another folder
-happens here, or with `lyrebird use <folder>/<name>`.
+The menu lists only the folder the active scenario is in — the set one run is about — or the root
+scenarios when the active one is at the root. An active scenario missing from the list is said to be
+missing rather than shown as an empty profile. This window is where the whole profile is; switching
+to a scenario in another folder happens here, or with `lyrebird use <folder>/<name>`.
 
 The browser reads the engine's rule descriptions through `GET /__mock__/rules`. It distinguishes
 failed reads from empty results, preserves selection across polls, and does not edit rules.
