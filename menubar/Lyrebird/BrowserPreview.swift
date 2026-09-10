@@ -132,70 +132,7 @@
         override func startLoading() {
             do {
                 let data: Data = try Self.lock.withLock {
-                    let encoder = JSONEncoder()
-                    switch request.url?.path {
-                    case "/__mock__/health":
-                        return try encoder.encode(
-                            Health(
-                                activeScenario: Self.active, overrideCount: 3, proxyUp: true, intercepting: true,
-                                profileFingerprint: BrowserPreview.fingerprint))
-                    case "/__mock__/scenarios":
-                        return try encoder.encode(
-                            ScenarioList(
-                                active: Self.active,
-                                scenarios: BrowserPreview.names.map {
-                                    ScenarioSummary(
-                                        name: $0, overrideCount: $0 == "empty" ? 0 : 3, verified: false,
-                                        notes: BrowserPreview.notes($0))
-                                }))
-                    case "/__mock__/scenarios/active":
-                        var body = request.httpBody ?? Data()
-                        if let stream = request.httpBodyStream {
-                            stream.open()
-                            defer { stream.close() }
-                            var bytes = [UInt8](repeating: 0, count: 1024)
-                            while stream.hasBytesAvailable {
-                                let count = stream.read(&bytes, maxLength: bytes.count)
-                                if count <= 0 { break }
-                                body.append(contentsOf: bytes.prefix(count))
-                            }
-                        }
-                        if let object = try JSONSerialization.jsonObject(with: body) as? [String: String],
-                            let name = object["name"]
-                        {
-                            Self.active = name
-                        }
-                        return Data("{}".utf8)
-                    case "/__mock__/rules":
-                        let name =
-                            URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.first {
-                                $0.name == "scenario"
-                            }?.value ?? Self.active
-                        return try encoder.encode(BrowserPreview.snapshot(name))
-                    case "/__mock__/recent":
-                        if request.httpMethod == "DELETE" {
-                            Self.cleared = true
-                            return Data("{}".utf8)
-                        }
-                        let entries: [RecentEntry] =
-                            Self.cleared
-                            ? []
-                            : [
-                                RecentEntry(
-                                    id: "event-1", time: "2026-01-01T12:00:00Z", method: "GET",
-                                    path: "/api/v1/orders/pending", status: 200, matched: "ovr_orders", selectedStep: 1,
-                                    runId: "synthetic-run"),
-                                RecentEntry(
-                                    id: "event-2", method: "GET",
-                                    path: "/api/v1/catalog/items/example-item/availability", status: 200),
-                                RecentEntry(id: "event-3", method: "POST", path: "/api/v1/orders", status: 404),
-                                RecentEntry(
-                                    id: "event-4", method: "PATCH", path: "/api/v1/settings", status: 200,
-                                    patchSkipped: "Response was not JSON"),
-                            ]
-                        return try encoder.encode(entries)
-                    default: return Data("{}".utf8)
-                    }
+                    try responseData()
                 }
                 let response = HTTPURLResponse(
                     url: request.url!, statusCode: 200, httpVersion: nil,
@@ -204,6 +141,73 @@
                 client?.urlProtocol(self, didLoad: data)
                 client?.urlProtocolDidFinishLoading(self)
             } catch { client?.urlProtocol(self, didFailWithError: error) }
+        }
+
+        private func responseData() throws -> Data {
+            let encoder = JSONEncoder()
+            switch request.url?.path {
+            case "/__mock__/health":
+                return try encoder.encode(
+                    Health(
+                        activeScenario: Self.active, overrideCount: 3, proxyUp: true, intercepting: true,
+                        profileFingerprint: BrowserPreview.fingerprint))
+            case "/__mock__/scenarios":
+                return try encoder.encode(
+                    ScenarioList(
+                        active: Self.active,
+                        scenarios: BrowserPreview.names.map {
+                            ScenarioSummary(
+                                name: $0, overrideCount: $0 == "empty" ? 0 : 3, verified: false,
+                                notes: BrowserPreview.notes($0))
+                        }))
+            case "/__mock__/scenarios/active":
+                var body = request.httpBody ?? Data()
+                if let stream = request.httpBodyStream {
+                    stream.open()
+                    defer { stream.close() }
+                    var bytes = [UInt8](repeating: 0, count: 1024)
+                    while stream.hasBytesAvailable {
+                        let count = stream.read(&bytes, maxLength: bytes.count)
+                        if count <= 0 { break }
+                        body.append(contentsOf: bytes.prefix(count))
+                    }
+                }
+                if let object = try JSONSerialization.jsonObject(with: body) as? [String: String],
+                    let name = object["name"]
+                {
+                    Self.active = name
+                }
+                return Data("{}".utf8)
+            case "/__mock__/rules":
+                let name =
+                    URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.first {
+                        $0.name == "scenario"
+                    }?.value ?? Self.active
+                return try encoder.encode(BrowserPreview.snapshot(name))
+            case "/__mock__/recent":
+                if request.httpMethod == "DELETE" {
+                    Self.cleared = true
+                    return Data("{}".utf8)
+                }
+                let entries: [RecentEntry] =
+                    Self.cleared
+                    ? []
+                    : [
+                        RecentEntry(
+                            id: "event-1", time: "2026-01-01T12:00:00Z", method: "GET",
+                            path: "/api/v1/orders/pending", status: 200, matched: "ovr_orders", selectedStep: 1,
+                            runId: "synthetic-run"),
+                        RecentEntry(
+                            id: "event-2", method: "GET",
+                            path: "/api/v1/catalog/items/example-item/availability", status: 200),
+                        RecentEntry(id: "event-3", method: "POST", path: "/api/v1/orders", status: 404),
+                        RecentEntry(
+                            id: "event-4", method: "PATCH", path: "/api/v1/settings", status: 200,
+                            patchSkipped: "Response was not JSON"),
+                    ]
+                return try encoder.encode(entries)
+            default: return Data("{}".utf8)
+            }
         }
     }
 #endif

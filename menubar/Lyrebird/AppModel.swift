@@ -175,20 +175,14 @@ final class AppModel {
             fingerprintSettings = nil
             profileProblem = error.localizedDescription
             lastError = "could not determine the profile: \(error.localizedDescription)"
-            healthRead = nil
-            scenarios = nil
-            recentRead = nil
-            rulesRead = nil
+            clearReadings()
         }
     }
 
     /// Invalidates old readings and discovers the profile after Settings saves its values.
     func settingsChanged() async {
         configGeneration &+= 1
-        healthRead = nil
-        scenarios = nil
-        recentRead = nil
-        rulesRead = nil
+        clearReadings()
         expectedFingerprint = nil
         fingerprintSettings = nil
         profileProblem = nil
@@ -196,6 +190,13 @@ final class AppModel {
         DockPresence.settingChanged()
         await discoverProfile()
         await refresh()
+    }
+
+    private func clearReadings() {
+        healthRead = nil
+        scenarios = nil
+        recentRead = nil
+        rulesRead = nil
     }
 
     /// Results from a superseded refresh are dropped, so a slow refresh cannot overwrite a newer
