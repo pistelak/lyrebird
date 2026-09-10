@@ -14,11 +14,9 @@ final class RulesWindowController: NSWindowController, NSWindowDelegate, NSToolb
     private var registered = false
     private var pendingDestination: RuleFormatting.Destination?
     private var browsingTask: Task<Void, Never>?
-    private let restore: Bool
 
     init(model: AppModel, restore: Bool = true) {
         self.model = model
-        self.restore = restore
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1180, height: 720),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered,
@@ -129,11 +127,10 @@ final class RulesWindowController: NSWindowController, NSWindowDelegate, NSToolb
     }
 
     func render() {
-        // Track traffic even while browsing rules, so switching panes does not leave the
-        // observer subscribed only to unchanged health/rules; see BrowserControllerTests.
-        _ = model.recentRead
+        // Capture traffic even while showing rules; see trafficUpdatesAfterSwitchingFromRulesWithoutAnotherHealthChange.
+        let content = BrowserContent(model: model)
         let snapshot: RulesSnapshot?
-        if case .ok(let value) = model.rulesRead { snapshot = value } else { snapshot = nil }
+        if case .ok(let value) = content.rulesRead { snapshot = value } else { snapshot = nil }
         state.reconcile(snapshot, activeScenario: model.ownHealth?.activeScenario)
         if let destination = pendingDestination, snapshot?.scenario == destination.scenario {
             let rows = snapshot.map { RuleFormatting.flowSections($0).flatMap(\.rows) } ?? []
@@ -159,21 +156,21 @@ final class RulesWindowController: NSWindowController, NSWindowDelegate, NSToolb
                 await model.browse(scenario)
             }
         }
-        statusBadge.update(model.status, scenario: model.ownHealth?.activeScenario, help: model.statusLine)
+        statusBadge.update(content.status, scenario: model.ownHealth?.activeScenario, help: model.statusLine)
         updateInterceptionItem()
         if let toolbar = window?.toolbar {
             let dismissIndex = toolbar.items.firstIndex { $0.itemIdentifier.rawValue == "dismiss" }
-            if RuleFormatting.actionFailure(model.lastError) != nil, dismissIndex == nil {
+            if RuleFormatting.actionFailure(content.lastError) != nil, dismissIndex == nil {
                 toolbar.insertItem(withItemIdentifier: .init("dismiss"), at: max(0, toolbar.items.count - 1))
-            } else if model.lastError == nil, let dismissIndex {
+            } else if content.lastError == nil, let dismissIndex {
                 toolbar.removeItem(at: dismissIndex)
             }
         }
         sidebar.update(
-            model.scenarios ?? model.lastScenarios, selection: state.destination,
-            problems: model.ownHealth?.scenariosNotWhole ?? [:], stale: model.scenarios == nil)
-        requests.update(model: model, state: state)
-        detail.update(model: model, state: state)
+            content.scenarios ?? model.lastScenarios, selection: state.destination,
+            problems: model.ownHealth?.scenariosNotWhole ?? [:], stale: content.scenarios == nil)
+        requests.update(content, state: state)
+        detail.update(content, state: state)
     }
 
     private func openRule(_ destination: RuleFormatting.Destination) {

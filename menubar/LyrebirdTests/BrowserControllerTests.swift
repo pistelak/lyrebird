@@ -449,13 +449,13 @@ extension AppTests {
                 state.select(.scenario(snapshot.scenario))
                 state.ruleSelection = .rule("ovr_items")
                 let detail = RuleDetailController()
-                detail.update(model: model, state: state)
+                detail.update(BrowserContent(model: model), state: state)
                 #expect(detail.textView.string.contains("inherited from the rule"))
                 #expect(detail.textView.string.contains("\"items\": []"))
                 #expect(!detail.stepPicker.isHidden)
                 detail.onPickStep = { step, rule in
                     state.pickStep(step, rule: rule)
-                    detail.update(model: model, state: state)
+                    detail.update(BrowserContent(model: model), state: state)
                 }
                 detail.stepPicker.selectItem(at: 1)
                 // Invoke the control's target/action without opening a tracking menu.
@@ -473,7 +473,7 @@ extension AppTests {
                 let state = BrowserState()
                 state.select(.scenario("empty"))
                 let list = RequestListController()
-                list.update(model: model, state: state)
+                list.update(BrowserContent(model: model), state: state)
                 #expect(list.rows.allSatisfy { $0.selection == nil })
                 #expect(list.rows.contains { $0.text.string.contains("Reading the rules") })
             }

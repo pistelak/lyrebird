@@ -69,7 +69,7 @@ final class RuleDetailController: NSViewController, NSTextViewDelegate {
         NativeStyle.toolbarSeparator(in: view)
     }
 
-    func update(model: AppModel, state: BrowserState) {
+    func update(_ content: BrowserContent, state: BrowserState) {
         loadViewIfNeeded()
         let document = NSMutableAttributedString()
         links = [:]
@@ -177,7 +177,7 @@ final class RuleDetailController: NSViewController, NSTextViewDelegate {
                     string: "\n",
                     attributes: [.paragraphStyle: paragraph(after: 0), .font: NSFont.systemFont(ofSize: 4)]))
             copyText = RuleFormatting.jsonText(value)
-            copyButton.setAccessibilityLabel(title == "Patch" ? "Copy patch" : "Copy body")
+            copyButton.setAccessibilityLabel("Copy body")
         }
         func transition(_ value: ScenarioOutline.Transition, ending: Bool = false, showRelated: Bool = false) {
             section(ending ? "Advances past the final response" : "Advances the sequence")
@@ -206,7 +206,7 @@ final class RuleDetailController: NSViewController, NSTextViewDelegate {
             }
         }
         let snapshot: RulesSnapshot?
-        if case .ok(let value) = model.rulesRead, value.scenario == state.scenario {
+        if case .ok(let value) = content.rulesRead, value.scenario == state.scenario {
             snapshot = value
         } else {
             snapshot = nil
@@ -215,11 +215,12 @@ final class RuleDetailController: NSViewController, NSTextViewDelegate {
         var newIdentity = String(describing: state.destination) + String(describing: state.ruleSelection)
         if state.showsRecent {
             newIdentity = "recent:" + String(describing: state.recentSelection)
-            if let value = RuleFormatting.proxyVacancy(status: model.status, controlPort: model.ownHealth?.proxyPort) {
+            if let value = RuleFormatting.proxyVacancy(status: content.status, controlPort: content.controlPort) {
                 vacancy(value)
-            } else if case .unavailable(let reason) = model.recentRead {
+            } else if case .unavailable(let reason) = content.recentRead {
                 vacancy(.init(message: "Traffic could not be read.", hint: reason))
-            } else if let key = state.recentSelection, let entry = model.recent.first(where: { $0.selectionKey == key })
+            } else if let key = state.recentSelection,
+                let entry = content.recent.first(where: { $0.selectionKey == key })
             {
                 section("Recorded request")
                 request(entry.method, entry.path)
@@ -240,8 +241,7 @@ final class RuleDetailController: NSViewController, NSTextViewDelegate {
                             ? "Select a request." : "This request is no longer in recent traffic.",
                         hint: "Recent traffic records what happened, independently of the scenario you are browsing."))
             }
-        } else if let value = RuleFormatting.proxyVacancy(status: model.status, controlPort: model.ownHealth?.proxyPort)
-        {
+        } else if let value = RuleFormatting.proxyVacancy(status: content.status, controlPort: content.controlPort) {
             vacancy(value)
         } else if let rule = RuleFormatting.detailRule(selection: state.ruleSelection, in: snapshot) {
             currentRule = rule.id
@@ -341,7 +341,7 @@ final class RuleDetailController: NSViewController, NSTextViewDelegate {
         } else if let value = flow?.transition {
             transition(value, showRelated: true)
         } else if let value = RuleFormatting.rulesVacancy(
-            status: model.status, read: model.rulesRead, controlPort: model.ownHealth?.proxyPort)
+            status: content.status, read: content.rulesRead, controlPort: content.controlPort)
         {
             vacancy(value)
         } else {
@@ -358,7 +358,7 @@ final class RuleDetailController: NSViewController, NSTextViewDelegate {
             let origin = scrollView.contentView.bounds.origin
             let selected = textView.selectedRange()
             textView.textStorage?.setAttributedString(document)
-            // Card decorations extend beyond glyph bounds, so text-only invalidation leaves stale edges.
+            // Text-only invalidation leaves stale card edges; see detailRepaintClearsOldDecorations.
             textView.needsDisplay = true
             scrollView.contentView.needsDisplay = true
             tabWidth = 0

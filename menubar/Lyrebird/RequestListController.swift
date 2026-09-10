@@ -3,13 +3,31 @@ import AppKit
 @MainActor
 final class RequestListController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
     struct Row {
-        var id: String
-        var text: NSAttributedString
-        var selection: RuleFormatting.ListSelection?
-        var recent: RecentEntry.Key?
-        var traffic: RecentEntry?
-        var flow: RuleFormatting.FlowListRow?
-        var isHeading = false
+        enum Kind {
+            case note
+            case heading
+            case traffic(RecentEntry)
+            case flow(RuleFormatting.FlowListRow)
+        }
+
+        let id: String
+        let text: NSAttributedString
+        var kind: Kind = .note
+
+        var selection: RuleFormatting.ListSelection? { flow?.selection }
+        var recent: RecentEntry.Key? { traffic?.selectionKey }
+        var traffic: RecentEntry? {
+            if case .traffic(let entry) = kind { return entry }
+            return nil
+        }
+        var flow: RuleFormatting.FlowListRow? {
+            if case .flow(let row) = kind { return row }
+            return nil
+        }
+        var isHeading: Bool {
+            if case .heading = kind { return true }
+            return false
+        }
         var selectable: Bool { selection != nil || recent != nil }
     }
 
@@ -81,7 +99,7 @@ final class RequestListController: NSViewController, NSTableViewDataSource, NSTa
         table.noteHeightOfRows(withIndexesChanged: IndexSet(integersIn: rows.indices))
     }
 
-    func update(model: AppModel, state: BrowserState) {
+    func update(_ content: BrowserContent, state: BrowserState) {
         loadViewIfNeeded()
         heading.stringValue =
             state.showsRecent
@@ -90,32 +108,30 @@ final class RequestListController: NSViewController, NSTableViewDataSource, NSTa
         activate.isHidden = state.showsRecent
         activate.toolTip = "Use this scenario to answer subsequent requests"
         activate.isEnabled =
-            !model.busy && state.scenario != model.scenarios?.active
-            && model.scenarios?.scenarios.contains(where: { $0.name == state.scenario }) == true
+            !content.busy && state.scenario != content.scenarios?.active
+            && content.scenarios?.scenarios.contains(where: { $0.name == state.scenario }) == true
         clear.isHidden = !state.showsRecent
-        clear.isEnabled = !model.busy && !model.recent.isEmpty
-        // A click changes the heading before its async read starts; never pair that heading
-        // with the previous scenario's rows (BrowserControllerTests).
+        clear.isEnabled = !content.busy && !content.recent.isEmpty
+        // Reject old rows under a new heading; see aNewHeadingNeverDisplaysThePreviousScenariosRows.
         let rulesRead: MockClient.RulesRead?
-        if case .ok(let snapshot) = model.rulesRead, snapshot.scenario != state.scenario {
+        if case .ok(let snapshot) = content.rulesRead, snapshot.scenario != state.scenario {
             rulesRead = nil
         } else {
-            rulesRead = model.rulesRead
+            rulesRead = content.rulesRead
         }
         var next: [Row] = []
         func note(_ id: String, _ text: String, error: Bool = false) {
             next.append(Row(id: id, text: NativeStyle.text(text, color: error ? .systemOrange : .secondaryLabelColor)))
         }
-        if let failure = RuleFormatting.actionFailure(model.lastError) { note("error", failure, error: true) }
+        if let failure = RuleFormatting.actionFailure(content.lastError) { note("error", failure, error: true) }
         if state.showsRecent {
-            if let vacancy = RuleFormatting.proxyVacancy(status: model.status, controlPort: model.ownHealth?.proxyPort)
-            {
+            if let vacancy = RuleFormatting.proxyVacancy(status: content.status, controlPort: content.controlPort) {
                 note("vacancy", vacancy.message + "\n" + vacancy.hint)
-            } else if case .unavailable(let reason) = model.recentRead {
+            } else if case .unavailable(let reason) = content.recentRead {
                 note("vacancy", "Traffic could not be read.\n" + reason)
             } else {
                 let needle = state.query.trimmingCharacters(in: .whitespacesAndNewlines)
-                for item in RecentTrafficItem.items(model.recent) {
+                for item in RecentTrafficItem.items(content.recent) {
                     let entry = item.entry
                     guard
                         needle.isEmpty
@@ -132,10 +148,10 @@ final class RequestListController: NSViewController, NSTableViewDataSource, NSTa
                             entry.matched == nil ? "No override answered" : "Answered by an override", size: 12,
                             color: .secondaryLabelColor))
                     next.append(
-                        Row(id: String(describing: item.id), text: text, recent: entry.selectionKey, traffic: entry))
+                        Row(id: String(describing: item.id), text: text, kind: .traffic(entry)))
                 }
-                if next.allSatisfy({ $0.recent == nil }) && model.recent.isEmpty {
-                    note("empty", model.recentPlaceholder)
+                if next.allSatisfy({ $0.recent == nil }) && content.recent.isEmpty {
+                    note("empty", content.recentPlaceholder)
                 } else if !next.contains(where: { $0.id != "error" }) {
                     note("empty", "No requests match your search.")
                 }
@@ -144,17 +160,17 @@ final class RequestListController: NSViewController, NSTableViewDataSource, NSTa
             let problems = RuleFormatting.problems(in: rulesRead)
             if !problems.isEmpty { note("problems", problems.joined(separator: "\n"), error: true) }
             switch RuleFormatting.rulesColumn(
-                status: model.status, read: rulesRead, controlPort: model.ownHealth?.proxyPort)
+                status: content.status, read: rulesRead, controlPort: content.controlPort)
             {
             case .vacancy(let vacancy): note("vacancy", vacancy.message + "\n" + vacancy.hint)
             case .list(let snapshot, let vacancy):
-                if let notes = RuleFormatting.scenarioNotes(snapshot.scenario, in: model.scenarios) {
+                if let notes = RuleFormatting.scenarioNotes(snapshot.scenario, in: content.scenarios) {
                     next.append(
                         Row(
                             id: "notes-heading",
                             text: NativeStyle.text(
                                 "About this scenario", size: 12, weight: .semibold, color: .secondaryLabelColor),
-                            isHeading: true))
+                            kind: .heading))
                     next.append(Row(id: "notes", text: NativeStyle.text(notes)))
                 }
                 if let vacancy { note("vacancy", vacancy.message + "\n" + vacancy.hint) }
@@ -166,7 +182,7 @@ final class RequestListController: NSViewController, NSTableViewDataSource, NSTa
                             id: id,
                             text: NativeStyle.text(
                                 (section.rows.contains { $0.number != nil } ? "↓  " : "") + section.title, size: 12,
-                                weight: .semibold, color: .secondaryLabelColor), isHeading: true))
+                                weight: .semibold, color: .secondaryLabelColor), kind: .heading))
                     for row in section.rows {
                         var line = row.number.map { "\($0).  " } ?? ""
                         line +=
@@ -179,7 +195,7 @@ final class RequestListController: NSViewController, NSTableViewDataSource, NSTa
                                     + (row.delay.map { " · after " + $0 } ?? "") + (row.inactive ? " · Inactive" : ""),
                                 size: 12, color: .secondaryLabelColor))
                         next.append(
-                            Row(id: String(describing: row.id), text: text, selection: row.selection, flow: row))
+                            Row(id: String(describing: row.id), text: text, kind: .flow(row)))
                     }
                     if let footer = section.footer { note(id + ":footer", footer) }
                 }

@@ -60,7 +60,7 @@ extension AppTests {
                 state.select(.scenario(snapshot.scenario))
                 state.ruleSelection = .rule("ovr_patch")
                 let detail = RuleDetailController()
-                detail.update(model: model, state: state)
+                detail.update(BrowserContent(model: model), state: state)
                 let text = detail.textView.string
                 #expect(text.contains("Merges changes into the server’s JSON response."))
                 #expect(!text.contains("Patches the real response"))
@@ -159,7 +159,7 @@ extension AppTests {
                     RuleFormatting.flowSections(snapshot).flatMap(\.rows).first { $0.endingTransition != nil })
                 state.ruleSelection = ending.selection
                 let detail = RuleDetailController()
-                detail.update(model: model, state: state)
+                detail.update(BrowserContent(model: model), state: state)
                 let storage = try #require(detail.textView.textStorage)
                 var linkCount = 0
                 storage.enumerateAttribute(.link, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
@@ -229,7 +229,7 @@ extension AppTests {
                 window.isReleasedWhenClosed = false
                 window.orderFront(nil)
                 defer { window.close() }
-                controller.update(model: model, state: state)
+                controller.update(BrowserContent(model: model), state: state)
                 var wideHeight: CGFloat = 0
                 for width: CGFloat in [600, 300, 480, 300] {
                     window.setContentSize(NSSize(width: width, height: 800))
@@ -264,7 +264,7 @@ extension AppTests {
                 window.setContentSize(NSSize(width: 390, height: 460))
                 window.orderFront(nil)
                 defer { window.close() }
-                detail.update(model: model, state: state)
+                detail.update(BrowserContent(model: model), state: state)
                 window.contentView?.layoutSubtreeIfNeeded()
                 #expect(detail.textView.layoutManager is DetailLayoutManager)
                 let storage = try #require(detail.textView.textStorage)
@@ -281,7 +281,7 @@ extension AppTests {
                 #expect(style.lineBreakMode == .byWordWrapping)
                 detail.scrollView.contentView.scroll(to: NSPoint(x: 0, y: 100))
                 let position = detail.scrollView.contentView.bounds.origin
-                detail.update(model: model, state: state)
+                detail.update(BrowserContent(model: model), state: state)
                 #expect(detail.scrollView.contentView.bounds.origin == position)
                 let selectedText = detail.textView.string
                 #expect(selectedText.contains("Notebook"))
