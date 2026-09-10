@@ -239,8 +239,6 @@ enum RuleFormatting {
     }
 
     private static func append(_ value: JSONValue, to out: inout AttributedString, indent: Int) {
-        let pad = String(repeating: "  ", count: indent)
-        let inner = pad + "  "
         switch value {
         case .null:
             out += token("null", literalColor)
@@ -253,33 +251,45 @@ enum RuleFormatting {
         case .string(let text):
             out += token(quoted(text), stringColor)
         case .array(let values):
-            guard !values.isEmpty else {
-                out += token("[]", punctuationColor)
-                return
-            }
-            out += token("[\n", punctuationColor)
-            for (offset, element) in values.enumerated() {
-                out += token(inner, punctuationColor)
-                append(element, to: &out, indent: indent + 1)
-                out += token(offset == values.count - 1 ? "\n" : ",\n", punctuationColor)
-            }
-            out += token(pad + "]", punctuationColor)
+            appendArray(values, to: &out, indent: indent)
         case .object(let members):
-            guard !members.isEmpty else {
-                out += token("{}", punctuationColor)
-                return
-            }
-            out += token("{\n", punctuationColor)
-            let keys = members.keys.sorted()
-            for (offset, key) in keys.enumerated() {
-                out += token(inner, punctuationColor)
-                out += token(quoted(key), keyColor)
-                out += token(": ", punctuationColor)
-                append(members[key] ?? .null, to: &out, indent: indent + 1)
-                out += token(offset == keys.count - 1 ? "\n" : ",\n", punctuationColor)
-            }
-            out += token(pad + "}", punctuationColor)
+            appendObject(members, to: &out, indent: indent)
         }
+    }
+
+    private static func appendArray(_ values: [JSONValue], to out: inout AttributedString, indent: Int) {
+        let pad = String(repeating: "  ", count: indent)
+        let inner = pad + "  "
+        guard !values.isEmpty else {
+            out += token("[]", punctuationColor)
+            return
+        }
+        out += token("[\n", punctuationColor)
+        for (offset, element) in values.enumerated() {
+            out += token(inner, punctuationColor)
+            append(element, to: &out, indent: indent + 1)
+            out += token(offset == values.count - 1 ? "\n" : ",\n", punctuationColor)
+        }
+        out += token(pad + "]", punctuationColor)
+    }
+
+    private static func appendObject(_ members: [String: JSONValue], to out: inout AttributedString, indent: Int) {
+        let pad = String(repeating: "  ", count: indent)
+        let inner = pad + "  "
+        guard !members.isEmpty else {
+            out += token("{}", punctuationColor)
+            return
+        }
+        out += token("{\n", punctuationColor)
+        let keys = members.keys.sorted()
+        for (offset, key) in keys.enumerated() {
+            out += token(inner, punctuationColor)
+            out += token(quoted(key), keyColor)
+            out += token(": ", punctuationColor)
+            append(members[key] ?? .null, to: &out, indent: indent + 1)
+            out += token(offset == keys.count - 1 ? "\n" : ",\n", punctuationColor)
+        }
+        out += token(pad + "}", punctuationColor)
     }
 
     /// JSON string escaping: the six named escapes, `\u00XX` for any other control character, and
