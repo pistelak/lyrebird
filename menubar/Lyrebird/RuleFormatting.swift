@@ -206,9 +206,9 @@ enum RuleFormatting {
 
     private static let punctuationColor = NSColor.secondaryLabelColor
     private static let keyColor = NSColor.labelColor
-    private static let stringColor = NSColor.systemGreen
-    private static let numberColor = NSColor.systemBlue
-    private static let literalColor = NSColor.systemPurple
+    private static let stringColor = BrowserAppearance.jsonString
+    private static let numberColor = BrowserAppearance.jsonNumber
+    private static let literalColor = BrowserAppearance.jsonLiteral
 
     /// A rule's body, patch or step exactly as stored: two-space indent, keys sorted so two reads of
     /// the same rule look the same, one space after a colon and none before, and empty containers on

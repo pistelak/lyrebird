@@ -197,6 +197,8 @@ final class RuleDetailController: NSViewController, NSTextViewDelegate {
                         attributedString: NativeStyle.text(
                             (related.line.isEmpty ? "Open response rule" : related.line)
                                 + (related.inactive ? " · Inactive" : "") + "\n"))
+                    link.addAttribute(
+                        .paragraphStyle, value: paragraph(), range: NSRange(location: 0, length: link.length))
                     link.addAttribute(.link, value: token, range: NSRange(location: 0, length: link.length - 1))
                     document.append(link)
                     facts(related.conditions)
@@ -350,6 +352,9 @@ final class RuleDetailController: NSViewController, NSTextViewDelegate {
             let origin = scrollView.contentView.bounds.origin
             let selected = textView.selectedRange()
             textView.textStorage?.setAttributedString(document)
+            // Card decorations extend beyond glyph bounds, so text-only invalidation leaves stale edges.
+            textView.needsDisplay = true
+            scrollView.contentView.needsDisplay = true
             tabWidth = 0
             layoutDocumentAccessories()
             textView.layoutManager?.ensureLayout(for: textView.textContainer!)

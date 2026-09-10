@@ -6,6 +6,91 @@ import Testing
 extension AppTests {
     @MainActor
     struct BrowserDesignTests {
+        @Test func syntaxTextMeetsContrastInBothAppearances() throws {
+            func luminance(_ color: NSColor) -> CGFloat {
+                let rgb = color.usingColorSpace(.sRGB)!
+                func linear(_ value: CGFloat) -> CGFloat {
+                    value <= 0.04045 ? value / 12.92 : pow((value + 0.055) / 1.055, 2.4)
+                }
+                return 0.2126 * linear(rgb.redComponent) + 0.7152 * linear(rgb.greenComponent) + 0.0722
+                    * linear(rgb.blueComponent)
+            }
+            for name: NSAppearance.Name in [
+                .aqua, .darkAqua, .accessibilityHighContrastAqua, .accessibilityHighContrastDarkAqua,
+            ] {
+                let appearance = try #require(NSAppearance(named: name))
+                appearance.performAsCurrentDrawingAppearance {
+                    let background = luminance(BrowserAppearance.card)
+                    for color in [
+                        BrowserAppearance.jsonString, BrowserAppearance.jsonNumber, BrowserAppearance.jsonLiteral,
+                    ] {
+                        let foreground = luminance(color)
+                        let contrast = (max(foreground, background) + 0.05) / (min(foreground, background) + 0.05)
+                        #expect(contrast >= 4.5)
+                    }
+                }
+            }
+        }
+
+        @Test func detailRepaintClearsOldDecorations() throws {
+            let controller = RuleDetailController()
+            controller.loadViewIfNeeded()
+            let text = controller.textView
+            text.appearance = NSAppearance(named: .aqua)
+            text.setFrameSize(NSSize(width: 240, height: 160))
+            let bitmap = try #require(
+                NSBitmapImageRep(
+                    bitmapDataPlanes: nil, pixelsWide: 240, pixelsHigh: 160,
+                    bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                    colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+            let context = try #require(NSGraphicsContext(bitmapImageRep: bitmap))
+            NSGraphicsContext.saveGraphicsState()
+            defer { NSGraphicsContext.restoreGraphicsState() }
+            NSGraphicsContext.current = context
+            text.effectiveAppearance.performAsCurrentDrawingAppearance {
+                // Simulate pixels retained from the rounded edge of the previous, longer card.
+                BrowserAppearance.card.setFill()
+                NSRect(x: 0, y: 0, width: 240, height: 160).fill()
+                text.draw(NSRect(x: 0, y: 0, width: 240, height: 160))
+            }
+            let pixel = try #require(bitmap.colorAt(x: 120, y: 80)?.usingColorSpace(.deviceRGB))
+            var expected: NSColor!
+            text.effectiveAppearance.performAsCurrentDrawingAppearance {
+                expected = BrowserAppearance.pane.usingColorSpace(.deviceRGB)
+            }
+            #expect(abs(pixel.redComponent - expected.redComponent) < 0.01)
+            #expect(abs(pixel.greenComponent - expected.greenComponent) < 0.01)
+            #expect(abs(pixel.blueComponent - expected.blueComponent) < 0.01)
+        }
+
+        @Test func transitionLinksShareTheCardTextInset() async throws {
+            try await withAppTestEnvironment {
+                let model = AppModel(autoStart: false, expectedFingerprint: "design")
+                model.healthRead = .up(Health(proxyUp: true, intercepting: true, profileFingerprint: "design"))
+                let snapshot = BrowserPreview.snapshot("orders-pending")
+                model.rulesRead = .ok(snapshot)
+                let state = BrowserState()
+                state.select(.scenario(snapshot.scenario))
+                state.reconcile(snapshot, activeScenario: snapshot.scenario)
+                let ending = try #require(
+                    RuleFormatting.flowSections(snapshot).flatMap(\.rows).first { $0.endingTransition != nil })
+                state.ruleSelection = ending.selection
+                let detail = RuleDetailController()
+                detail.update(model: model, state: state)
+                let storage = try #require(detail.textView.textStorage)
+                var linkCount = 0
+                storage.enumerateAttribute(.link, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
+                    guard value != nil else { return }
+                    linkCount += 1
+                    let paragraph =
+                        storage.attribute(.paragraphStyle, at: range.location, effectiveRange: nil) as? NSParagraphStyle
+                    #expect(paragraph?.firstLineHeadIndent == 10)
+                    #expect(paragraph?.headIndent == 10)
+                }
+                #expect(linkCount > 0)
+            }
+        }
+
         @Test func nestedSidebarHeadersFitInsideTheirRows() async throws {
             try await withAppTestEnvironment {
                 let sidebar = ScenarioSidebarController()

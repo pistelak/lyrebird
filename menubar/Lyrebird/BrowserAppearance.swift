@@ -19,6 +19,25 @@ enum BrowserAppearance {
             ? NSColor(red: 0.38, green: 0.62, blue: 0.60, alpha: 1)
             : NSColor(red: 0.22, green: 0.43, blue: 0.41, alpha: 1)
     }
+    static let jsonString = syntaxColor(light: (0.0, 0.38, 0.16), dark: (0.45, 0.84, 0.53))
+    static let jsonNumber = syntaxColor(light: (0.0, 0.30, 0.66), dark: (0.48, 0.72, 1.0))
+    static let jsonLiteral = syntaxColor(light: (0.52, 0.15, 0.60), dark: (0.85, 0.62, 0.94))
+
+    private static func syntaxColor(light: (CGFloat, CGFloat, CGFloat), dark: (CGFloat, CGFloat, CGFloat)) -> NSColor {
+        NSColor(name: nil) { appearance in
+            let best = appearance.bestMatch(from: [
+                .accessibilityHighContrastAqua, .accessibilityHighContrastDarkAqua,
+                .aqua, .darkAqua,
+            ])
+            let isDark = best == .darkAqua || best == .accessibilityHighContrastDarkAqua
+            if best == .accessibilityHighContrastAqua || best == .accessibilityHighContrastDarkAqua {
+                return isDark ? .white : .black
+            }
+            let rgb = isDark ? dark : light
+            return NSColor(srgbRed: rgb.0, green: rgb.1, blue: rgb.2, alpha: 1)
+        }
+    }
+
     static func tint(_ kind: RuleFormatting.ResponseKind) -> NSColor {
         switch kind {
         case .sequence: return sequence
@@ -192,22 +211,24 @@ extension NSAttributedString.Key {
 /// TextKit owns selection and reflow. These decorations follow its glyph geometry instead of
 /// introducing content-dependent window sizes; BrowserDesignTests covers narrow cards and headers.
 final class DetailLayoutManager: NSLayoutManager {
-    func drawDecorations(forGlyphRange glyphsToShow: NSRange, at origin: NSPoint) {
+    func drawDecorations(in dirtyRect: NSRect, at origin: NSPoint) {
         guard let storage = textStorage, let container = textContainers.first else {
             return
         }
         storage.enumerateAttribute(.detailCard, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
             guard value != nil else { return }
             let glyphs = self.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
-            guard NSIntersectionRange(glyphs, glyphsToShow).length > 0 else { return }
             let content = self.boundingRect(forGlyphRange: glyphs, in: container)
             let rect = NSRect(
                 x: origin.x, y: origin.y + content.minY - 9,
                 width: container.size.width, height: content.height + 18)
+            guard rect.intersects(dirtyRect) else { return }
             BrowserAppearance.card.setFill()
             NSBezierPath(roundedRect: rect, xRadius: 10, yRadius: 10).fill()
         }
-        let visible = characterRange(forGlyphRange: glyphsToShow, actualGlyphRange: nil)
+        let visibleGlyphs = glyphRange(
+            forBoundingRect: dirtyRect.insetBy(dx: -12, dy: -12).offsetBy(dx: -origin.x, dy: -origin.y), in: container)
+        let visible = characterRange(forGlyphRange: visibleGlyphs, actualGlyphRange: nil)
         storage.enumerateAttributes(in: visible) { attributes, range, _ in
             let rect = self.boundingRect(
                 forGlyphRange: self.glyphRange(forCharacterRange: range, actualCharacterRange: nil), in: container
@@ -230,13 +251,13 @@ final class DetailTextView: NSTextView {
     override func accessibilityChildren() -> [Any]? {
         (super.accessibilityChildren() ?? []) + subviews.filter { $0 is NSButton && !$0.isHidden }
     }
+    override var isOpaque: Bool { true }
     override func draw(_ dirtyRect: NSRect) {
+        BrowserAppearance.pane.setFill()
+        dirtyRect.fill()
         if let manager = layoutManager as? DetailLayoutManager, let container = textContainer {
             manager.ensureLayout(for: container)
-            let range = manager.glyphRange(
-                forBoundingRect: dirtyRect.offsetBy(dx: -textContainerOrigin.x, dy: -textContainerOrigin.y),
-                in: container)
-            manager.drawDecorations(forGlyphRange: range, at: textContainerOrigin)
+            manager.drawDecorations(in: dirtyRect, at: textContainerOrigin)
         }
         super.draw(dirtyRect)
     }
@@ -247,7 +268,11 @@ final class DetailTextView: NSTextView {
     override func setFrameSize(_ newSize: NSSize) {
         let changed = newSize.width != frame.width
         super.setFrameSize(newSize)
-        if changed { needsLayout = true }
+        if changed {
+            needsLayout = true
+            needsDisplay = true
+            enclosingScrollView?.contentView.needsDisplay = true
+        }
     }
 }
 
