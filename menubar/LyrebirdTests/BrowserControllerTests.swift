@@ -68,6 +68,37 @@ extension AppTests {
             }
         }
 
+        @Test func activationIsExplicitAndUnavailableForStaleOrActiveSelections() async throws {
+            try await withAppTestEnvironment {
+                let model = model()
+                await model.refresh()
+                let controller = RulesWindowController(model: model, restore: false)
+                let item = NSMenuItem(
+                    title: "Activate Scenario", action: #selector(RulesWindowController.activateSelectedScenario(_:)),
+                    keyEquivalent: "\r")
+                controller.state.select(.scenario("checkout"))
+                controller.render()
+                #expect(controller.validateMenuItem(item))
+                #expect(!StubURLProtocol.requests.contains { $0.httpMethod == "PUT" })
+                controller.activateSelectedScenario(nil)
+                try await waitFor("explicit activation did not issue its request") {
+                    StubURLProtocol.requests.contains { $0.httpMethod == "PUT" }
+                }
+                let request = try #require(StubURLProtocol.requests.first { $0.httpMethod == "PUT" })
+                #expect(request.url?.path == "/__mock__/scenarios/active")
+                try await waitFor("activation did not finish") { !model.busy }
+                controller.state.select(.scenario("orders-outage"))
+                #expect(!controller.validateMenuItem(item))
+                controller.state.select(.scenario("missing"))
+                #expect(!controller.validateMenuItem(item))
+                controller.state.select(.scenario("checkout"))
+                model.scenarios = nil
+                #expect(!controller.validateMenuItem(item))
+                controller.state.select(.recent)
+                #expect(!controller.validateMenuItem(item))
+            }
+        }
+
         @Test func refreshPreservesBrowsingAndNativeSelection() async throws {
             try await withAppTestEnvironment {
                 let model = model()

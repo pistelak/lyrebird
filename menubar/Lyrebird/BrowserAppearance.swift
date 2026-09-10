@@ -68,6 +68,7 @@ final class BadgeView: NSView {
     let label: NSTextField
     let tint: NSColor?
     let circle: Bool
+    var highlighted = false { didSet { needsDisplay = true } }
 
     init(_ text: String, tint: NSColor? = nil, circle: Bool = false) {
         self.tint = tint
@@ -92,10 +93,12 @@ final class BadgeView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         let rect = bounds.insetBy(dx: 0.5, dy: 0.5)
         if circle {
-            NSColor.separatorColor.setStroke()
+            (highlighted ? NSColor.alternateSelectedControlTextColor : NSColor.separatorColor).setStroke()
             NSBezierPath(ovalIn: rect).stroke()
         } else {
-            (tint?.withAlphaComponent(0.14) ?? NSColor.labelColor.withAlphaComponent(0.12)).setFill()
+            (highlighted
+                ? NSColor.alternateSelectedControlTextColor.withAlphaComponent(0.14)
+                : tint?.withAlphaComponent(0.14) ?? NSColor.labelColor.withAlphaComponent(0.12)).setFill()
             NSBezierPath(roundedRect: rect, xRadius: 4, yRadius: 4).fill()
         }
     }
@@ -120,6 +123,19 @@ final class BrowserTableRow: NSTableRowView {
 
 @MainActor
 final class FlowRequestCell: NSTableCellView {
+    private var textColors: [(NSTextField, NSColor)] = []
+    private var badges: [BadgeView] = []
+    override var backgroundStyle: NSView.BackgroundStyle {
+        didSet { updateSelectionAppearance() }
+    }
+    private func updateSelectionAppearance() {
+        let highlighted = backgroundStyle == .emphasized
+        for (field, normal) in textColors {
+            field.textColor = highlighted ? .alternateSelectedControlTextColor : normal
+        }
+        for badge in badges { badge.highlighted = highlighted }
+    }
+
     init(_ row: RuleFormatting.FlowListRow) {
         super.init(frame: .zero)
         let column = NSStackView()
@@ -175,6 +191,13 @@ final class FlowRequestCell: NSTableCellView {
         toolTip = row.request.method + " " + row.request.path + "\n" + row.subtitle
         setAccessibilityElement(true)
         setAccessibilityLabel(toolTip)
+        func collect(_ view: NSView) {
+            if let field = view as? NSTextField { textColors.append((field, field.textColor ?? .labelColor)) }
+            if let badge = view as? BadgeView { badges.append(badge) }
+            for child in view.subviews { collect(child) }
+        }
+        collect(self)
+        updateSelectionAppearance()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 

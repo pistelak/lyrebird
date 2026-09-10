@@ -22,11 +22,13 @@ final class RequestListController: NSViewController, NSTableViewDataSource, NSTa
     var onRule: (RuleFormatting.ListSelection) -> Void = { _ in }
     var onRecent: (RecentEntry.Key) -> Void = { _ in }
     var onClear: () -> Void = {}
+    var onActivate: () -> Void = {}
+    private lazy var activate = ActionButton("Activate") { [weak self] in self?.onActivate() }
     private lazy var clear = ActionButton("Clear") { [weak self] in self?.onClear() }
 
     override func loadView() {
         view = BrowserSurface(BrowserAppearance.pane)
-        let header = NSStackView(views: [heading, clear])
+        let header = NSStackView(views: [heading, activate, clear])
         header.orientation = .horizontal
         header.spacing = 8
         header.translatesAutoresizingMaskIntoConstraints = false
@@ -84,6 +86,11 @@ final class RequestListController: NSViewController, NSTableViewDataSource, NSTa
             state.showsRecent
             ? "Recent traffic" : state.scenario?.split(separator: "/").last.map(String.init) ?? "Rules"
         heading.toolTip = state.scenario ?? heading.stringValue
+        activate.isHidden = state.showsRecent
+        activate.toolTip = "Use this scenario to answer subsequent requests"
+        activate.isEnabled =
+            !model.busy && state.scenario != model.scenarios?.active
+            && model.scenarios?.scenarios.contains(where: { $0.name == state.scenario }) == true
         clear.isHidden = !state.showsRecent
         clear.isEnabled = !model.busy && !model.recent.isEmpty
         // A click changes the heading before its async read starts; never pair that heading

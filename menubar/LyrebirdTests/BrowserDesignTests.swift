@@ -6,6 +6,22 @@ import Testing
 extension AppTests {
     @MainActor
     struct BrowserDesignTests {
+        @Test func selectedFlowUsesSystemSelectionTextAndRestoresItsColors() throws {
+            let row = try #require(
+                RuleFormatting.flowSections(BrowserPreview.snapshot("remove-an-item")).first?.rows.first)
+            let cell = FlowRequestCell(row)
+            func fields(_ view: NSView) -> [NSTextField] {
+                (view as? NSTextField).map { [$0] } ?? view.subviews.flatMap(fields)
+            }
+            let labels = fields(cell)
+            let original = labels.map(\.textColor)
+            #expect(labels.count >= 5)
+            cell.backgroundStyle = .emphasized
+            #expect(labels.allSatisfy { $0.textColor == .alternateSelectedControlTextColor })
+            cell.backgroundStyle = .normal
+            #expect(labels.map(\.textColor) == original)
+        }
+
         @Test func syntaxTextMeetsContrastInBothAppearances() throws {
             func luminance(_ color: NSColor) -> CGFloat {
                 let rgb = color.usingColorSpace(.sRGB)!

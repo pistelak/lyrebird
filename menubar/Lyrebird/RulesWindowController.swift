@@ -1,7 +1,7 @@
 import AppKit
 
 @MainActor
-final class RulesWindowController: NSWindowController, NSWindowDelegate, NSToolbarDelegate {
+final class RulesWindowController: NSWindowController, NSWindowDelegate, NSToolbarDelegate, NSMenuItemValidation {
     let model: AppModel
     let state = BrowserState()
     let split = NSSplitViewController()
@@ -61,6 +61,7 @@ final class RulesWindowController: NSWindowController, NSWindowDelegate, NSToolb
         sidebar.canActivate = { [weak model] name in
             model?.busy == false && model?.scenarios != nil && name != model?.scenarios?.active
         }
+        requests.onActivate = { [weak self] in self?.activateSelectedScenario(nil) }
         requests.onRule = { [weak self] selection in
             self?.state.ruleSelection = selection
             self?.render()
@@ -176,6 +177,23 @@ final class RulesWindowController: NSWindowController, NSWindowDelegate, NSToolb
     private func openRule(_ destination: RuleFormatting.Destination) {
         pendingDestination = destination
         select(.scenario(destination.scenario))
+    }
+    var canActivateSelection: Bool {
+        guard !model.busy, let name = state.scenario, !state.showsRecent, let scenarios = model.scenarios else {
+            return false
+        }
+        return name != scenarios.active && scenarios.scenarios.contains { $0.name == name }
+    }
+    @objc func activateSelectedScenario(_ sender: Any?) {
+        guard canActivateSelection, let name = state.scenario else { return }
+        Task { await model.activate(name) }
+    }
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(activateSelectedScenario) { return canActivateSelection }
+        if menuItem.action == #selector(toggleSidebar) {
+            menuItem.title = split.splitViewItems.first?.isCollapsed == true ? "Show Sidebar" : "Hide Sidebar"
+        }
+        return true
     }
     @objc func refresh(_ sender: Any?) { Task { await model.refresh() } }
     @objc func toggleSidebar(_ sender: Any?) {
