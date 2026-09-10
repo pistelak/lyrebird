@@ -211,7 +211,8 @@ final class RulesWindowController: NSWindowController, NSWindowDelegate, NSToolb
         let stops = model.stopsRatherThanStarts
         interceptionItem.label = stops ? "Stop interception" : "Start interception"
         interceptionItem.image = NSImage(
-            systemSymbolName: stops ? "stop.fill" : "play.fill", accessibilityDescription: interceptionItem.label)
+            systemSymbolName: stops ? "stop.fill" : "play.fill", accessibilityDescription: interceptionItem.label)?
+            .withSymbolConfiguration(.init(pointSize: 14, weight: .semibold))
         interceptionItem.isEnabled = !model.busy
         interceptionItem.toolTip = interceptionItem.label
     }
@@ -245,7 +246,7 @@ final class RulesWindowController: NSWindowController, NSWindowDelegate, NSToolb
             updateInterceptionItem()
             interceptionItem.target = self
             interceptionItem.action = #selector(toggleInterception)
-            interceptionItem.isBordered = false
+            interceptionItem.isBordered = true
             interceptionItem.visibilityPriority = .high
             interceptionItem.autovalidates = false
             return interceptionItem
