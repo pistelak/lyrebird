@@ -135,9 +135,13 @@ extension RuleFormatting {
     /// ` after 3 s`, the delay spelled into a sentence rather than drawn as a badge. One
     /// construction, so the response pane, the candidate button and the text a search reads cannot
     /// come to word the same wait differently.
-    static func delaySuffix(_ label: String?) -> String { label.map { " after \($0)" } ?? "" }
+    static func delaySuffix(_ label: String?) -> String {
+        label.map { " after \($0)" } ?? ""
+    }
 
-    static func delayPhrase(_ rewrite: Rewrite) -> String { delaySuffix(delayLabel(rewrite)) }
+    static func delayPhrase(_ rewrite: Rewrite) -> String {
+        delaySuffix(delayLabel(rewrite))
+    }
 
     /// What the rule does *and* how long it is held, for a pane that draws a line of text where a
     /// row draws a badge. The detail pane lost the delay entirely when it was split out of
@@ -300,7 +304,9 @@ extension RuleFormatting {
     // MARK: - The detail's step selector
 
     /// `Step 2 of 9`, the label above a sequence rule's response.
-    static func stepSelectorLabel(step: Int, of total: Int) -> String { "Step \(step) of \(total)" }
+    static func stepSelectorLabel(step: Int, of total: Int) -> String {
+        "Step \(step) of \(total)"
+    }
 
     /// `Step 3 · 200`, for the menu a sequence too long to segment uses.
     static func stepMenuLabel(number: Int, step: StepSummary) -> String {

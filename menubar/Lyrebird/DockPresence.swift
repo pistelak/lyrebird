@@ -37,12 +37,16 @@ enum DockPresence {
         applyCurrent()
     }
 
-    static func settingChanged() { applyCurrent() }
+    static func settingChanged() {
+        applyCurrent()
+    }
 
     private static func applyCurrent() {
         apply(policy(forOpenWindows: openWindows, dockOnlyWhileWindowOpen: Config.dockOnlyWhileWindowOpen))
     }
 
     /// For a test to start from a known state; the app never calls it.
-    static func reset() { openWindows = 0 }
+    static func reset() {
+        openWindows = 0
+    }
 }

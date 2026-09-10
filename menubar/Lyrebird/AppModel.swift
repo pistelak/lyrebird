@@ -245,7 +245,9 @@ final class AppModel {
     }
 
     /// Register a window without waiting for a refresh.
-    func windowOpened() { openWindows += 1 }
+    func windowOpened() {
+        openWindows += 1
+    }
 
     /// Read immediately on opening instead of waiting for the next poll.
     func windowAppeared() async {
@@ -264,7 +266,9 @@ final class AppModel {
 
     /// Dismiss the last failure. The window shows it until it is read; the next action that succeeds
     /// clears it too.
-    func dismissError() { lastError = nil }
+    func dismissError() {
+        lastError = nil
+    }
 
     /// Browse without activating. Discard an unrelated snapshot while the new read is in flight.
     /// See `RulesReadTests`.

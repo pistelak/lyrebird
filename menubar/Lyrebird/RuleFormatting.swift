@@ -47,10 +47,14 @@ enum RuleFormatting {
 
     /// `ANY` rather than a blank, because a rule with no method matches every one of them, and a gap
     /// there reads as a missing value instead of as the constraint it is not.
-    static func method(of match: RuleMatch?) -> String { match?.method?.uppercased() ?? "ANY" }
+    static func method(of match: RuleMatch?) -> String {
+        match?.method?.uppercased() ?? "ANY"
+    }
 
     /// `*` for the same reason: a rule with no path answers every intercepted request.
-    static func path(of match: RuleMatch?) -> String { match?.path ?? "*" }
+    static func path(of match: RuleMatch?) -> String {
+        match?.path ?? "*"
+    }
 
     /// The toolbar's status item: `intercepting · orders-outage`.
     /// See `RuleFormattingTests`.
@@ -143,7 +147,9 @@ enum RuleFormatting {
 
     /// The status as the menu prints it. `0` is the engine's "no status", which every one of the
     /// three digits it looks like would be a lie about.
-    static func statusText(_ status: Int) -> String { status > 0 ? String(status) : "no response" }
+    static func statusText(_ status: Int) -> String {
+        status > 0 ? String(status) : "no response"
+    }
 
     /// A query pin's value as written. The engine compares `str(value)`, so `2` and `"2"` pin the
     /// same request — and the bare text is what the rule's author typed, without the quotes a JSON
@@ -222,7 +228,9 @@ enum RuleFormatting {
 
     /// The same print as plain text, for the Copy button — derived from the one printer rather than
     /// written twice, so what lands on the pasteboard is exactly what the pane shows.
-    static func jsonText(_ value: JSONValue) -> String { String(attributedJSON(value).characters) }
+    static func jsonText(_ value: JSONValue) -> String {
+        String(attributedJSON(value).characters)
+    }
 
     private static func token(_ text: String, _ color: NSColor) -> AttributedString {
         var piece = AttributedString(text)

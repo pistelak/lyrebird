@@ -298,9 +298,13 @@ enum Control {
         return fingerprint
     }
 
-    static func up() async -> Result { await lyrebird(["up"]) }
+    static func up() async -> Result {
+        await lyrebird(["up"])
+    }
 
-    static func down() async -> Result { await lyrebird(["down"]) }
+    static func down() async -> Result {
+        await lyrebird(["down"])
+    }
 
     /// The argv Relaunch runs. Named separately so a test can read it without starting anything.
     ///
@@ -309,7 +313,9 @@ enum Control {
     /// relaunch the app on a device that never got Lyrebird's CA — while the menu went on saying
     /// INTERCEPT ACTIVE. `lyrebird relaunch` uses the device `up` recorded, and refuses with its
     /// own message when there is no single device it can mean. The app never names `booted`.
-    static func relaunchCommand(bundleId: String) -> [String] { ["relaunch", bundleId] }
+    static func relaunchCommand(bundleId: String) -> [String] {
+        ["relaunch", bundleId]
+    }
 
     static func relaunch(bundleId: String) async -> Result {
         await lyrebird(relaunchCommand(bundleId: bundleId))
