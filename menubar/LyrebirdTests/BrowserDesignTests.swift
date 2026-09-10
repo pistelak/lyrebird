@@ -107,7 +107,8 @@ extension AppTests {
             }
         }
 
-        @Test func nestedSidebarHeadersFitInsideTheirRows() async throws {
+        @Test(arguments: [NSTableView.RowSizeStyle.small, .medium, .large])
+        func nestedSidebarHeadersFitInsideTheirRows(size: NSTableView.RowSizeStyle) async throws {
             try await withAppTestEnvironment {
                 let sidebar = ScenarioSidebarController()
                 let window = NSWindow(contentViewController: sidebar)
@@ -115,6 +116,8 @@ extension AppTests {
                 window.setContentSize(NSSize(width: 230, height: 600))
                 window.orderFront(nil)
                 defer { window.close() }
+                #expect(sidebar.outline.rowSizeStyle == .default)
+                sidebar.outline.rowSizeStyle = size
                 let names = ["default", "orders/pending", "orders/complete", "account/settings", "account/profile"]
                 sidebar.update(
                     ScenarioList(

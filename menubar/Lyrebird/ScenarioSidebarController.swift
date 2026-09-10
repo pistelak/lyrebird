@@ -40,7 +40,7 @@ final class ScenarioSidebarController: NSViewController, NSOutlineViewDataSource
         outline.backgroundColor = .clear
         outline.floatsGroupRows = false
         outline.intercellSpacing = NSSize(width: 0, height: 0)
-        outline.rowHeight = 28
+        outline.rowSizeStyle = .default
         outline.indentationPerLevel = 0
         outline.dataSource = self
         outline.delegate = self
@@ -143,12 +143,10 @@ final class ScenarioSidebarController: NSViewController, NSOutlineViewDataSource
     // Give native source-list groups enough space for their labels; pinning a label on all four
     // edges compressed it below its font height. See BrowserDesignTests.
     func outlineView(_ outlineView: NSOutlineView, isGroupItem item: Any) -> Bool { (item as! Item).destination == nil }
-    func outlineView(_ outlineView: NSOutlineView, heightOfRowByItem item: Any) -> CGFloat {
-        (item as! Item).destination == nil ? 24 : 28
-    }
     func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
         let item = item as! Item
-        let cell = NSTableCellView()
+        let cell = SidebarCell()
+        cell.isGroup = item.destination == nil
         let field = NativeStyle.label(
             item.title, size: item.destination == nil ? 11 : 13, weight: item.destination == nil ? .semibold : .regular)
         field.lineBreakMode = .byTruncatingTail
@@ -159,9 +157,11 @@ final class ScenarioSidebarController: NSViewController, NSOutlineViewDataSource
         NSLayoutConstraint.activate([
             icon.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 2),
             icon.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-            icon.widthAnchor.constraint(equalToConstant: 14),
-            icon.heightAnchor.constraint(equalToConstant: 14),
         ])
+        cell.iconWidth = icon.widthAnchor.constraint(equalToConstant: 14)
+        cell.iconHeight = icon.heightAnchor.constraint(equalToConstant: 14)
+        cell.iconWidth?.isActive = true
+        cell.iconHeight?.isActive = true
         if item.destination == nil { field.textColor = .secondaryLabelColor }
         if case .scenario(let name) = item.destination {
             let warning = problems[name]?.isEmpty == false
@@ -170,6 +170,7 @@ final class ScenarioSidebarController: NSViewController, NSOutlineViewDataSource
                 icon.image = NSImage(systemSymbolName: "checkmark", accessibilityDescription: nil)
             }
             field.font = .systemFont(ofSize: 13, weight: active == name ? .semibold : .regular)
+            cell.isActive = active == name
             field.textColor = stale ? .secondaryLabelColor : .labelColor
             cell.toolTip =
                 ([name, active == name ? "Active scenario" : "Double-click to activate"] + (problems[name] ?? []))
@@ -183,12 +184,16 @@ final class ScenarioSidebarController: NSViewController, NSOutlineViewDataSource
         field.setAccessibilityIdentifier(item.id)
         field.translatesAutoresizingMaskIntoConstraints = false
         cell.addSubview(field)
+        cell.textLeading = field.leadingAnchor.constraint(
+            equalTo: cell.leadingAnchor, constant: item.destination == nil ? 2 : 22)
+        cell.textLeading?.isActive = true
         NSLayoutConstraint.activate([
-            field.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: item.destination == nil ? 2 : 22),
             field.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -4),
             field.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
         ])
         cell.textField = field
+        cell.imageView = icon
+        cell.rowSizeStyle = outline.effectiveRowSizeStyle
         return cell
     }
     func outlineViewSelectionDidChange(_ notification: Notification) {
@@ -220,5 +225,34 @@ final class ScenarioSidebarController: NSViewController, NSOutlineViewDataSource
     @objc private func activateMenu(_ sender: NSMenuItem) {
         guard let name = sender.representedObject as? String, canActivate(name) else { return }
         onActivate(name)
+    }
+}
+
+@MainActor
+private final class SidebarCell: NSTableCellView {
+    var isGroup = false
+    var isActive = false
+    var iconWidth: NSLayoutConstraint?
+    var iconHeight: NSLayoutConstraint?
+    var textLeading: NSLayoutConstraint?
+
+    // AppKit forwards changes to the system sidebar size to existing cells as well as new ones.
+    override var rowSizeStyle: NSTableView.RowSizeStyle {
+        didSet {
+            let textSize: CGFloat
+            let iconSize: CGFloat
+            switch rowSizeStyle {
+            case .small: (textSize, iconSize) = (11, 12)
+            case .large: (textSize, iconSize) = (15, 18)
+            default: (textSize, iconSize) = (13, 14)
+            }
+            textField?.font = .systemFont(
+                ofSize: isGroup ? textSize - 2 : textSize,
+                weight: isGroup || isActive ? .semibold : .regular)
+            iconWidth?.constant = iconSize
+            iconHeight?.constant = iconSize
+            textLeading?.constant = isGroup ? 2 : iconSize + 8
+            imageView?.symbolConfiguration = .init(pointSize: iconSize, weight: .regular)
+        }
     }
 }
