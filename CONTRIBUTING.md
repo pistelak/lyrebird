@@ -69,10 +69,9 @@ format-on-save if desired. Generated projects, virtualenvs and build output are 
 formatter targets.
 
 Only use Python `# fmt: off` / `# fmt: on` around a statement when table alignment carries
-meaning. Swift's `OnlyOneTrailingClosureArgument` rule is disabled to retain idiomatic SwiftUI
-calls with an `onDismiss` closure and trailing view content. Other enabled Swift lint rules
-fail the check via `--strict`. Keep the complete rule map: swift-format replaces that map
-instead of merging it with defaults. Negative naming and indentation probes in `make lint-app`
+meaning. Swift's `OnlyOneTrailingClosureArgument` rule is disabled to allow multiple trailing
+closures. Other enabled Swift lint rules fail the check via `--strict`. Keep the complete rule map:
+swift-format replaces that map instead of merging it with defaults. Negative naming and indentation probes in `make lint-app`
 verify that both style rules and whitespace checks remain enforced.
 
 ## Updating dependencies
