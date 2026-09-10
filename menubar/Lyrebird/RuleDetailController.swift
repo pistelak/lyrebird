@@ -85,158 +85,17 @@ final class RuleDetailController: NSViewController {
     func update(_ content: BrowserContent, state: BrowserState) {
         loadViewIfNeeded()
         let document = DetailDocument()
+        // Stale rule actions must not survive a vacancy; see aRuleThatLosesThePaneLeavesNoActionsBehind.
         links = [:]
         copyText = nil
         currentRule = nil
         stepPicker.isHidden = true
 
-        func vacancy(_ value: RuleFormatting.Vacancy) {
-            document.section(value.message)
-            document.line(value.hint, secondary: true)
-        }
-
-        func body(_ value: JSONValue, title: String = "Body", note: String? = nil) {
-            document.body(value, title: title, note: note)
-            copyButton.setAccessibilityLabel("Copy body")
-        }
-
-        func transition(_ value: ScenarioOutline.Transition, ending: Bool = false, showRelated: Bool = false) {
-            document.section(ending ? "Advances past the final response" : "Advances the sequence")
-            document.request(value.request.method, value.request.path)
-            document.facts(value.conditions)
-            if value.conditions.isEmpty {
-                document.line("Any query or body can advance this sequence.", secondary: true)
-            }
-            if showRelated || ending {
-                if value.relatedResponses.isEmpty {
-                    document.line(
-                        "No response rule was identified. Advancement does not depend on a successful response.",
-                        secondary: true)
-                }
-                for related in value.relatedResponses {
-                    let token = "lyrebird-rule:\(links.count)"
-                    links[token] = RuleFormatting.destination(rule: related.id, drawnFrom: state.scenario ?? "")
-                    document.link(
-                        (related.line.isEmpty ? "Open response rule" : related.line)
-                            + (related.inactive ? " · Inactive" : ""), token: token)
-                    document.facts(related.conditions)
-                }
-            }
-        }
-        let snapshot: RulesSnapshot?
-        if case .ok(let value) = content.rulesRead, value.scenario == state.scenario {
-            snapshot = value
-        } else {
-            snapshot = nil
-        }
-        let flow = RuleFormatting.flowRow(state.ruleSelection, in: snapshot)
-        var newIdentity = String(describing: state.destination) + String(describing: state.ruleSelection)
-        if state.showsRecent {
-            newIdentity = "recent:" + String(describing: state.recentSelection)
-            if let value = RuleFormatting.proxyVacancy(status: content.status, controlPort: content.controlPort) {
-                vacancy(value)
-            } else if case .unavailable(let reason) = content.recentRead {
-                vacancy(.init(message: "Traffic could not be read.", hint: reason))
-            } else if let key = state.recentSelection,
-                let entry = content.recent.first(where: { $0.selectionKey == key })
-            {
-                document.section("Recorded request")
-                document.request(entry.method, entry.path)
-                if let time = entry.time { document.line("Time: " + time) }
-                document.line("Status: " + RuleFormatting.statusText(entry.status))
-                document.section("What happened")
-                document.line(entry.matched.map { "Answered by rule: " + $0 } ?? "No override answered this request.")
-                if let reason = entry.patchSkipped { document.line("Patch skipped: " + reason) }
-                if let step = entry.selectedStep { document.line("Sequence response: \(step)") }
-                if entry.overrun == true { document.line("The sequence was exhausted.") }
-                for advanced in entry.advanced ?? [] { document.line("Advanced sequence: " + advanced) }
-                if let run = entry.runId { document.line("Run: " + run, mono: true) }
-                document.line("Request and response bodies are not captured.", secondary: true)
-            } else {
-                vacancy(
-                    .init(
-                        message: state.recentSelection == nil
-                            ? "Select a request." : "This request is no longer in recent traffic.",
-                        hint: "Recent traffic records what happened, independently of the scenario you are browsing."))
-            }
-        } else if let value = RuleFormatting.proxyVacancy(status: content.status, controlPort: content.controlPort) {
-            vacancy(value)
-        } else if let rule = RuleFormatting.detailRule(selection: state.ruleSelection, in: snapshot) {
-            currentRule = rule.id
-            document.section("Request")
-            document.request(RuleFormatting.method(of: rule.match), RuleFormatting.path(of: rule.match))
-            if let query = rule.match?.query, !query.isEmpty { document.query(query) }
-            if let contains = rule.match?.bodyContains, !contains.isEmpty { document.bodyContains(contains) }
-            if !rule.isActive { document.line("Inactive", secondary: true) }
-            if let value = flow?.transition { transition(value) }
-            responseRange = NSRange(location: document.length, length: 0)
-            document.section("Response")
-            let kind = RuleFormatting.responseKind(rule.rewrite)
-            document.mode(kind)
-            if let sequence = rule.rewrite.sequence {
-                let shown = flow?.step ?? RuleFormatting.shownStep(rule, in: snapshot?.scenario, pick: state.pickedStep)
-                if flow?.step == nil && !sequence.steps.isEmpty {
-                    let titles = sequence.steps.enumerated().map {
-                        RuleFormatting.stepMenuLabel(number: $0.offset + 1, step: $0.element)
-                    }
-                    if stepPicker.itemTitles != titles {
-                        stepPicker.removeAllItems()
-                        stepPicker.addItems(withTitles: titles)
-                    }
-                    if let shown { stepPicker.selectItem(at: shown - 1) }
-                    stepPicker.isHidden = false
-                }
-                if let shown, sequence.steps.indices.contains(shown - 1) {
-                    let step = sequence.steps[shown - 1]
-                    if flow?.step == nil { document.line("Step \(shown) of \(sequence.steps.count)", secondary: true) }
-                    document.line(RuleFormatting.stepBehaviourLine(step) + RuleFormatting.delayPhrase(rule.rewrite))
-                    document.line(RuleFormatting.metaLine(kind: step.bodyKind, bytes: step.bodyBytes), secondary: true)
-                    if let note = RuleFormatting.inheritedCaption(step, field: "status") {
-                        document.line("Status " + note, secondary: true)
-                    }
-                    document.facts(RuleFormatting.headerRows(step.headers))
-                    if let note = RuleFormatting.inheritedCaption(step, field: "headers") {
-                        document.line("Headers " + note, secondary: true)
-                    }
-                    switch RuleFormatting.stepBody(step) {
-                    case .none: document.line("No body", secondary: true)
-                    case .omitted(let reason): document.line(reason, secondary: true)
-                    case .json(let value): body(value, note: RuleFormatting.inheritedCaption(step, field: "body"))
-                    }
-                } else {
-                    document.line("This sequence has no steps.", secondary: true)
-                }
-            } else {
-                if rule.rewrite.mode == "patch" {
-                    let clauses = RuleFormatting.clauseLine(rule.rewrite, includeApplicability: false)
-                    if !clauses.isEmpty { document.line(clauses, secondary: true) }
-                    if let delay = RuleFormatting.delayLabel(rule.rewrite) { document.line("Delay: " + delay) }
-                } else {
-                    document.line(RuleFormatting.behaviourSentence(rule.rewrite))
-                }
-                if let meta = RuleFormatting.metaLine(rule.rewrite) { document.line(meta, secondary: true) }
-                document.facts(RuleFormatting.headerRows(rule.headers))
-                if rule.rewrite.mode == "patch", let patch = rule.patch {
-                    let count = rule.rewrite.patchKeys.map { " · \($0) \($0 == 1 ? "key" : "keys")" } ?? ""
-                    body(patch, title: "Changes" + count)
-                } else if rule.rewrite.mode != "patch", let value = rule.body {
-                    body(value)
-                }
-            }
-            if let ending = flow?.endingTransition { transition(ending, ending: true) }
-            if let notes = rule.notes, !notes.isEmpty {
-                document.section("Notes")
-                document.line(notes)
-            }
-        } else if let value = flow?.transition {
-            transition(value, showRelated: true)
-        } else if let value = RuleFormatting.rulesVacancy(
-            status: content.status, read: content.rulesRead, controlPort: content.controlPort)
-        {
-            vacancy(value)
-        } else {
-            vacancy(.init(message: "No rule selected.", hint: "Pick one on the left to see what it answers with."))
-        }
+        let newIdentity =
+            state.showsRecent
+            ? "recent:" + String(describing: state.recentSelection)
+            : String(describing: state.destination) + String(describing: state.ruleSelection)
+        appendSelection(content, state: state, to: document)
         let rendered = document.attributedString
         copyRange = document.copyRange
         copyText = document.copyText
@@ -263,6 +122,188 @@ final class RuleDetailController: NSViewController {
         }
         identity = newIdentity
         textView.needsLayout = true
+    }
+
+    private func appendSelection(_ content: BrowserContent, state: BrowserState, to document: DetailDocument) {
+        let snapshot: RulesSnapshot?
+        if case .ok(let value) = content.rulesRead, value.scenario == state.scenario {
+            snapshot = value
+        } else {
+            snapshot = nil
+        }
+        let flow = RuleFormatting.flowRow(state.ruleSelection, in: snapshot)
+        if state.showsRecent {
+            appendRecentDetail(content, state: state, to: document)
+        } else if let value = RuleFormatting.proxyVacancy(status: content.status, controlPort: content.controlPort) {
+            appendVacancy(value, to: document)
+        } else if let rule = RuleFormatting.detailRule(selection: state.ruleSelection, in: snapshot) {
+            appendRuleDetail(rule, flow: flow, scenario: snapshot?.scenario, pick: state.pickedStep, to: document)
+        } else if let value = flow?.transition {
+            appendTransition(value, showRelated: true, scenario: state.scenario, to: document)
+        } else if let value = RuleFormatting.rulesVacancy(
+            status: content.status, read: content.rulesRead, controlPort: content.controlPort)
+        {
+            appendVacancy(value, to: document)
+        } else {
+            appendVacancy(
+                .init(message: "No rule selected.", hint: "Pick one on the left to see what it answers with."),
+                to: document)
+        }
+    }
+
+    private func appendRecentDetail(_ content: BrowserContent, state: BrowserState, to document: DetailDocument) {
+        if let value = RuleFormatting.proxyVacancy(status: content.status, controlPort: content.controlPort) {
+            appendVacancy(value, to: document)
+        } else if case .unavailable(let reason) = content.recentRead {
+            appendVacancy(.init(message: "Traffic could not be read.", hint: reason), to: document)
+        } else if let key = state.recentSelection,
+            let entry = content.recent.first(where: { $0.selectionKey == key })
+        {
+            document.section("Recorded request")
+            document.request(entry.method, entry.path)
+            if let time = entry.time { document.line("Time: " + time) }
+            document.line("Status: " + RuleFormatting.statusText(entry.status))
+            document.section("What happened")
+            document.line(entry.matched.map { "Answered by rule: " + $0 } ?? "No override answered this request.")
+            if let reason = entry.patchSkipped { document.line("Patch skipped: " + reason) }
+            if let step = entry.selectedStep { document.line("Sequence response: \(step)") }
+            if entry.overrun == true { document.line("The sequence was exhausted.") }
+            for advanced in entry.advanced ?? [] { document.line("Advanced sequence: " + advanced) }
+            if let run = entry.runId { document.line("Run: " + run, mono: true) }
+            document.line("Request and response bodies are not captured.", secondary: true)
+        } else {
+            appendVacancy(
+                .init(
+                    message: state.recentSelection == nil
+                        ? "Select a request." : "This request is no longer in recent traffic.",
+                    hint: "Recent traffic records what happened, independently of the scenario you are browsing."),
+                to: document)
+        }
+    }
+
+    private func appendRuleDetail(
+        _ rule: RuleRow, flow: RuleFormatting.FlowListRow?, scenario: String?, pick: RuleFormatting.StepPick?,
+        to document: DetailDocument
+    ) {
+        currentRule = rule.id
+        document.section("Request")
+        document.request(RuleFormatting.method(of: rule.match), RuleFormatting.path(of: rule.match))
+        if let query = rule.match?.query, !query.isEmpty { document.query(query) }
+        if let contains = rule.match?.bodyContains, !contains.isEmpty { document.bodyContains(contains) }
+        if !rule.isActive { document.line("Inactive", secondary: true) }
+        if let value = flow?.transition { appendTransition(value, scenario: scenario, to: document) }
+        responseRange = NSRange(location: document.length, length: 0)
+        document.section("Response")
+        let kind = RuleFormatting.responseKind(rule.rewrite)
+        document.mode(kind)
+        if let sequence = rule.rewrite.sequence {
+            appendSequenceResponse(sequence, rule: rule, flow: flow, scenario: scenario, pick: pick, to: document)
+        } else {
+            appendSingleResponse(rule, to: document)
+        }
+        if let ending = flow?.endingTransition {
+            appendTransition(ending, ending: true, scenario: scenario, to: document)
+        }
+        if let notes = rule.notes, !notes.isEmpty {
+            document.section("Notes")
+            document.line(notes)
+        }
+    }
+
+    private func appendSequenceResponse(
+        _ sequence: RewriteSequence, rule: RuleRow, flow: RuleFormatting.FlowListRow?, scenario: String?,
+        pick: RuleFormatting.StepPick?, to document: DetailDocument
+    ) {
+        let shown = flow?.step ?? RuleFormatting.shownStep(rule, in: scenario, pick: pick)
+        if flow?.step == nil && !sequence.steps.isEmpty {
+            let titles = sequence.steps.enumerated().map {
+                RuleFormatting.stepMenuLabel(number: $0.offset + 1, step: $0.element)
+            }
+            if stepPicker.itemTitles != titles {
+                stepPicker.removeAllItems()
+                stepPicker.addItems(withTitles: titles)
+            }
+            if let shown { stepPicker.selectItem(at: shown - 1) }
+            stepPicker.isHidden = false
+        }
+        guard let shown, sequence.steps.indices.contains(shown - 1) else {
+            document.line("This sequence has no steps.", secondary: true)
+            return
+        }
+        let step = sequence.steps[shown - 1]
+        if flow?.step == nil { document.line("Step \(shown) of \(sequence.steps.count)", secondary: true) }
+        document.line(RuleFormatting.stepBehaviourLine(step) + RuleFormatting.delayPhrase(rule.rewrite))
+        document.line(RuleFormatting.metaLine(kind: step.bodyKind, bytes: step.bodyBytes), secondary: true)
+        if let note = RuleFormatting.inheritedCaption(step, field: "status") {
+            document.line("Status " + note, secondary: true)
+        }
+        document.facts(RuleFormatting.headerRows(step.headers))
+        if let note = RuleFormatting.inheritedCaption(step, field: "headers") {
+            document.line("Headers " + note, secondary: true)
+        }
+        switch RuleFormatting.stepBody(step) {
+        case .none: document.line("No body", secondary: true)
+        case .omitted(let reason): document.line(reason, secondary: true)
+        case .json(let value):
+            appendBody(value, note: RuleFormatting.inheritedCaption(step, field: "body"), to: document)
+        }
+    }
+
+    private func appendSingleResponse(_ rule: RuleRow, to document: DetailDocument) {
+        if rule.rewrite.mode == "patch" {
+            let clauses = RuleFormatting.clauseLine(rule.rewrite, includeApplicability: false)
+            if !clauses.isEmpty { document.line(clauses, secondary: true) }
+            if let delay = RuleFormatting.delayLabel(rule.rewrite) { document.line("Delay: " + delay) }
+        } else {
+            document.line(RuleFormatting.behaviourSentence(rule.rewrite))
+        }
+        if let meta = RuleFormatting.metaLine(rule.rewrite) { document.line(meta, secondary: true) }
+        document.facts(RuleFormatting.headerRows(rule.headers))
+        if rule.rewrite.mode == "patch", let patch = rule.patch {
+            let count = rule.rewrite.patchKeys.map { " · \($0) \($0 == 1 ? "key" : "keys")" } ?? ""
+            appendBody(patch, title: "Changes" + count, to: document)
+        } else if rule.rewrite.mode != "patch", let value = rule.body {
+            appendBody(value, to: document)
+        }
+    }
+
+    private func appendTransition(
+        _ value: ScenarioOutline.Transition, ending: Bool = false, showRelated: Bool = false,
+        scenario: String?, to document: DetailDocument
+    ) {
+        document.section(ending ? "Advances past the final response" : "Advances the sequence")
+        document.request(value.request.method, value.request.path)
+        document.facts(value.conditions)
+        if value.conditions.isEmpty {
+            document.line("Any query or body can advance this sequence.", secondary: true)
+        }
+        if showRelated || ending {
+            if value.relatedResponses.isEmpty {
+                document.line(
+                    "No response rule was identified. Advancement does not depend on a successful response.",
+                    secondary: true)
+            }
+            for related in value.relatedResponses {
+                let token = "lyrebird-rule:\(links.count)"
+                links[token] = RuleFormatting.destination(rule: related.id, drawnFrom: scenario ?? "")
+                document.link(
+                    (related.line.isEmpty ? "Open response rule" : related.line)
+                        + (related.inactive ? " · Inactive" : ""), token: token)
+                document.facts(related.conditions)
+            }
+        }
+    }
+
+    private func appendVacancy(_ value: RuleFormatting.Vacancy, to document: DetailDocument) {
+        document.section(value.message)
+        document.line(value.hint, secondary: true)
+    }
+
+    private func appendBody(
+        _ value: JSONValue, title: String = "Body", note: String? = nil, to document: DetailDocument
+    ) {
+        document.body(value, title: title, note: note)
+        copyButton.setAccessibilityLabel("Copy body")
     }
 
     private func layoutDocumentAccessories() {
