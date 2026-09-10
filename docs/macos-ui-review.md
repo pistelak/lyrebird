@@ -33,6 +33,11 @@ Open rows remain part of the work; they are not waived by the existing test suit
 
 ## Verified changes
 
+- On macOS 26, the sidebar uses the glass supplied by its sidebar split item:
+  the legacy visual-effect background that covered it was removed. The status
+  capsule uses `NSGlassEffectView` with its label and glyph inside `contentView`.
+  Both light and dark UI-test screenshots were inspected after this change.
+  Earlier macOS versions retain their existing materials.
 - Sidebar rows now use AppKit's default sizing preference. Existing cells receive
   the effective size through `NSTableCellView.rowSizeStyle`; labels and symbols
   follow it. Header-fit checks pass at small, medium, and large sizes. The light
@@ -49,6 +54,6 @@ Open rows remain part of the work; they are not waived by the existing test suit
   menu-bar background and selection. Template tests cover all six status cases;
   installed appearance still requires visual confirmation.
 
-The latest `make check-app` run passed 206 tests (241 executions including
+The latest `make check-app` run passed 207 tests (242 executions including
 parameters), with no failures or skips. This does not close the remaining visual,
 keyboard, Settings, or accessibility review items above.

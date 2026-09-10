@@ -28,10 +28,15 @@ final class ScenarioSidebarController: NSViewController, NSOutlineViewDataSource
     var canActivate: (String) -> Bool = { _ in false }
 
     override func loadView() {
-        let background = NSVisualEffectView()
-        background.material = .sidebar
-        background.blendingMode = .withinWindow
-        view = background
+        if #available(macOS 26.0, *) {
+            // The sidebar split item supplies glass; a legacy material here would cover it.
+            view = NSView()
+        } else {
+            let background = NSVisualEffectView()
+            background.material = .sidebar
+            background.blendingMode = .withinWindow
+            view = background
+        }
         let column = NSTableColumn(identifier: .init("scenario"))
         outline.addTableColumn(column)
         outline.outlineTableColumn = column
