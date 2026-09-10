@@ -135,6 +135,7 @@ final class RulesWindowController: NSWindowController {
         statusBadge.update(content.status, scenario: model.ownHealth?.activeScenario, help: model.statusLine)
         updateInterceptionItem()
         updateDismissItem(for: content.lastError)
+        window?.toolbar?.validateVisibleItems()
         sidebar.update(
             content.scenarios ?? model.lastScenarios, selection: state.destination,
             problems: model.ownHealth?.scenariosNotWhole ?? [:], stale: content.scenarios == nil)
@@ -304,6 +305,16 @@ extension RulesWindowController: NSMenuItemValidation {
         if menuItem.action == #selector(activateSelectedScenario) { return canActivateSelection }
         if menuItem.action == #selector(toggleSidebar) {
             menuItem.title = split.splitViewItems.first?.isCollapsed == true ? "Show Sidebar" : "Hide Sidebar"
+        }
+        return true
+    }
+}
+
+extension RulesWindowController: NSToolbarItemValidation {
+    func validateToolbarItem(_ item: NSToolbarItem) -> Bool {
+        // A busy Reload used to silently do nothing; see reloadToolbarItemDisablesWhileItsRequestIsOutstanding.
+        if item.action == #selector(reload) || item.action == #selector(toggleInterception) {
+            return !model.busy
         }
         return true
     }

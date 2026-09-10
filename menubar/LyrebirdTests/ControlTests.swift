@@ -27,16 +27,21 @@ struct ControlTests {
     }
 
     @Test
-    func aPortInTheControlURLReachesTheChildAsTheControlPort() {
+    func aPortInTheControlURLReachesTheChildAsTheControlPort() throws {
         #expect(
-            Control.controlEnvironment(for: URL(string: "http://127.0.0.1:9000")!) == ["LYREBIRD_CONTROL_PORT": "9000"])
+            try Control.controlEnvironment(for: URL(string: "http://127.0.0.1:9000")!) == [
+                "LYREBIRD_CONTROL_PORT": "9000"
+            ])
     }
 
-    @Test(
-        arguments: [("http://127.0.0.1", "80"), ("https://127.0.0.1", "443")])
-    func aurlWithNoPortResolvesToItsSchemeDefault(address: String, port: String) throws {
+    @Test(arguments: [
+        "http://127.0.0.1", "https://127.0.0.1:8088", "http://example.com:8088",
+    ])
+    func controlEnvironmentRejectsEndpointsTheCLICannotControl(address: String) throws {
         let url = try #require(URL(string: address))
-        #expect(Control.controlEnvironment(for: url) == ["LYREBIRD_CONTROL_PORT": port])
+        #expect(throws: Config.ControlURLProblem.self) {
+            try Control.controlEnvironment(for: url)
+        }
     }
 
     @Test

@@ -2,8 +2,11 @@ import Foundation
 
 enum Config {
     static let controlURLKey = "controlURL"
+
     static let lyrebirdPathKey = "lyrebirdPath"
+
     static let profilePathKey = "profilePath"
+
     static let dockOnlyWhileWindowOpenKey = "dockOnlyWhileWindowOpen"
 
     static let defaultControlURL = "http://127.0.0.1:8088"
@@ -22,9 +25,35 @@ enum Config {
         return (value?.isEmpty == false) ? value! : fallback
     }
 
-    static var controlURL: URL {
-        URL(string: string(controlURLKey, default: defaultControlURL))
-            ?? URL(string: defaultControlURL)!
+    struct ControlURLProblem {}
+
+    static func validateControlURL(_ text: String) throws -> URL {
+        guard let url = URL(string: text, encodingInvalidCharacters: false),
+            let parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
+            parts.scheme?.lowercased() == "http",
+            ["127.0.0.1", "localhost"].contains(parts.host?.lowercased() ?? ""),
+            let port = parts.port, (1...65535).contains(port),
+            parts.user == nil, parts.password == nil,
+            parts.path.isEmpty || parts.path == "/", parts.query == nil, parts.fragment == nil
+        else {
+            throw ControlURLProblem()
+        }
+        return url
+    }
+
+    // Invalid preferences must not select another endpoint; see invalidPersistedControlURLIsReportedWithoutIO.
+    static var controlURL: Result<URL, ControlURLProblem> {
+        guard defaults.object(forKey: controlURLKey) != nil else {
+            return .success(URL(string: defaultControlURL)!)
+        }
+        guard let text = defaults.string(forKey: controlURLKey) else {
+            return .failure(ControlURLProblem())
+        }
+        do {
+            return .success(try validateControlURL(text))
+        } catch {
+            return .failure(ControlURLProblem())
+        }
     }
 
     /// Resolved by searching PATH when unset, so a clone anywhere still works. There is no default
@@ -65,3 +94,11 @@ enum Config {
     /// The menu re-reads health, scenarios and recent traffic at this interval.
     static let pollSeconds = 2.0
 }
+
+extension Config.ControlURLProblem: LocalizedError {
+    var errorDescription: String? {
+        "Invalid control URL: use http://127.0.0.1:PORT or http://localhost:PORT (1–65535) in Settings."
+    }
+}
+
+extension Config.ControlURLProblem: Equatable {}

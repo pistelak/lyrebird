@@ -100,7 +100,7 @@ final class AppModel {
     private struct Settings: Equatable {
         var profilePath: String
         var lyrebirdPath: String
-        var controlURL: URL
+        var controlURL: Result<URL, Config.ControlURLProblem>
     }
 
     private static var currentSettings: Settings {
@@ -120,9 +120,12 @@ final class AppModel {
     /// the client always carries the fingerprint the model currently holds. A test injects one
     /// instead, built on a stub session.
     private var client: MockClient {
-        var client = injectedClient ?? MockClient(base: Config.controlURL)
-        client.profile = expectedFingerprint
-        return client
+        get throws {
+            let url = try Config.controlURL.get()
+            var client = injectedClient ?? MockClient(base: url)
+            client.profile = expectedFingerprint
+            return client
+        }
     }
 
     /// The app calls this with no arguments. `autoStart: false` lets a test exercise one action
@@ -164,6 +167,7 @@ final class AppModel {
         let generation = configGeneration
         let settings = Self.currentSettings
         do {
+            _ = try settings.controlURL.get()
             let fingerprint = try await discover()
             guard generation == configGeneration, settings == Self.currentSettings else { return }
             expectedFingerprint = fingerprint
@@ -209,12 +213,22 @@ final class AppModel {
         let rulesRun = rulesGeneration
         let browsing = browsedScenario
         let settings = Self.currentSettings
+        let client: MockClient
+        do {
+            client = try self.client
+        } catch {
+            expectedFingerprint = nil
+            fingerprintSettings = nil
+            profileProblem = error.localizedDescription
+            lastError = error.localizedDescription
+            clearReadings()
+            return
+        }
         // Not merely "is there a fingerprint" but "is it this profile's". Between a Settings edit
         // and the sheet closing, the fingerprint on hand was discovered under the profile that was
         // configured a keystroke ago; scoping a call with it would name the wrong profile, and the
         // dismissal re-discovers anyway.
         guard let expected = expectedFingerprint, fingerprintSettings == settings else { return }
-        let client = self.client
 
         let read = await client.health()
         var scenarios: ScenarioList?
@@ -289,6 +303,9 @@ final class AppModel {
     }
 
     var status: Status {
+        if case .failure(let problem) = Config.controlURL {
+            return .profileUnknown(problem.localizedDescription)
+        }
         guard let expected = expectedFingerprint else {
             return .profileUnknown(profileProblem ?? "asking the CLI which profile this is")
         }
@@ -321,7 +338,7 @@ final class AppModel {
         case .unreadable(let reason):
             return "Could not read the proxy's health: \(reason)"
         case .profileUnknown(let reason):
-            return "Profile unknown: \(reason) — check the launcher path in Settings"
+            return "Profile unknown: \(reason) — check Settings"
         }
     }
 
@@ -383,6 +400,9 @@ final class AppModel {
 
     /// Refuse writes between a settings save and profile rediscovery.
     private var writeRefusal: String? {
+        if case .failure(let problem) = Config.controlURL {
+            return problem.localizedDescription
+        }
         guard expectedFingerprint != nil else {
             return "the app does not know which profile it is configured for — check the launcher path in Settings"
         }

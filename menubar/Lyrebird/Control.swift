@@ -205,16 +205,10 @@ enum Control {
         }
     }
 
-    /// The control port the CLI must use, taken from the URL the app itself reads.
-    ///
-    /// The engine takes that port from the environment, not from a flag, so Start and Stop would
-    /// otherwise drive the default 8088 while the menu's own reads went to whatever Settings holds
-    /// — one menu reporting on one proxy and starting another. A URL with no port means the scheme
-    /// default; that is a real port, not a stand-in for 8088, and guessing 8088 instead would put
-    /// the two halves back out of step for anyone who typed a bare host.
-    static func controlEnvironment(for url: URL) -> [String: String] {
-        let port = url.port ?? (url.scheme == "https" ? 443 : 80)
-        return ["LYREBIRD_CONTROL_PORT": String(port)]
+    // Reject endpoints the CLI cannot address; see controlEnvironmentRejectsEndpointsTheCLICannotControl.
+    static func controlEnvironment(for url: URL) throws -> [String: String] {
+        let validated = try Config.validateControlURL(url.absoluteString)
+        return ["LYREBIRD_CONTROL_PORT": String(validated.port!)]
     }
 
     /// When a profile is configured it is passed explicitly: a Finder-launched app inherits no
@@ -225,9 +219,13 @@ enum Control {
     }
 
     private static func lyrebird(_ command: [String]) async -> Result {
-        return await shell(
-            Config.lyrebirdPath, arguments(command, profile: Config.profilePath),
-            environment: controlEnvironment(for: Config.controlURL))
+        do {
+            let environment = try controlEnvironment(for: Config.controlURL.get())
+            return await shell(
+                Config.lyrebirdPath, arguments(command, profile: Config.profilePath), environment: environment)
+        } catch {
+            return Result(output: error.localizedDescription, status: -1)
+        }
     }
 
     /// Why the app could not find out which profile it is configured for. Carries the CLI's own

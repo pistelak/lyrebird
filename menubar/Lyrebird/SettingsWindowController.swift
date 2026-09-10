@@ -1,13 +1,20 @@
 import AppKit
 
 @MainActor
-final class SettingsWindowController: NSWindowController, NSWindowDelegate {
+final class SettingsWindowController: NSWindowController {
+
     private let model: AppModel
+
     let controlURL = NSTextField()
+
     let launcher = NSTextField()
+
     let profile = NSTextField()
+
     let dock = NSButton(checkboxWithTitle: "Show in Dock only while a window is open", target: nil, action: nil)
-    private let error = NativeStyle.label("")
+
+    private let error = NSTextField(wrappingLabelWithString: "")
+
     private var registered = false
 
     init(model: AppModel) {
@@ -45,6 +52,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         stack.addArrangedSubview(dock)
         error.textColor = .systemRed
         stack.addArrangedSubview(error)
+        error.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         let cancel = ActionButton("Cancel") { [weak self] in self?.close() }
         cancel.keyEquivalent = "\u{1b}"
         let save = ActionButton("Save") { [weak self] in self?.save() }
@@ -56,7 +64,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         window.center()
     }
 
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
 
     override func showWindow(_ sender: Any?) {
         if !registered {
@@ -74,9 +84,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     func save() {
         let text = controlURL.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let url = URL(string: text), ["http", "https"].contains(url.scheme?.lowercased() ?? ""), url.host != nil
-        else {
-            error.stringValue = "Enter an HTTP or HTTPS control URL."
+        do {
+            _ = try Config.validateControlURL(text)
+        } catch {
+            self.error.stringValue = error.localizedDescription
             return
         }
         Config.defaults.set(text, forKey: Config.controlURLKey)
@@ -87,6 +98,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         Task { await model.settingsChanged() }
     }
 
+}
+
+extension SettingsWindowController: NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         guard registered else { return }
         registered = false

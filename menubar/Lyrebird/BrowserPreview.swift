@@ -24,7 +24,7 @@
             let defaults = UserDefaults(suiteName: "com.lyrebird.AppKitPreview")!
             defaults.setVolatileDomain(
                 [
-                    Config.controlURLKey: "http://preview.invalid",
+                    Config.controlURLKey: Config.defaultControlURL,
                     Config.lyrebirdPathKey: "/nonexistent/preview-lyrebird",
                     Config.profilePathKey: "",
                     Config.dockOnlyWhileWindowOpenKey: false,

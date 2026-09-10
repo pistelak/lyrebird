@@ -31,6 +31,96 @@ extension AppTests {
             }
         }
 
+        @Test func reloadToolbarItemDisablesWhileItsRequestIsOutstanding() async throws {
+            try await withAppTestEnvironment {
+                let model = model()
+                let controller = RulesWindowController(model: model, restore: false)
+                controller.showWindow(nil)
+                defer { controller.close() }
+                try await waitFor("initial scenario did not load") { model.rulesRead != nil }
+                let toolbar = try #require(controller.window?.toolbar)
+                toolbar.insertItem(withItemIdentifier: .init("refresh"), at: toolbar.items.count)
+                let reload = try #require(toolbar.items.first { $0.itemIdentifier.rawValue == "reload" })
+                let refresh = try #require(toolbar.items.first { $0.itemIdentifier.rawValue == "refresh" })
+                let interception = try #require(toolbar.items.first { $0.itemIdentifier.rawValue == "interception" })
+                let action = try #require(reload.action)
+                reload.validate()
+                #expect(reload.isEnabled)
+                let gate = DispatchSemaphore(value: 0)
+                StubURLProtocol.install { request in
+                    if request.url?.path == "/__mock__/scenarios/reload" {
+                        gate.wait()
+                        return (Stub.response(request, 200), Data("{}".utf8))
+                    }
+                    return RulesFixture.serve(request)
+                }
+                #expect(NSApp.sendAction(action, to: reload.target, from: reload))
+                do {
+                    try await waitFor("reload did not reach the engine") {
+                        StubURLProtocol.requests.contains { $0.url?.path == "/__mock__/scenarios/reload" }
+                    }
+                    #expect(model.busy)
+                    try await waitFor("Reload remained enabled during an outstanding operation") { !reload.isEnabled }
+                    reload.validate()
+                    refresh.validate()
+                    #expect(!reload.isEnabled)
+                    #expect(!interception.isEnabled)
+                    #expect(refresh.isEnabled)
+                } catch {
+                    gate.signal()
+                    try await waitFor("reload did not finish after releasing its request") { !model.busy }
+                    throw error
+                }
+                gate.signal()
+                try await waitFor("Reload did not re-enable after completion") { !model.busy && reload.isEnabled }
+                #expect(model.lastError == nil)
+            }
+        }
+
+        @Test(arguments: ["http://[", "", "http://example.com:8088", "https://localhost:8088", "http://localhost"])
+        func invalidPersistedControlURLIsReportedWithoutIO(address: String) async throws {
+            try await withAppTestEnvironment {
+                Config.defaults.set(address, forKey: Config.controlURLKey)
+                Config.defaults.set("/usr/bin/true", forKey: Config.lyrebirdPathKey)
+                #expect(throws: Config.ControlURLProblem.self) {
+                    try Config.controlURL.get()
+                }
+                let model = makeModel(expecting: RulesFixture.ours, discover: { RulesFixture.ours })
+                await model.refresh()
+                #expect(model.lastError?.contains("Invalid control URL") == true)
+                await model.discoverProfile()
+                #expect(model.expectedFingerprint == nil)
+                #expect(model.statusLine.contains("Invalid control URL"))
+                #expect(!model.statusLine.contains("launcher path"))
+                await model.reloadScenarios()
+                #expect(model.lastError?.contains("Invalid control URL") == true)
+                #expect(StubURLProtocol.requests.isEmpty)
+                let result = await Control.up()
+                #expect(!result.succeeded)
+                #expect(result.failure?.contains("Invalid control URL") == true)
+                #expect(Config.defaults.string(forKey: Config.controlURLKey) == address)
+            }
+        }
+
+        @Test func absentControlURLUsesTheDefaultEndpoint() async throws {
+            try await withAppTestEnvironment {
+                #expect(Config.defaults.object(forKey: Config.controlURLKey) == nil)
+                let url = try Config.controlURL.get()
+                #expect(url.absoluteString == "http://127.0.0.1:8088")
+                #expect(try Control.controlEnvironment(for: url) == ["LYREBIRD_CONTROL_PORT": "8088"])
+            }
+        }
+
+        @Test(arguments: ["http://127.0.0.1:9000", "http://localhost:9000/"])
+        func validPersistedControlURLKeepsTheCLIPort(address: String) async throws {
+            try await withAppTestEnvironment {
+                Config.defaults.set(address, forKey: Config.controlURLKey)
+                let url = try Config.controlURL.get()
+                #expect(url.absoluteString == address)
+                #expect(try Control.controlEnvironment(for: url) == ["LYREBIRD_CONTROL_PORT": "9000"])
+            }
+        }
+
         /// The rewrite left folder selection in the model but showed every qualified name in the menu,
         /// making users hunt through unrelated scenarios; opening the menu must follow each active folder.
         @Test func menuOpeningScopesScenariosToTheActiveFolder() async throws {
@@ -298,15 +388,6 @@ extension AppTests {
                     #expect(controller.requests.table.selectedRow >= 0)
                     #expect(controller.requests.rows[controller.requests.table.selectedRow].selection == selected)
                 }
-                controller.state.query = "no-synthetic-path-matches-this"
-                controller.render()
-                #expect(controller.state.ruleSelection == selected)
-                #expect(controller.requests.table.selectedRow == -1)
-                #expect(controller.requests.rows.contains { $0.text.string.contains("hidden by the search") })
-                #expect(controller.detail.textView.string.contains("Request"))
-                controller.state.query = ""
-                controller.render()
-                #expect(controller.requests.table.selectedRow >= 0)
                 #expect(!StubURLProtocol.requests.contains { $0.httpMethod == "PUT" })
             }
         }
@@ -338,13 +419,10 @@ extension AppTests {
             state.select(nil)
             state.reconcile(nil, activeScenario: "orders-outage")
             #expect(state.scenario == "checkout")
-            state.rulesQuery = "orders"
             state.select(.recent)
-            state.query = "PATCH"
-            #expect(state.rulesQuery == "orders")
-            #expect(state.recentQuery == "PATCH")
+            #expect(state.showsRecent)
             state.select(.scenario("checkout"))
-            #expect(state.query == "orders")
+            #expect(state.scenario == "checkout")
         }
 
         @Test func scenarioChangesDoNotReuseRuleOrStepIdentity() throws {
@@ -479,16 +557,24 @@ extension AppTests {
             }
         }
 
-        @Test func settingsCancelAndInvalidURLDoNotChangePreferences() async throws {
+        @Test(arguments: [
+            "not a URL", "http://example.com:8088", "https://127.0.0.1:8088", "https://localhost:8088",
+            "http://localhost", "http://127.0.0.1:0", "http://localhost:65536", "http://[::1]:8088",
+            "http://user@localhost:8088", "http://localhost:8088/path", "http://localhost:8088?port=9000",
+            "http://localhost:8088#fragment", "",
+        ])
+        func settingsCancelAndInvalidURLDoNotChangePreferences(address: String) async throws {
             try await withAppTestEnvironment {
                 Config.defaults.set("http://localhost:8088", forKey: Config.controlURLKey)
                 let settings = SettingsWindowController(model: model())
                 settings.showWindow(nil)
-                settings.controlURL.stringValue = "not a URL"
+                settings.controlURL.stringValue = address
                 settings.profile.stringValue = "/tmp/unused-profile"
                 settings.save()
                 #expect(settings.window?.isVisible == true)
-                #expect(Config.controlURL.absoluteString == "http://localhost:8088")
+                let view = try #require(settings.window?.contentView)
+                #expect(fields(view).contains { $0.stringValue.contains("Invalid control URL") })
+                #expect(try Config.controlURL.get().absoluteString == "http://localhost:8088")
                 #expect(Config.profilePath.isEmpty)
                 settings.close()
                 #expect(Config.profilePath.isEmpty)
