@@ -17,7 +17,7 @@ The Xcode project is generated from `project.yml` via
 ```bash
 # From the repository root:
 make setup-app
-make check-app              # formatting/lint, build, unit tests, fixture build
+make check-app              # formatting/lint, build, unit tests and UI automation (needs the screen left alone), fixture build
 ```
 
 To run it day to day, install one copy and launch that:

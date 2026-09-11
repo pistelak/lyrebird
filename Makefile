@@ -1,4 +1,6 @@
 .DEFAULT_GOAL := help
+# Serializes targets: Xcode build outputs share .build, and UI automation tests
+# driven by check-app require exclusive desktop focus.
 .NOTPARALLEL:
 
 PYTHON ?= python3
