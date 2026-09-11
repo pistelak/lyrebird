@@ -1256,3 +1256,21 @@ def test_init_refuses_a_legacy_sessions_layout(profile, runner, tmp_path):
     assert result.exit_code != 0
     assert f"mv {target / 'sessions'} {target / 'scenarios'}" in result.output
     assert sorted(path.name for path in target.iterdir()) == ["sessions"], "init must have copied nothing"
+
+
+def test_up_fails_when_discovery_fails_even_with_a_recorded_service(profile, runner, monkeypatch):
+    """A crash record names yesterday's service. With discovery failing, `up` fell back to it,
+    installed and read back its PAC there, and exited 0 — while the route may have moved to a
+    service carrying no PAC at all. The install still happens (the record must describe a service
+    `down` can restore), but the run is not a success."""
+    _up_after_a_crash(profile, monkeypatch, lambda service: netproxy.PacStatus(netproxy.pac_url(), True, True))
+    installed = []
+    monkeypatch.setattr(netproxy, "set_pac", lambda service: installed.append(service))
+    monkeypatch.setattr(netproxy, "active_service", _discovery_times_out)
+
+    result = runner.invoke(cli.cli, ["up"])
+
+    assert result.exit_code == 1
+    assert "the PAC is on 'Wi-Fi' from the last run, which may no longer carry the default route" in result.output
+    assert installed == ["Wi-Fi"]
+    assert config.read_runtime()["service"] == "Wi-Fi"

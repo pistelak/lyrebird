@@ -467,6 +467,18 @@ def _up_locked(
             watchdog_pid = _spawn_watchdog(service)
         state["watchdogPid"] = watchdog_pid
         click.echo(f"✓ PAC installed on '{service}' (configured hosts → proxy, everything else DIRECT)")
+        if discovery_error:
+            # Installed on the recorded service — the record must keep describing a service
+            # `down` can restore — but not claimed as interception: the read that would have
+            # shown which service carries the route failed, and a crash record can name
+            # yesterday's. See test_up_fails_when_discovery_fails_even_with_a_recorded_service.
+            click.echo(
+                f"{ui.RED}✗ could not detect the active network service ({discovery_error}) — the PAC is on "
+                f"'{service}' from the last run, which may no longer carry the default route{ui.R}"
+            )
+            failures.append(
+                f"active network service unknown ({discovery_error}): interception on '{service}' is unproven"
+            )
     else:
         # The discovery error is appended rather than replacing the message: "no active network
         # service" is what it means for the run, and the `route`/`networksetup` failure is why —
