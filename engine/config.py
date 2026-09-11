@@ -212,17 +212,44 @@ def atomic_write(path: Path, text: str) -> None:
         raise
 
 
+class RuntimeRecordUnreadable(RuntimeError):
+    """The record exists and could not be read. A different claim from "there is no record": read
+    as `{}`, a corrupt file made `down` invent "no previous PAC", disable the routing, delete the
+    only copy of what to put back and report the restore a success — see
+    test_down_does_not_claim_to_restore_from_a_record_it_could_not_read."""
+
+    def __init__(self, path: Path, reason: str) -> None:
+        super().__init__(f"{path} cannot be read: {reason}")
+        self.path = path
+        self.reason = reason
+
+
 def read_runtime() -> dict:
-    """Never raises. `lyrebird down` reads this before doing anything else, so an unreadable file
-    must not stop the PAC being restored."""
+    """`{}` only when there is no record. A record that is there but cannot be read raises; every
+    caller decides what it can still do without it, and none may pretend it was absent."""
     path = runtime_file()
-    if not path.is_file():
-        return {}
+    # Read, not stat-then-read: an `is_file()` guard made a directory at this path, or a path
+    # that cannot be stat'd, read as "no record". Only "no such file" is absence.
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+    except FileNotFoundError as error:
+        if path.is_symlink():
+            # A link whose target is gone raises the same error as no entry at all, and is not
+            # the same thing: the entry is there, and what it pointed at may come back.
+            raise RuntimeRecordUnreadable(path, f"dangling symlink: {error}") from None
         return {}
-    return data if isinstance(data, dict) else {}
+    except (ValueError, OSError, RecursionError) as error:
+        # `ValueError` rather than `JSONDecodeError` (the decoder raises the plain one for a
+        # number too long to convert) and `RecursionError` (for nesting too deep): both used to
+        # traceback out of `down` and `status`.
+        raise RuntimeRecordUnreadable(path, str(error)) from None
+    if not isinstance(data, dict):
+        raise RuntimeRecordUnreadable(path, f"expected a JSON object, found {type(data).__name__}")
+    if not data:
+        # `up` never writes an empty record; one that is there and empty says nothing about what
+        # to put back, and read as absent it made `down` invent "no previous PAC" from it.
+        raise RuntimeRecordUnreadable(path, "the record is empty")
+    return data
 
 
 def write_runtime(data: dict) -> None:

@@ -17,6 +17,7 @@ from mitmproxy.test import taddons, tflow, tutils
 
 import addon
 import config
+import netproxy
 import rules
 
 
@@ -909,3 +910,44 @@ def test_the_addon_refuses_to_load_on_a_malformed_profile(profile):
     (profile / "profile.json").write_text("{not json", encoding="utf-8")
     with pytest.raises(SystemExit):
         addon.Lyrebird()
+
+
+def test_health_reports_an_unreadable_record_without_denying_the_route(monkeypatch, hosts):
+    """Where packets go is one fact and whether `down` can restore is another. A corrupt record
+    used to read as absent and vanish from health; falsifying `intercepting` over it would be the
+    opposite mistake. The record's state gets its own field."""
+    config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
+    config.runtime_file().write_bytes(b"not json at all\xff")
+    monkeypatch.setattr(netproxy, "active_service", lambda: "Wi-Fi")
+    monkeypatch.setattr(netproxy, "intercepting", lambda service: service == "Wi-Fi")
+
+    service, intercepting, pac_error, runtime_error = addon.Lyrebird()._observe()
+
+    assert (service, intercepting, pac_error) == ("Wi-Fi", True, None)
+    assert "cannot be read" in runtime_error
+    meta = asyncio.run(_meta_of(addon.Lyrebird()))
+    assert "cannot be read" in meta["runtimeError"]
+    assert meta["intercepting"] is True
+
+
+async def _meta_of(subject):
+    return await subject._meta()
+
+
+def test_health_forgets_a_runtime_error_once_the_record_is_fixed(monkeypatch, hosts):
+    """Kept on the object, the error outlived the record it described: a later observation that
+    failed on the PAC read repeated it. It is part of each observation instead."""
+    config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
+    config.runtime_file().write_bytes(b"not json at all\xff")
+    monkeypatch.setattr(netproxy, "active_service", lambda: "Wi-Fi")
+    monkeypatch.setattr(netproxy, "intercepting", lambda service: True)
+    subject = addon.Lyrebird()
+    assert subject._observe()[3] is not None
+
+    config.runtime_file().unlink()
+    monkeypatch.setattr(
+        netproxy, "intercepting", lambda service: (_ for _ in ()).throw(netproxy.NetworkSetupError("x"))
+    )
+
+    service, intercepting, pac_error, runtime_error = subject._observe()
+    assert (intercepting, pac_error, runtime_error) == (False, "x", None)

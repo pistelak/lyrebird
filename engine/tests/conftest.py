@@ -74,6 +74,28 @@ def _no_real_watchdog(monkeypatch):
     yield real
 
 
+@pytest.fixture(autouse=True)
+def _no_real_process_scan(monkeypatch):
+    """`down` scans this machine's process table for a proxy on its port when health is silent.
+    Left real, a test would find a contributor's own running Lyrebird and reason about — or
+    signal — it. Tests about the scan replace this with the processes they mean; the ones about
+    the scan itself take the real function from this fixture."""
+    real = supervisor._proxies_on_port
+    monkeypatch.setattr(supervisor, "_proxies_on_port", lambda: [])
+    yield real
+
+
+@pytest.fixture(autouse=True)
+def _no_real_process_identity(monkeypatch):
+    """Whose process a pid is comes from `ps` on this machine, and the pids the CLI tests record
+    (99, 4242, 4321) belong to whatever happens to run there — dead on one Mac, a system daemon
+    on the CI runner, which `down` then refused as another Lyrebird's. Every pid is this
+    Lyrebird's unless a test says otherwise; the process tests take the real function back."""
+    real = supervisor._identity_of
+    monkeypatch.setattr(supervisor, "_identity_of", lambda pid, marker: supervisor.Identity.OURS)
+    yield real
+
+
 @pytest.fixture
 def runner():
     return CliRunner()

@@ -400,3 +400,20 @@ def test_relaunch_reports_a_launch_simctl_refused(profile, runner, monkeypatch):
     assert result.exit_code == 1
     assert simctl_calls(calls, "launch") != []
     assert "com.example.Store is not installed" in result.output
+
+
+def test_relaunch_refuses_over_a_record_it_cannot_read(profile, runner, monkeypatch):
+    """A corrupt record read as "nothing recorded" resolved to whatever is booted — the device
+    without the CA, half the time. Unreadable is refused with the file named."""
+    (profile / "profile.json").write_text(
+        '{"hosts": ["api.example.com"], "simBundleId": "com.example.Store"}', encoding="utf-8"
+    )
+    config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
+    config.runtime_file().write_bytes(b"not json at all\xff")
+    calls = fake_simctl(monkeypatch, [_PHONE])
+
+    result = runner.invoke(cli.cli, ["relaunch"])
+
+    assert result.exit_code == 1
+    assert simctl_calls(calls, "launch") == []
+    assert "cannot be read" in result.output and "--simulator" in result.output

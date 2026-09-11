@@ -40,19 +40,26 @@ def health_until_terminated(monkeypatch, state, pid=4242):
     monkeypatch.setattr(api, "_health", lambda: None if state["terminated"] else {"pid": pid})
 
 
-def test_down_recovers_when_the_runtime_file_is_unreadable(profile, runner, fake_network, monkeypatch):
-    """Regression: a corrupt runtime file made `down` find nothing to do and report "stopped"
-    while the proxy was still running and the PAC still pointing at it. Verified against a real
-    proxy before this test existed."""
+def test_down_does_not_claim_to_restore_from_a_record_it_could_not_read(profile, runner, fake_network, monkeypatch):
+    """Two regressions, one file. A corrupt runtime file first made `down` find nothing to do and
+    report "stopped" while the proxy was still running and the PAC still pointing at it. Fixed to
+    work from health, it then read the corrupt file as *absent*: invented "no previous PAC",
+    disabled the routing, deleted the only copy of what to put back and reported the restore a
+    success — with a corporate PAC never restored. Now it still stops the proxy and switches ours
+    off, but says the previous settings are unknown, keeps the file, and exits 1."""
     config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
     config.runtime_file().write_bytes(b"not json at all\xff")
     health_until_terminated(monkeypatch, fake_network)
+    monkeypatch.setattr(supervisor, "_identity_of", lambda pid, marker: supervisor.Identity.OURS)
 
     result = runner.invoke(cli.cli, ["down"])
 
-    assert result.exit_code == 0
-    assert fake_network["restored"] is not None, "the PAC must be restored even with no runtime state"
+    assert result.exit_code == 1
+    assert fake_network["restored"] == ("Wi-Fi", "", False), "ours switched off: the Mac must not stay routed here"
     assert (4242, "addon.py") in fake_network["terminated"], "the pid must come from health"
+    assert "the previous proxy settings it holds are unknown" in result.output
+    assert "restored" not in result.output.replace("unknown", "")
+    assert config.runtime_file().read_bytes() == b"not json at all\xff", "the bytes may still hold the previous PAC"
 
 
 def test_down_uses_the_runtime_file_when_it_is_readable(profile, runner, fake_network, monkeypatch):
@@ -96,6 +103,7 @@ def test_down_leaves_a_foreign_pac_alone(profile, runner, monkeypatch):
         netproxy, "pac_status", lambda service: netproxy.PacStatus("http://proxy.example.com/corp.pac", True, False)
     )
     monkeypatch.setattr(netproxy, "restore_pac", lambda *a: touched.append(a))
+    monkeypatch.setattr(supervisor, "_identity_of", lambda pid, marker: supervisor.Identity.OURS)  # pid 1 is a stand-in
     monkeypatch.setattr(
         supervisor,
         "_terminate",
@@ -257,7 +265,7 @@ def test_up_says_when_it_cannot_read_the_pac_it_just_installed(profile, runner, 
     monkeypatch.setattr(netproxy, "active_service", lambda: "Wi-Fi")
     monkeypatch.setattr(netproxy, "pac_status", lambda service: netproxy.PacStatus("", False, False))
     monkeypatch.setattr(netproxy, "set_pac", lambda service: None)
-    monkeypatch.setattr(supervisor, "_pid_is_ours", lambda pid, marker: True)
+    monkeypatch.setattr(supervisor, "_identity_of", lambda pid, marker: supervisor.Identity.OURS)
     monkeypatch.setattr(netproxy, "intercepting", _unreadable_pac)
 
     result = runner.invoke(cli.cli, ["up"])
@@ -286,7 +294,7 @@ def test_up_spawns_no_real_watchdog_subprocess(profile, runner, monkeypatch):
     # What sends `up` down the spawning branch: with no watchdog recorded, a pid it believes is
     # ours is the difference between reusing one and starting one. Deliberately NOT using the
     # shared `up` doubles here — they stub the spawn themselves, which is the thing under test.
-    monkeypatch.setattr(supervisor, "_pid_is_ours", lambda pid, marker: True)
+    monkeypatch.setattr(supervisor, "_identity_of", lambda pid, marker: supervisor.Identity.OURS)
 
     # This `up` adopts a proxy that health already reports, so it has no reason to start any
     # process at all. Recording every attempt rather than filtering for `_watchdog` in argv keeps
@@ -423,7 +431,7 @@ def test_watchdog_retires_when_the_record_names_a_live_successor(profile, runner
         {"proxyPid": 99, "service": "Wi-Fi", "watchdogPid": 4242, "previousPac": {"url": "", "enabled": False}}
     )
     touched = []
-    monkeypatch.setattr(supervisor, "_pid_is_ours", lambda pid, marker: True)
+    monkeypatch.setattr(supervisor, "_identity_of", lambda pid, marker: supervisor.Identity.OURS)
     monkeypatch.setattr(api, "_health", lambda: {"pid": 99})
     monkeypatch.setattr(netproxy, "pac_status", lambda service: netproxy.PacStatus("", False, False))
     monkeypatch.setattr(netproxy, "set_pac", lambda service: touched.append(service))
@@ -512,7 +520,9 @@ def test_watchdog_keeps_serving_a_record_that_names_no_live_watchdog(profile, ru
     repaired = _watch_one_poll(
         monkeypatch, recorded_service="Wi-Fi", pac=netproxy.PacStatus(netproxy.pac_url(), False, True)
     )
-    monkeypatch.setattr(supervisor, "_pid_is_ours", lambda pid, marker: True)  # would retire, if one were named
+    monkeypatch.setattr(
+        supervisor, "_identity_of", lambda pid, marker: supervisor.Identity.OURS
+    )  # would retire, if one were named
 
     result = runner.invoke(cli.cli, ["_watchdog", "Wi-Fi"])
 
@@ -778,6 +788,7 @@ def test_watchdog_restores_on_a_later_attempt_after_a_transient_failure(profile,
         return netproxy.PacStatus(netproxy.pac_url(), True, True)
 
     monkeypatch.setattr(api, "_health", lambda: None)
+    monkeypatch.setattr(supervisor, "_identity_of", lambda pid, marker: supervisor.Identity.GONE)  # it died
     monkeypatch.setattr(netproxy, "pac_status", flaky)
     monkeypatch.setattr(time, "sleep", lambda seconds: None)
 
@@ -790,6 +801,7 @@ def test_watchdog_clears_the_runtime_file_after_restoring(profile, runner, fake_
     config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
     config.write_runtime({"proxyPid": 99, "service": "Wi-Fi", "previousPac": {"url": "", "enabled": False}})
     monkeypatch.setattr(api, "_health", lambda: None)
+    monkeypatch.setattr(supervisor, "_identity_of", lambda pid, marker: supervisor.Identity.GONE)  # it died
 
     assert runner.invoke(cli.cli, ["_watchdog", "Wi-Fi"]).exit_code == 0
     assert fake_network["restored"] == ("Wi-Fi", "", False)
@@ -1289,7 +1301,7 @@ def _alive_and_ours_but_unkillable(monkeypatch):
     `ps` says ours, and the signals are accepted but change nothing."""
     sent = []
     monkeypatch.setattr(supervisor, "_pid_alive", lambda pid: True)
-    monkeypatch.setattr(supervisor, "_pid_is_ours", lambda pid, marker: True)
+    monkeypatch.setattr(supervisor, "_identity_of", lambda pid, marker: supervisor.Identity.OURS)
     monkeypatch.setattr(supervisor, "_signal", lambda pid, sig: sent.append((pid, sig.name)) or True)
     monkeypatch.setattr(supervisor, "_DOWN_WAIT_SECONDS", 0.05)
     monkeypatch.setattr(supervisor, "_KILL_WAIT_SECONDS", 0.05)
@@ -1332,7 +1344,7 @@ def test_down_keeps_the_record_when_the_proxy_cannot_be_checked(profile, runner,
     def ps_is_broken(pid, marker):
         raise supervisor.ProcessCheckError(f"`ps -p {pid}` failed: ps: cannot allocate memory")
 
-    monkeypatch.setattr(supervisor, "_pid_is_ours", ps_is_broken)
+    monkeypatch.setattr(supervisor, "_identity_of", ps_is_broken)
 
     result = runner.invoke(cli.cli, ["down"])
 
@@ -1396,7 +1408,7 @@ def test_down_stops_the_proxy_that_answers_when_the_recorded_one_is_gone(profile
     assert not config.runtime_file().exists()
 
 
-def test_down_treats_a_reused_pid_as_a_proxy_that_is_gone(profile, runner, monkeypatch):
+def test_down_treats_a_reused_pid_as_a_proxy_that_is_gone(profile, runner, monkeypatch, _no_real_process_identity):
     """A pid alive under another command line has been reused, and reuse only happens after the
     original died. With the port quiet, that *is* the proxy gone — `down` restores and reports
     "stopped" without having signalled anything."""
@@ -1405,6 +1417,7 @@ def test_down_treats_a_reused_pid_as_a_proxy_that_is_gone(profile, runner, monke
     restored = []
     monkeypatch.setattr(netproxy, "restore_pac", lambda *a: restored.append(a))
     monkeypatch.setattr(api, "_health", lambda: None)
+    monkeypatch.setattr(supervisor, "_identity_of", _no_real_process_identity)  # the real classifier over a fake `ps`
     monkeypatch.setattr(supervisor, "_pid_alive", lambda pid: True)
     monkeypatch.setattr(
         sim, "_run", lambda args: subprocess.CompletedProcess(args, 0, "/usr/bin/some-other-tool\n", "")
@@ -1473,9 +1486,11 @@ def test_up_refuses_rather_than_spawn_a_second_watchdog(profile, runner, monkeyp
     if old_watchdog == "unverifiable":
 
         def ps_is_broken(pid, marker):
+            if pid == 99:
+                return supervisor.Identity.GONE  # the crashed proxy, which the pre-spawn check asks about first
             raise supervisor.ProcessCheckError(f"`ps -p {pid}` failed: 1")
 
-        monkeypatch.setattr(supervisor, "_pid_is_ours", ps_is_broken)
+        monkeypatch.setattr(supervisor, "_identity_of", ps_is_broken)
         expected = "the previous watchdog (pid 77) could not be checked: `ps -p 77` failed: 1"
     else:
         monkeypatch.setattr(supervisor, "_terminate", lambda pid, marker: supervisor.Termination.STILL_RUNNING)
@@ -1535,7 +1550,7 @@ def test_watchdog_does_not_retire_when_its_successor_cannot_be_checked(profile, 
     def ps_is_broken(pid, marker):
         raise supervisor.ProcessCheckError(f"`ps -p {pid}` failed: 1")
 
-    monkeypatch.setattr(supervisor, "_pid_is_ours", ps_is_broken)
+    monkeypatch.setattr(supervisor, "_identity_of", ps_is_broken)
     monkeypatch.setattr(api, "_health", lambda: {"pid": 99})
     monkeypatch.setattr(netproxy, "pac_status", lambda service: netproxy.PacStatus(netproxy.pac_url(), False, True))
     monkeypatch.setattr(netproxy, "set_pac", lambda service: repaired.append(service))
@@ -1671,7 +1686,12 @@ def test_both_children_are_spawned_with_their_identity_in_argv(profile, runner, 
     _no_real_watchdog("Wi-Fi")
 
     proxy, watchdog = spawned
-    assert proxy[1:3] == ["--set", f"lyrebird_control_port={config.CONTROL_PORT}"], "first: the match `ps` yields"
+    assert proxy[1:5] == [
+        "--set",
+        f"lyrebird_control_port={config.CONTROL_PORT}",
+        "--set",
+        f"lyrebird_state_root_id={config.state_root_id()}",
+    ], "first: the match `ps` yields"
     assert watchdog[-5:] == [
         "--control-port",
         str(config.CONTROL_PORT),
@@ -1739,7 +1759,7 @@ def test_watchdog_keeps_watching_when_its_successor_cannot_be_checked_and_the_pr
     def ps_is_broken(pid, marker):
         raise supervisor.ProcessCheckError(f"`ps -p {pid}` failed: 1")
 
-    monkeypatch.setattr(supervisor, "_pid_is_ours", ps_is_broken)
+    monkeypatch.setattr(supervisor, "_identity_of", ps_is_broken)
     monkeypatch.setattr(api, "_health", lambda: {"pid": 101})  # a replacement proxy holds the port
 
     assert supervisor._should_retire() is False
@@ -1824,3 +1844,497 @@ def test_down_stops_every_replacement_it_observed(profile, runner, monkeypatch):
     assert result.exit_code == 1
     assert stopped[-2:] == [100, 101]
     assert config.read_runtime()["proxyPid"] == 101
+
+
+# MARK: - A record that cannot be read is not one that is absent
+
+
+def test_down_leaves_another_state_directorys_proxy_alone(profile, runner, fake_network, monkeypatch):
+    """Two state directories can run Lyrebird on one port in turn. This one's record is stale and
+    corrupt; the proxy answering was started under the other, whose own record holds its previous
+    PAC and whose own watchdog restores it. Stopping it from here — and disabling the routing it
+    installed — used to be exactly what `down` did. It is not this Lyrebird's; identity says so."""
+    config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
+    config.runtime_file().write_bytes(b"not json at all\xff")
+    monkeypatch.setattr(api, "_health", lambda: {"pid": 4242, "profileFingerprint": config.PROFILE_FINGERPRINT})
+    monkeypatch.setattr(supervisor, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(
+        supervisor, "_identity_of", lambda pid, marker: supervisor.Identity.THEIRS
+    )  # another state root's argv
+
+    result = runner.invoke(cli.cli, ["down"])
+
+    assert result.exit_code == 1
+    assert "was not started by this Lyrebird" in result.output
+    assert fake_network["restored"] is None and fake_network["terminated"] == []
+    assert config.runtime_file().exists()
+
+
+def test_up_refuses_to_start_over_a_record_it_cannot_read(profile, runner, monkeypatch):
+    """The migration and the snapshot act on what the record says. Started over one that cannot
+    be read, `up` snapshotted the network afresh and the previous PAC the file held was lost."""
+    _up_after_a_crash(profile, monkeypatch, lambda service: netproxy.PacStatus(netproxy.pac_url(), True, True))
+    config.runtime_file().write_bytes(b"{not json")
+    spawned = []
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: spawned.append(a) or pytest.fail("nothing may start"))
+
+    result = runner.invoke(cli.cli, ["up"])
+
+    assert result.exit_code == 1
+    assert "cannot be read" in result.output and "nothing started" in result.output
+    assert spawned == []
+    assert config.runtime_file().read_bytes() == b"{not json"
+
+
+def test_up_records_its_child_before_the_startup_wait(profile, runner, monkeypatch):
+    """`up` spawned first and wrote the record only after the PAC was dealt with, so a child that
+    outlived a failed startup — timeout, a check that failed — had no record naming it, and
+    `down` could not find it. The pid goes into the existing record at once — asserted from
+    inside the first health poll, so a write moved into the timeout branch fails here — and the
+    previous PAC and watchdog it holds are kept."""
+    _up_after_a_crash(profile, monkeypatch, lambda service: netproxy.PacStatus("", False, False))
+    config.write_runtime({**config.read_runtime(), "watchdogPid": 77})
+
+    spawned = []
+
+    def silent_health():
+        if spawned:  # the look before the spawn sees the crash record; every poll after it, the child
+            assert config.read_runtime()["proxyPid"] == 4321, "recorded before the first poll, not after the wait"
+        return None
+
+    monkeypatch.setattr(api, "_health", silent_health)
+    clock = {"now": 1_000.0}
+    monkeypatch.setattr(time, "time", lambda: clock["now"])
+    monkeypatch.setattr(time, "sleep", lambda seconds: clock.__setitem__("now", clock["now"] + 13))
+    monkeypatch.setattr(supervisor, "_pid_alive", lambda pid: True)
+
+    class Survivor:
+        pid = 4321
+
+        def terminate(self):
+            pass
+
+        def wait(self, timeout):
+            raise subprocess.TimeoutExpired("mitmdump", timeout)
+
+        def kill(self):
+            pass
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: spawned.append(a) or Survivor())
+
+    result = runner.invoke(cli.cli, ["up"])
+
+    # A SystemExit, not an AssertionError from inside the poll masquerading as exit 1.
+    assert isinstance(result.exception, SystemExit) and result.exit_code == 1, result.output
+    assert config.read_runtime()["proxyPid"] == 4321, "recorded before the wait, so `down` can find it"
+    assert config.read_runtime()["previousPac"] == _CORPORATE, "into the record that was there, not over it"
+    assert config.read_runtime()["watchdogPid"] == 77
+
+
+def test_status_reports_a_record_it_cannot_read(profile, runner, monkeypatch):
+    """`status` read a corrupt record as absent and reported INTERCEPT ACTIVE with exit 0 — over a
+    run whose `down` could not restore anything."""
+    config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
+    config.runtime_file().write_bytes(b"not json at all\xff")
+    _status_network(monkeypatch)
+    monkeypatch.setattr(api, "_health", lambda: _health_payload())
+
+    as_json = runner.invoke(cli.cli, ["status", "--json"])
+    text = runner.invoke(cli.cli, ["status"])
+
+    assert as_json.exit_code == 1
+    assert "cannot be read" in json.loads(as_json.output)["runtimeError"]
+    assert text.exit_code == 1
+    assert "runtime record" in text.output and "cannot restore" in text.output
+
+
+def test_watchdog_keeps_watching_over_a_record_it_cannot_read(profile, runner, monkeypatch):
+    """Unreadable is not "down has been": the poll that cannot read the record neither retires nor
+    repairs, and asks again."""
+    config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
+    config.runtime_file().write_bytes(b"not json at all\xff")
+    repaired = []
+    monkeypatch.setattr(api, "_health", lambda: {"pid": 99})
+    monkeypatch.setattr(netproxy, "pac_status", lambda service: netproxy.PacStatus(netproxy.pac_url(), False, True))
+    monkeypatch.setattr(netproxy, "set_pac", lambda service: repaired.append(service))
+
+    def stop(seconds):
+        raise _Stop
+
+    monkeypatch.setattr(time, "sleep", stop)
+
+    result = runner.invoke(cli.cli, ["_watchdog", "Wi-Fi"])
+
+    assert isinstance(result.exception, _Stop), "it must reach the sleep, not the return"
+    assert repaired == [], "whose service this is could not be read; nothing is repaired on a guess"
+    assert config.runtime_file().read_bytes() == b"not json at all\xff"
+
+
+def test_watchdog_switches_ours_off_and_keeps_a_record_it_cannot_read(profile, runner, monkeypatch):
+    """The proxy died and the record is unreadable: what to put back is unknown, that the Mac must
+    not stay routed at a dead port is not. Ours goes off; the file stays for `down` and the person
+    reading it. Before, the corrupt file was read as absent and deleted after a "restore"."""
+    config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
+    config.runtime_file().write_bytes(b"not json at all\xff")
+    restored = []
+    monkeypatch.setattr(api, "_health", lambda: None)
+    monkeypatch.setattr(netproxy, "pac_status", lambda service: netproxy.PacStatus(netproxy.pac_url(), True, True))
+    monkeypatch.setattr(netproxy, "restore_pac", lambda *a: restored.append(a))
+
+    assert runner.invoke(cli.cli, ["_watchdog", "Wi-Fi"]).exit_code == 0
+    assert restored == [("Wi-Fi", "", False)]
+    assert config.runtime_file().read_bytes() == b"not json at all\xff"
+
+
+def test_down_touches_nothing_when_the_proxys_identity_cannot_be_checked(profile, runner, fake_network, monkeypatch):
+    """Suppressed, a `ps` that failed let `down` disable another directory's PAC and only then
+    report the pid as unverified. Whose proxy this is has to be known before anything is touched."""
+    config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
+    config.runtime_file().write_bytes(b"not json at all\xff")
+    monkeypatch.setattr(api, "_health", lambda: {"pid": 4242, "profileFingerprint": config.PROFILE_FINGERPRINT})
+    monkeypatch.setattr(supervisor, "_pid_alive", lambda pid: True)
+
+    def ps_is_broken(pid, marker):
+        raise supervisor.ProcessCheckError(f"`ps -p {pid}` failed: 1")
+
+    monkeypatch.setattr(supervisor, "_identity_of", ps_is_broken)
+
+    result = runner.invoke(cli.cli, ["down"])
+
+    assert result.exit_code == 1
+    assert "could not check whose proxy answers" in result.output and "nothing was changed" in result.output
+    assert fake_network["restored"] is None and fake_network["terminated"] == []
+
+
+def test_down_does_not_say_nothing_to_stop_over_a_record_it_cannot_read(profile, runner, monkeypatch):
+    """Proxy and watchdog dead, Wi-Fi off, record corrupt: "nothing to stop — no runtime state"
+    with exit 0 was said over a file that may hold the only copy of the previous PAC."""
+    config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
+    config.runtime_file().write_bytes(b"not json at all\xff")
+    monkeypatch.setattr(api, "_health", lambda: None)
+    monkeypatch.setattr(netproxy, "active_service", lambda: None)
+
+    result = runner.invoke(cli.cli, ["down"])
+
+    assert result.exit_code == 1
+    assert "nothing to stop" not in result.output
+    assert "cannot be read" in result.output and "what the record holds is unknown" in result.output
+    assert config.runtime_file().exists()
+
+
+def test_up_stops_its_child_when_it_cannot_record_it(profile, runner, monkeypatch):
+    """The first write exists so a child that outlives a failed startup can be found; a write that
+    fails and is carried past leaves exactly the child it was meant to make findable."""
+    _up_after_a_crash(profile, monkeypatch, lambda service: netproxy.PacStatus("", False, False))
+    signalled = []
+
+    class Child:
+        pid = 4321
+
+        def terminate(self):
+            signalled.append("SIGTERM")
+
+        def wait(self, timeout):
+            return 0
+
+        def poll(self):
+            return 0 if signalled else None
+
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: Child())
+
+    def disk_full(data):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(config, "write_runtime", disk_full)
+
+    result = runner.invoke(cli.cli, ["up"])
+
+    assert result.exit_code == 1
+    assert "could not record the proxy it started" in result.output
+    assert signalled == ["SIGTERM"]
+    assert "still running" not in result.output
+
+
+def test_up_refuses_to_start_over_a_recorded_proxy_that_is_alive(profile, runner, monkeypatch):
+    """The recorded proxy is alive with its control port hung, so health is silent. Started over
+    it, the child lost the port race and died, the record was rewritten with the child's pid,
+    and the survivor was forgotten — the next `down` found "nothing" and said stopped."""
+    _up_after_a_crash(profile, monkeypatch, lambda service: netproxy.PacStatus(netproxy.pac_url(), True, True))
+    monkeypatch.setattr(supervisor, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(
+        supervisor, "_identity_of", lambda pid, marker: supervisor.Identity.OURS
+    )  # 99 is alive, and ours
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: pytest.fail("nothing may start over a live proxy"))
+
+    result = runner.invoke(cli.cli, ["up"])
+
+    assert result.exit_code == 1
+    assert "the recorded proxy (pid 99) is still running but not answering" in result.output
+    assert config.read_runtime()["proxyPid"] == 99
+
+
+def test_up_does_not_adopt_another_state_directorys_proxy(profile, runner, monkeypatch):
+    """The same profile under another `LYREBIRD_STATE_DIR` answers health with the same
+    fingerprint. Adopted, it went into this directory's record with a watchdog of its own, and
+    this directory's `down` then refused it by identity — `up` had created state its own `down`
+    could not clean."""
+    _up_after_a_crash(
+        profile, monkeypatch, lambda service: netproxy.PacStatus(netproxy.pac_url(), True, True), health=[]
+    )
+    config.runtime_file().unlink()
+    monkeypatch.setattr(supervisor, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(
+        supervisor, "_identity_of", lambda pid, marker: supervisor.Identity.THEIRS
+    )  # its argv names another root
+    spawned = []
+    monkeypatch.setattr(supervisor, "_spawn_watchdog", lambda service: spawned.append(service) or 4242)
+
+    result = runner.invoke(cli.cli, ["up"])
+
+    assert result.exit_code == 1
+    assert "the proxy already running on port 8088 (pid 4321) was not started by this Lyrebird" in result.output
+    assert spawned == [] and not config.runtime_file().exists()
+
+
+def test_down_does_not_say_stopped_when_no_pid_was_ever_known(profile, runner, fake_network, monkeypatch):
+    """Corrupt record, health silent — a proxy with a hung control port looks exactly like none.
+    Ours is switched off, nothing was signalled, and "proxy stopped" would be a claim about a
+    process this command never identified."""
+    config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
+    config.runtime_file().write_bytes(b"not json at all\xff")
+    monkeypatch.setattr(api, "_health", lambda: None)
+
+    result = runner.invoke(cli.cli, ["down"])
+
+    assert result.exit_code == 1
+    assert fake_network["restored"] == ("Wi-Fi", "", False)
+    assert "proxy stopped" not in result.output and "\nstopped" not in result.output
+    assert "none was found running for port 8088" in result.output and "the file is kept" in result.output
+
+
+def test_status_reports_the_proxys_own_unreadable_record(profile, runner, monkeypatch):
+    """The same profile under another state directory answers here with its own record broken;
+    this directory's record is fine — or absent — and `status` used to say all was well."""
+    _status_network(monkeypatch)
+    monkeypatch.setattr(
+        api, "_health", lambda: _health_payload(runtimeError="/elsewhere/runtime-8088.json cannot be read: x")
+    )
+
+    result = runner.invoke(cli.cli, ["status", "--json"])
+
+    assert result.exit_code == 1
+    assert json.loads(result.output)["runtimeError"].startswith("/elsewhere/")
+
+
+def test_up_refuses_a_proxy_that_took_the_port_during_startup(profile, runner, monkeypatch):
+    """Silent at the first look, somebody else answers once the child is spawned: another `up`
+    under another state directory — whose lock this one does not hold — won the port race, or a
+    proxy with a hung control port woke up. The first non-null health used to be taken as the
+    child's: recorded under the child's pid, given a PAC and a watchdog, INTERCEPT ACTIVE."""
+    _up_after_a_crash(
+        profile,
+        monkeypatch,
+        lambda service: netproxy.PacStatus("", False, False),
+        health=[None, {**_LIVE, "pid": 7777, "profileFingerprint": config.PROFILE_FINGERPRINT}],
+    )
+    signalled, installed = [], []
+
+    class Child:
+        pid = 4321
+
+        def terminate(self):
+            signalled.append("SIGTERM")
+
+        def wait(self, timeout):
+            return 0
+
+        def poll(self):
+            return 0 if signalled else None
+
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: Child())
+    monkeypatch.setattr(netproxy, "set_pac", lambda service: installed.append(service))
+
+    result = runner.invoke(cli.cli, ["up"])
+
+    assert result.exit_code == 1
+    assert "another proxy (pid 7777) answered on port 8088 while this one was starting" in result.output
+    assert signalled == ["SIGTERM"], "the child this `up` started is stopped again"
+    assert installed == []
+
+
+def test_up_fails_when_its_final_look_finds_another_proxy(profile, runner, monkeypatch):
+    """The port changed hands between the start and the final look: whatever answers now is not
+    what the PAC was installed for, and the banner used to say INTERCEPT ACTIVE about it."""
+    _up_after_a_crash(
+        profile,
+        monkeypatch,
+        lambda service: netproxy.PacStatus(netproxy.pac_url(), True, True),
+        health=[None, _LIVE, {**_LIVE, "pid": 8888}],
+    )
+
+    result = runner.invoke(cli.cli, ["up"])
+
+    assert result.exit_code == 1
+    assert "is now pid 8888, not 4321 — the port changed hands" in result.output
+    assert "INTERCEPT ACTIVE" not in result.output
+
+
+def test_down_refuses_a_health_without_a_pid(profile, runner, fake_network, monkeypatch):
+    """A responder that is Lyrebird-shaped but names no pid cannot be checked for whose it is.
+    Accepted, `down` changed the PAC and only then found the process still answering."""
+    _recorded_run()
+    monkeypatch.setattr(api, "_health", lambda: {"proxyUp": True})
+
+    result = runner.invoke(cli.cli, ["down"])
+
+    assert result.exit_code == 1
+    assert "answered without a pid" in result.output
+    assert fake_network["restored"] is None and fake_network["terminated"] == []
+
+
+def test_down_finds_a_silent_proxy_by_its_command_line(profile, runner, fake_network, monkeypatch):
+    """Health cannot reach a proxy whose control port is hung, and "no health" used to mean "no
+    proxy": the PAC was changed under it and nothing was signalled. Its command line still names
+    this port, so the process table finds it, identity says it is ours, and it is stopped."""
+    _recorded_run(watchdog_pid=None)
+    config.runtime_file().unlink()
+    monkeypatch.setattr(api, "_health", lambda: None)
+    monkeypatch.setattr(supervisor, "_proxies_on_port", lambda: [4321])
+    monkeypatch.setattr(supervisor, "_identity_of", lambda pid, marker: supervisor.Identity.OURS)
+
+    result = runner.invoke(cli.cli, ["down"])
+
+    assert result.exit_code == 0, result.output
+    assert (4321, "addon.py") in fake_network["terminated"]
+
+
+def test_down_refuses_a_silent_proxy_of_another_state_directory(profile, runner, fake_network, monkeypatch):
+    """Corrupt record here, another directory's proxy on the port with its control port hung:
+    with no pid from health, identity could not be checked and its PAC was disabled from here."""
+    config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
+    config.runtime_file().write_bytes(b"not json at all\xff")
+    monkeypatch.setattr(api, "_health", lambda: None)
+    monkeypatch.setattr(supervisor, "_proxies_on_port", lambda: [4321])
+    monkeypatch.setattr(supervisor, "_identity_of", lambda pid, marker: supervisor.Identity.THEIRS)
+
+    result = runner.invoke(cli.cli, ["down"])
+
+    assert result.exit_code == 1
+    assert "a proxy found running on port 8088 (pid 4321) was not started by this Lyrebird" in result.output
+    assert fake_network["restored"] is None and fake_network["terminated"] == []
+
+
+def test_down_refuses_an_unmarked_proxy_its_record_does_not_name(profile, runner, fake_network, monkeypatch):
+    """A proxy older than the identity tokens cannot say whose it is. Accepted on the marker
+    alone, another directory's old proxy was stopped and its PAC disabled from a directory whose
+    record was corrupt. Only a readable record naming its pid can vouch for it."""
+    config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
+    config.runtime_file().write_bytes(b"not json at all\xff")
+    monkeypatch.setattr(api, "_health", lambda: {"pid": 4242, "profileFingerprint": config.PROFILE_FINGERPRINT})
+    monkeypatch.setattr(supervisor, "_identity_of", lambda pid, marker: supervisor.Identity.UNMARKED)
+
+    result = runner.invoke(cli.cli, ["down"])
+
+    assert result.exit_code == 1
+    assert "predates Lyrebird's identity tokens and this directory's record does not name it" in result.output
+    assert fake_network["restored"] is None and fake_network["terminated"] == []
+
+
+def test_down_accepts_an_unmarked_proxy_its_record_names(profile, runner, fake_network, monkeypatch):
+    """The readable record is what vouches for a pre-token proxy: an upgrade must still be able
+    to stop the proxy the previous version started."""
+    _recorded_run(watchdog_pid=None)
+    health_until_terminated(monkeypatch, fake_network, pid=99)
+    monkeypatch.setattr(supervisor, "_identity_of", lambda pid, marker: supervisor.Identity.UNMARKED)
+
+    result = runner.invoke(cli.cli, ["down"])
+
+    assert result.exit_code == 0, result.output
+    assert (99, "addon.py") in fake_network["terminated"]
+
+
+def test_up_fails_when_its_final_look_reports_a_broken_record(profile, runner, monkeypatch):
+    """The proxy reads the record too. Its final health saying the record is unreadable means
+    the `down` this `up` promises cannot restore from it; `up` used to print INTERCEPT ACTIVE
+    over that and exit 0, while `status` on the same health exits 1."""
+    _up_after_a_crash(
+        profile,
+        monkeypatch,
+        lambda service: netproxy.PacStatus(netproxy.pac_url(), True, True),
+        health=[None, _LIVE, {**_LIVE, "runtimeError": "runtime-8088.json cannot be read: x"}],
+    )
+
+    result = runner.invoke(cli.cli, ["up"])
+
+    assert result.exit_code == 1
+    assert "the proxy reports its runtime record unreadable" in result.output
+
+
+def test_watchdog_keeps_the_record_of_a_proxy_that_is_alive_but_silent(profile, runner, monkeypatch):
+    """Health silent is what the death path sees — and what a live proxy with a hung control
+    port looks like. Restoring the PAC is right either way; deleting the record was not: it
+    named the survivor, and `down` then had nothing left to stop it by. The restore obligation
+    is dropped, the pid kept."""
+    config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
+    config.write_runtime({"proxyPid": 4321, "service": "Wi-Fi", "previousPac": _CORPORATE})
+    restored = []
+    monkeypatch.setattr(api, "_health", lambda: None)
+    monkeypatch.setattr(netproxy, "pac_status", lambda service: netproxy.PacStatus(netproxy.pac_url(), True, True))
+    monkeypatch.setattr(netproxy, "restore_pac", lambda *a: restored.append(a))
+    monkeypatch.setattr(supervisor, "_identity_of", lambda pid, marker: supervisor.Identity.OURS)
+
+    assert runner.invoke(cli.cli, ["_watchdog", "Wi-Fi"]).exit_code == 0
+    assert restored == [("Wi-Fi", _CORPORATE["url"], _CORPORATE["enabled"])]
+    assert config.read_runtime() == {"proxyPid": 4321, "service": "Wi-Fi"}
+
+
+def test_down_stops_a_silent_proxy_even_when_the_record_names_a_stale_pid(profile, runner, fake_network, monkeypatch):
+    """The record names dead pid 99; the scan finds a live, silent, verified proxy 4321. Used
+    only when the record named nothing, the scan's answer was checked and then dropped: `down`
+    stopped 99, deleted the record and printed "stopped" over 4321."""
+    _recorded_run(watchdog_pid=None)
+    monkeypatch.setattr(api, "_health", lambda: None)
+    monkeypatch.setattr(supervisor, "_proxies_on_port", lambda: [4321])
+    monkeypatch.setattr(supervisor, "_identity_of", lambda pid, marker: supervisor.Identity.OURS)
+
+    result = runner.invoke(cli.cli, ["down"])
+
+    assert result.exit_code == 0, result.output
+    assert (4321, "addon.py") in fake_network["terminated"]
+
+
+def test_down_gates_a_proxy_first_seen_on_its_second_reading(profile, runner, fake_network, monkeypatch):
+    """A pre-token proxy from another directory that timed out on the first health reading and
+    answers the second. Recorded and signalled straight away, the record `down` had just written
+    was what appeared to vouch for it. Every candidate passes the gate against the *original*
+    record."""
+    config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
+    config.runtime_file().write_bytes(b"not json at all\xff")
+    readings = iter([None, {"pid": 4321, "profileFingerprint": config.PROFILE_FINGERPRINT}])
+    monkeypatch.setattr(api, "_health", lambda: next(readings, None))
+    monkeypatch.setattr(supervisor, "_identity_of", lambda pid, marker: supervisor.Identity.UNMARKED)
+
+    result = runner.invoke(cli.cli, ["down"])
+
+    assert result.exit_code == 1
+    assert "predates Lyrebird's identity tokens" in result.output and "it is left running" in result.output
+    assert (4321, "addon.py") not in fake_network["terminated"]
+
+
+def test_down_stops_a_silent_proxy_when_there_is_no_route(profile, runner, fake_network, monkeypatch):
+    """No record, health silent, Wi-Fi off — and the scan finds this directory's proxy. "Nothing
+    to stop" was decided from health and the record alone, so the proxy it had just found and
+    verified was left running under an exit 0."""
+    config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(api, "_health", lambda: None)
+    monkeypatch.setattr(netproxy, "active_service", lambda: None)
+    monkeypatch.setattr(supervisor, "_proxies_on_port", lambda: [4321])
+    monkeypatch.setattr(supervisor, "_identity_of", lambda pid, marker: supervisor.Identity.OURS)
+
+    result = runner.invoke(cli.cli, ["down"])
+
+    assert "nothing to stop" not in result.output
+    assert (4321, "addon.py") in fake_network["terminated"]
