@@ -105,7 +105,10 @@ def _identity(marker: str) -> tuple[bool, list[tuple[str, str]]]:
     """
     if marker == "_watchdog":
         return True, [("--control-port ", str(config.CONTROL_PORT)), ("--state-root-id ", config.state_root_id())]
-    return False, [("--set lyrebird_control_port=", str(config.CONTROL_PORT))]
+    return False, [
+        ("--set lyrebird_control_port=", str(config.CONTROL_PORT)),
+        ("--set lyrebird_state_root_id=", config.state_root_id()),
+    ]
 
 
 def _first_token(option: str, command: str) -> str | None:
@@ -116,20 +119,33 @@ def _first_token(option: str, command: str) -> str | None:
     return match.group(1) if match else None
 
 
+class Identity(Enum):
+    """Whose process a pid is, read off its command line."""
+
+    GONE = "gone"
+    OURS = "ours"
+    THEIRS = "theirs"  # a Lyrebird process, and demonstrably another instance's
+    UNMARKED = "unmarked"  # a Lyrebird proxy older than the identity tokens: whose, it cannot say
+
+
 def _pid_is_ours(pid: int | None, marker: str) -> bool:
     """PIDs are reused. Never signal one whose command line isn't recognisably ours.
 
     Ours means this instance's, not any Lyrebird's: both children are spawned with the control
     port on their command line, and a pid reused by another instance's proxy or watchdog — same
-    marker, another port — used to be adopted by `up` and killed by `down`. A command line with
-    no port token predates this and is accepted on the marker alone, so an upgrade does not
-    strand the proxy it finds running. See test_pid_is_ours_refuses_another_instances_process.
-
-    A `ps` that fails is raised, not read as "not ours": that reading made `down` skip the signal
-    and print "stopped" — see test_pid_is_ours_raises_when_ps_fails.
+    marker, another port — used to be adopted by `up` and killed by `down`. A proxy with no
+    tokens predates them and is accepted here on the marker alone, so an upgrade does not strand
+    the proxy it finds running; the callers that adopt or tear down a proxy they did not record
+    ask `_identity_of` instead and refuse UNMARKED. See test_pid_is_ours_refuses_another_instances_process.
     """
+    return _identity_of(pid, marker) in (Identity.OURS, Identity.UNMARKED)
+
+
+def _identity_of(pid: int | None, marker: str) -> Identity:
+    """A `ps` that fails is raised, not read as "not ours": that reading made `down` skip the
+    signal and print "stopped" — see test_pid_is_ours_raises_when_ps_fails."""
     if not _pid_alive(pid):
-        return False
+        return Identity.GONE
     # `sim._run` is the generic capture-output subprocess helper; it lives in `simulator.py`
     # because every simctl call goes through it, and `fake_simctl` in the tests replaces that one.
     try:
@@ -138,21 +154,53 @@ def _pid_is_ours(pid: int | None, marker: str) -> bool:
         raise ProcessCheckError(f"could not run `ps -p {pid}`: {error}") from None
     if result.returncode != 0:
         if not _pid_alive(pid):
-            return False  # it exited between the two looks, which is what `ps` exits 1 for
+            return Identity.GONE  # it exited between the two looks, which is what `ps` exits 1 for
         detail = (result.stderr or result.stdout or "").strip()
         raise ProcessCheckError(f"`ps -p {pid}` failed: {detail or result.returncode}")
-    if marker not in result.stdout:
-        return False
+    return _identity_in(result.stdout, marker)
+
+
+def _identity_in(command: str, marker: str) -> Identity:
+    """OURS needs every token present and matching; one present and wrong is THEIRS; one missing
+    is UNMARKED — a proxy started before that token existed cannot say. A proxy carrying only the
+    control port used to read as OURS, and another directory's was stopped from a directory whose
+    record was corrupt. See test_a_proxy_with_only_the_port_token_is_unmarked."""
+    if marker not in command:
+        return Identity.THEIRS
     required, tokens = _identity(marker)
+    missing = False
     for option, expected in tokens:
-        found = _first_token(option, result.stdout)
+        found = _first_token(option, command)
         if found is None:
             if required:
-                return False
-            continue
-        if found != expected:
-            return False
-    return True
+                return Identity.THEIRS
+            missing = True
+        elif found != expected:
+            return Identity.THEIRS
+    return Identity.UNMARKED if missing else Identity.OURS
+
+
+def _proxies_on_port() -> list[int]:
+    """Every live Lyrebird proxy whose command line names this control port, by scanning `ps`.
+
+    For the proxy health cannot reach: one with a hung control port answers nothing, and `down`
+    used to read that as "no proxy" and change the PAC under it. Its command line still says
+    what it is. Raises when the scan itself fails. See test_down_finds_a_silent_proxy_by_its_command_line.
+    """
+    try:
+        result = sim._run(["ps", "-axo", "pid=,command="])
+    except OSError as error:
+        raise ProcessCheckError(f"could not run `ps -axo`: {error}") from None
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        raise ProcessCheckError(f"`ps -axo` failed: {detail or result.returncode}")
+    token = str(config.CONTROL_PORT)
+    found = []
+    for line in result.stdout.splitlines():
+        pid, _, command = line.strip().partition(" ")
+        if pid.isdigit() and "addon.py" in command and _first_token("--set lyrebird_control_port=", command) == token:
+            found.append(int(pid))
+    return found
 
 
 def _signal(pid: int, sig: signal.Signals) -> bool:
@@ -196,6 +244,62 @@ def _terminate(pid: int | None, marker: str) -> Termination:
     return Termination.STILL_RUNNING
 
 
+def _require_this_lyrebirds(
+    pid: int | None, what: str, recorded_pid: int | None, *, consequence: str = "nothing was changed"
+) -> None:
+    """Refuse, with nothing changed, unless `pid` is a proxy this state directory started — or
+    the check cannot be made. Shared by `up`'s adoption and `down`'s teardown: a proxy another
+    directory started is recorded, watched and restored there. A proxy older than the identity
+    tokens cannot say whose it is; only a readable record of this directory naming its pid can —
+    see test_down_refuses_an_unmarked_proxy_its_record_does_not_name."""
+    if not pid:
+        click.echo(
+            f"{ui.RED}✗ {what} on port {config.CONTROL_PORT} answered without a pid, so whose it is cannot be "
+            f"checked — {consequence}{ui.R}"
+        )
+        raise SystemExit(1)
+    try:
+        identity = _identity_of(pid, "addon.py")
+    except ProcessCheckError as error:
+        click.echo(
+            f"{ui.RED}✗ could not check whose proxy answers on port {config.CONTROL_PORT} (pid {pid}): {error} — "
+            f"{consequence}{ui.R}\n   stop it by hand once it can be checked, or try again"
+        )
+        raise SystemExit(1) from None
+    if identity is Identity.THEIRS:
+        click.echo(
+            f"{ui.RED}✗ {what} on port {config.CONTROL_PORT} (pid {pid}) was not started by this Lyrebird — "
+            f"another state directory, or a reused pid — {consequence}{ui.R}\n"
+            f"   use the LYREBIRD_STATE_DIR that started it"
+        )
+        raise SystemExit(1)
+    if identity is Identity.UNMARKED and pid != recorded_pid:
+        click.echo(
+            f"{ui.RED}✗ {what} on port {config.CONTROL_PORT} (pid {pid}) predates Lyrebird's identity tokens and "
+            f"this directory's record does not name it — {consequence}{ui.R}\n"
+            f"   if it is yours, stop it by hand (`kill {pid}`) and check the proxy settings"
+        )
+        raise SystemExit(1)
+
+
+def _stop_child(proc: subprocess.Popen) -> str:
+    """Stop the proxy `up` itself spawned, SIGTERM then SIGKILL, and return the line to append
+    when it is still there or could not be signalled — "" when it is gone."""
+    try:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                proc.wait(timeout=_KILL_WAIT_SECONDS)
+    except OSError as error:
+        return f"\n   the proxy (pid {proc.pid}) could not be signalled ({error}) — stop it by hand"
+    if proc.poll() is None:
+        return f"\n   the proxy (pid {proc.pid}) is still running — stop it by hand"
+    return ""
+
+
 def _child_env() -> dict:
     return {**os.environ, "LYREBIRD_PROFILE": str(config.PROFILE_DIR)}
 
@@ -221,6 +325,8 @@ def _proxy_argv() -> list[str]:
         str(MITMDUMP),
         "--set",
         f"lyrebird_control_port={config.CONTROL_PORT}",  # first, for `ps`; see _pid_is_ours
+        "--set",
+        f"lyrebird_state_root_id={config.state_root_id()}",
         "--listen-host",
         config.PROXY_LISTEN_HOST,
         "--listen-port",
@@ -471,16 +577,49 @@ def _select_before_relaunch(name: str, health: dict | None) -> str | None:
 def _up_locked(
     bundle_id: str | None, no_relaunch: bool = False, use_name: str | None = None, simulator_selector: str | None = None
 ) -> None:
-    runtime = config.read_runtime()
+    try:
+        runtime = config.read_runtime()
+    except config.RuntimeRecordUnreadable as error:
+        # The migration and restore below act on what this record says; started over one that
+        # cannot be read, `up` would snapshot the network afresh and the previous PAC it may hold
+        # would be lost. See test_up_refuses_to_start_over_a_record_it_cannot_read.
+        click.echo(
+            f"{ui.RED}✗ the record for port {config.CONTROL_PORT} cannot be read ({error.reason}) — nothing "
+            f"started{ui.R}\n   run `lyrebird down` to stop what it names and put the network back, then "
+            f"fix or remove {error.path}"
+        )
+        raise SystemExit(1) from None
     existing = api._health()
     # Kept rather than fetched again later: this is the reading `--use` checks its scenario against.
     health = existing
 
     if existing:
         api._require_same_profile(existing)
+        # The same profile under another state directory answers the same way; adopted, it went
+        # into this directory's record with a watchdog of its own, and this directory's `down`
+        # then refused it by identity. See test_up_does_not_adopt_another_state_directorys_proxy.
+        _require_this_lyrebirds(existing.get("pid"), "the proxy already running", runtime.get("proxyPid"))
         click.echo(f"{ui.YELLOW}proxy already running{ui.R} (scenario '{existing['activeScenario']}')")
         proxy_pid = existing.get("pid", 0)
     else:
+        # A recorded proxy that is alive but not answering is not a dead one to start over: the
+        # child would lose the port race, and the record — rewritten with the child's pid —
+        # would forget the survivor. See test_up_refuses_to_start_over_a_recorded_proxy_that_is_alive.
+        recorded_pid = runtime.get("proxyPid")
+        try:
+            survivor = _pid_is_ours(recorded_pid, "addon.py")
+        except ProcessCheckError as error:
+            click.echo(
+                f"{ui.RED}✗ could not check whether the recorded proxy (pid {recorded_pid}) is still running: "
+                f"{error} — nothing started{ui.R}\n   run `lyrebird down` once it can be checked"
+            )
+            raise SystemExit(1) from None
+        if survivor:
+            click.echo(
+                f"{ui.RED}✗ the recorded proxy (pid {recorded_pid}) is still running but not answering on port "
+                f"{config.CONTROL_PORT} — nothing started{ui.R}\n   run `lyrebird down` to stop it first"
+            )
+            raise SystemExit(1)
         _start_fresh_log()
         # Popen dups the fd for the child, so closing our copy immediately is correct.
         with open(config.LOG_FILE, "a", encoding="utf-8") as log:
@@ -492,10 +631,37 @@ def _up_locked(
                 start_new_session=True,
                 env=_child_env(),
             )
+        # Recorded now, into whatever record is there, so every exit below — the timeout, a check
+        # that failed, a foreign proxy that took the port — leaves `down` a pid to act on. The
+        # record is rewritten whole once the PAC is dealt with. Strict: a write that failed here
+        # would leave the child with no record naming it, which is the gap this write closes —
+        # so the child is stopped instead. See test_up_records_its_child_before_the_startup_wait
+        # and test_up_stops_its_child_when_it_cannot_record_it.
+        try:
+            config.write_runtime({**runtime, "proxyPid": proc.pid})
+        except OSError as error:
+            click.echo(
+                f"{ui.RED}✗ could not record the proxy it started ({config.runtime_file()}: {error}) — "
+                f"stopping it again{ui.R}{_stop_child(proc)}"
+            )
+            raise SystemExit(1) from None
+        runtime = {**runtime, "proxyPid": proc.pid}
         deadline = time.time() + 12
         while True:
             health = api._health()
             if health is not None:
+                if health.get("pid") != proc.pid:
+                    # Somebody else answered: another `up` — under another state directory,
+                    # whose lock this one does not hold — won the port race, or a proxy that
+                    # was silent at the first look woke up. Adopted, it was recorded under the
+                    # child's pid, given a PAC and a watchdog, and reported INTERCEPT ACTIVE.
+                    # See test_up_refuses_a_proxy_that_took_the_port_during_startup.
+                    click.echo(
+                        f"{ui.RED}✗ another proxy (pid {health.get('pid')}) answered on port "
+                        f"{config.CONTROL_PORT} while this one was starting — not the one this `up` started"
+                        f"{ui.R}{_stop_child(proc)}\n   run `lyrebird down` under the state directory that owns it"
+                    )
+                    raise SystemExit(1)
                 break
             # A check that failed has not shown the child exited; the deadline below decides.
             with contextlib.suppress(ProcessCheckError):
@@ -506,19 +672,7 @@ def _up_locked(
                 # Don't leave an orphan that becomes healthy after we have given up on it — and
                 # say so if it is left anyway, rather than reporting a timeout over a child that
                 # is still there. See test_up_names_a_child_that_survives_its_startup_cleanup.
-                left = ""
-                try:
-                    proc.terminate()
-                    try:
-                        proc.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        proc.kill()
-                        with contextlib.suppress(subprocess.TimeoutExpired):
-                            proc.wait(timeout=_KILL_WAIT_SECONDS)
-                except OSError as error:
-                    left = f"\n   the proxy (pid {proc.pid}) could not be signalled ({error}) — stop it by hand"
-                if not left and proc.poll() is None:
-                    left = f"\n   the proxy (pid {proc.pid}) is still running — stop it by hand"
+                left = _stop_child(proc)
                 click.echo(
                     f"{ui.RED}proxy did not become healthy in time — last log lines:{ui.R}\n"
                     f"{ui._tail_log(20)}\n   full log: {config.LOG_FILE}{left}"
@@ -719,6 +873,22 @@ def _up_locked(
     if final is None:
         click.echo(f"{ui.RED}✗ the proxy stopped answering on port {config.CONTROL_PORT} during startup{ui.R}")
         failures.append("the proxy stopped answering during startup")
+    if final is not None and final.get("runtimeError"):
+        # The proxy reads the record too, and it saying the record is broken means the `down`
+        # this `up` promises cannot restore from it. See test_up_fails_when_its_final_look_reports_a_broken_record.
+        click.echo(f"{ui.RED}✗ the proxy reports its runtime record unreadable: {final['runtimeError']}{ui.R}")
+        failures.append("the runtime record is unreadable")
+    changed_hands = final is not None and final.get("pid") != proxy_pid
+    if final is not None and changed_hands:
+        # The port changed hands between the start and this look. Whatever answers now is not
+        # what the PAC was installed for, and no banner below may describe it as if it were.
+        # See test_up_fails_when_its_final_look_finds_another_proxy.
+        now = final.get("pid")
+        click.echo(
+            f"{ui.RED}✗ the proxy answering on port {config.CONTROL_PORT} is now pid {now}, not {proxy_pid} — "
+            f"the port changed hands during startup{ui.R}"
+        )
+        failures.append(f"the port changed hands during startup (pid {proxy_pid} → {now})")
     try:
         intercepting = netproxy.intercepting(service)
     except netproxy.NetworkSetupError as error:
@@ -728,7 +898,9 @@ def _up_locked(
         click.echo(f"{ui.RED}✗ could not read the PAC on '{service}' after installing it: {error}{ui.R}")
         failures.append(f"could not read the PAC on '{service}': {error}")
     else:
-        if discovery_error and service:
+        if changed_hands:
+            pass  # said above; a banner about a proxy this run did not start would be a claim
+        elif discovery_error and service:
             # No banner either way: "INTERCEPT ACTIVE" would claim a route this command could not
             # read, and "NOT INTERCEPTING — PAC is disabled/not ours" a diagnosis it never made.
             # The failure was printed, with the reason, when discovery failed.
@@ -800,8 +972,41 @@ def down() -> None:
 
 
 def _down_locked() -> None:
-    runtime = config.read_runtime()
+    unreadable: config.RuntimeRecordUnreadable | None = None
+    try:
+        runtime = config.read_runtime()
+    except config.RuntimeRecordUnreadable as error:
+        # Worked around, not read as absent: what follows still stops the proxy and takes the
+        # routing off it, but "previous PAC" is unknown, so nothing below may claim to have
+        # restored it, the file stays for the user to read, and the exit code says so. Said once,
+        # here, whichever branch this run ends in. See
+        # test_down_does_not_claim_to_restore_from_a_record_it_could_not_read.
+        unreadable, runtime = error, {}
+        click.echo(
+            f"{ui.RED}✗ {error.path} cannot be read ({error.reason}) — the previous proxy settings it holds are "
+            f"unknown{ui.R}\n   this run stops what it can and switches Lyrebird's PAC off, but cannot put them "
+            f"back: do that by hand (System Settings ▸ Network ▸ <service> ▸ Proxies), then delete the file"
+        )
+    # What the record — and only the record — names, captured before health fills the gap: it is
+    # what vouches for a proxy older than the identity tokens, and health's own pid must not.
+    recorded_pid = runtime.get("proxyPid")
     health = api._health()
+    if not health:
+        # Health cannot reach a proxy whose control port is hung, and `down` used to read that as
+        # none and change the PAC under it. Its command line still says what it is: this port's,
+        # and whose. See test_down_finds_a_silent_proxy_by_its_command_line.
+        try:
+            silent = _proxies_on_port()
+        except ProcessCheckError as error:
+            click.echo(
+                f"{ui.RED}✗ could not check for a proxy on port {config.CONTROL_PORT} ({error}) — nothing was "
+                f"changed{ui.R}"
+            )
+            raise SystemExit(1) from None
+        for pid in silent:
+            _require_this_lyrebirds(pid, "a proxy found running", recorded_pid)
+    else:
+        silent = []
 
     # The runtime file can be missing or unreadable — deleted by hand, or written by a version
     # that crashed mid-write. Without this, `down` would find nothing to do and cheerfully report
@@ -809,13 +1014,31 @@ def _down_locked() -> None:
     # what we can: health knows the pid, and the OS knows which service carries the default route.
     if health and not runtime.get("proxyPid"):
         runtime = {**runtime, "proxyPid": health.get("pid")}
+    if health:
+        _require_this_lyrebirds(health.get("pid"), "the proxy answering", recorded_pid)
+        running = health.get("profileFingerprint")
+        if running and running != config.PROFILE_FINGERPRINT:
+            # Another profile of this user, on this port: the record is the port's and the
+            # routing points here, so `down` still takes it down — and says whose it was.
+            click.echo(
+                f"{ui.YELLOW}the proxy on port {config.CONTROL_PORT} runs another profile ({running}) — stopping "
+                f"it anyway: the network points at this port{ui.R}"
+            )
     discovery_error = None
     if not runtime.get("service"):
         discovered, discovery_error = _discover_service()
         if health or discovered:
             runtime = {**runtime, "service": discovered}
 
-    if not health and not runtime:
+    if not health and not runtime and not silent:
+        # `silent` too: a proxy the scan found is something to stop, route or no route. See
+        # test_down_stops_a_silent_proxy_when_there_is_no_route.
+        if unreadable:
+            # Nothing running, and a record that cannot be read: what it holds — a previous PAC,
+            # a watchdog to stop — was neither done nor shown to be absent. See
+            # test_down_does_not_say_nothing_to_stop_over_a_record_it_cannot_read.
+            click.echo(f"{ui.RED}✗ no proxy running; what the record holds is unknown — see above{ui.R}")
+            raise SystemExit(1)
         if discovery_error:
             # No proxy and no record, but the one read that could have found a PAC of ours still
             # installed never answered. "Nothing to stop" is true of the proxy and unproven of the
@@ -843,8 +1066,10 @@ def _down_locked() -> None:
     # From here the record is rewritten as each obligation is met, so a `down` that has to stop
     # early leaves the next one exactly what remains — not a watchdog to stop again, and not a
     # PAC to restore a second time over whatever the user set in between. See
-    # test_down_records_what_is_left_when_the_proxy_will_not_stop.
-    runtime = _record(runtime, watchdogPid=None)
+    # test_down_records_what_is_left_when_the_proxy_will_not_stop. An unreadable record is the
+    # exception: it is not rewritten, because its bytes may still hold the previous PAC.
+    record = _remember if unreadable else _record
+    runtime = record(runtime, watchdogPid=None)
 
     service = runtime.get("service")
     unrestorable = False
@@ -871,27 +1096,36 @@ def _down_locked() -> None:
             raise SystemExit(1) from error
         if previous is None:
             click.echo(f"{ui.DIM}PAC on '{service}' is not ours — left untouched{ui.R}")
+        elif unreadable:
+            # Ours was switched off — the Mac must not stay routed at a port about to go quiet —
+            # and that is all that is known to have happened.
+            click.echo(f"{ui.RED}✗ switched Lyrebird's PAC off on '{service}'; the previous settings are unknown{ui.R}")
         elif previous.get("url"):
             click.echo(f"✓ restored the previous PAC on '{service}': {previous['url']}")
         else:
             click.echo(f"✓ PAC removed from '{service}' — direct networking restored")
-        runtime = _record(runtime, previousPac=None)
+        runtime = record(runtime, previousPac=None)
 
     proxy_pid = runtime.get("proxyPid")
     proxy = _stop(proxy_pid, "addon.py")
-    # A proxy answering under another pid — on the first reading or now — once the record's is
-    # proven gone: a replacement started under a different state root, or an `up` that died
-    # before it could record its child. `down` stops what is on its port (the PAC points there)
-    # rather than exiting 1 over the stale pid on every run, and the first reading counts because
-    # a replacement that hung between the two readings would otherwise be forgotten. See
-    # test_down_stops_the_proxy_that_answers_when_the_recorded_one_is_gone and
-    # test_down_does_not_forget_a_replacement_that_went_silent.
-    seen = [(reading or {}).get("pid") for reading in (health, api._health())]
-    for replacement in dict.fromkeys(pid for pid in seen if pid not in (None, proxy_pid)):
+    # Every other proxy this run has seen on its port — on the first health reading, in the
+    # process table, or answering now — is a candidate once the record's is proven gone: a
+    # replacement started under a different state root, an `up` that died before it could record
+    # its child, a survivor with a hung control port. `down` stops what is on its port (the PAC
+    # points there) rather than exiting 1 over a stale pid on every run — and each candidate
+    # passes the same identity gate against the *original* record before it is recorded or
+    # signalled, because recording it first would be the record vouching for what it just met.
+    # See test_down_stops_the_proxy_that_answers_when_the_recorded_one_is_gone,
+    # test_down_does_not_forget_a_replacement_that_went_silent,
+    # test_down_stops_a_silent_proxy_even_when_the_record_names_a_stale_pid and
+    # test_down_gates_a_proxy_first_seen_on_its_second_reading.
+    seen = [(health or {}).get("pid"), *silent, (api._health() or {}).get("pid")]
+    for candidate in dict.fromkeys(pid for pid in seen if pid not in (None, proxy_pid)):
         if not proxy.gone:
             break
-        proxy_pid = replacement
-        runtime = _record(runtime, proxyPid=proxy_pid)  # before the signal: a failed stop must not lose it
+        _require_this_lyrebirds(candidate, "the proxy answering", recorded_pid, consequence="it is left running")
+        proxy_pid = candidate
+        runtime = record(runtime, proxyPid=proxy_pid)  # before the signal: a failed stop must not lose it
         proxy = _stop(proxy_pid, "addon.py")
 
     # "stopped" needs two proofs, and the record outlives both: the pid is gone, *and* nothing
@@ -916,11 +1150,29 @@ def _down_locked() -> None:
             why = f"and pid {proxy_pid} is {proxy.value} — this is not the proxy the record names"
         click.echo(f"{ui.YELLOW}⚠ proxy still responding on port {config.CONTROL_PORT} {why}; the record is kept{ui.R}")
         raise SystemExit(1)
+    if unreadable:
+        if proxy_pid is None:
+            # Nothing answered and the record names nothing readable, so no process was stopped —
+            # and a proxy with a hung control port looks exactly like none. Said, not "stopped".
+            # See test_down_does_not_say_stopped_when_no_pid_was_ever_known.
+            click.echo(
+                f"{ui.YELLOW}no proxy answered, none was found running for port {config.CONTROL_PORT}, and no pid "
+                f"could be read from the record — the file is kept{ui.R}"
+            )
+        else:
+            click.echo(f"{ui.YELLOW}proxy stopped; {unreadable.path} is kept — see above{ui.R}")
+        raise SystemExit(1)
     if config.runtime_file().is_file():
         config.runtime_file().unlink()
     click.echo(f"{ui.GREEN}stopped{ui.R}")
     if unrestorable:
         raise SystemExit(1)  # the proxy is down; the network was never put back
+
+
+def _remember(runtime: dict, **remaining: Any) -> dict:
+    """`_record` without the write, for a `down` whose record on disk must be left as it is."""
+    updated = {**runtime, **remaining}
+    return {key: value for key, value in updated.items() if value is not None}
 
 
 def _record(runtime: dict, **remaining: Any) -> dict:
@@ -969,7 +1221,15 @@ def status(as_json: bool) -> None:
     # proxy before exiting 1, so `--profile B status && …` cannot proceed against one mocking A.
     running = (health or {}).get("profileFingerprint")
     foreign = bool(running) and running != config.PROFILE_FINGERPRINT
-    runtime = config.read_runtime()
+    # This directory's record, or the one the proxy reports about its own — the same profile
+    # under another state directory answers here too, and its `down` cannot restore either.
+    runtime_error = None if foreign else (health or {}).get("runtimeError")
+    try:
+        runtime = config.read_runtime()
+    except config.RuntimeRecordUnreadable as error:
+        # Reported, and the exit code says the run is not as `up` left it: `down` will not be
+        # able to restore from this record. See test_status_reports_a_record_it_cannot_read.
+        runtime, runtime_error = {}, str(error)
     # Discovery can fail the same way the PAC read below can, and it is reported the same way: as
     # `pacError` with `service` null, not as a traceback that leaves `--json` printing nothing.
     service, pac_error = runtime.get("service"), None
@@ -1009,6 +1269,7 @@ def status(as_json: bool) -> None:
                     "profileFingerprint": config.PROFILE_FINGERPRINT,
                     "runningProfileFingerprint": running,
                     "pacError": pac_error,
+                    "runtimeError": runtime_error,
                     "activeScenario": mine.get("activeScenario"),
                     "overrideCount": mine.get("overrideCount"),
                     "scenarios": None if foreign else (health or {}).get("scenarios", []),
@@ -1066,13 +1327,15 @@ def status(as_json: bool) -> None:
             state = "enabled" if pac.enabled else f"{ui.RED}DISABLED{ui.R}"
             owner = "" if pac.ours or not pac.url else " · not ours"
             click.echo(f"  PAC on '{service}': {pac.url or '(none)'} · {state}{owner}")
+        if runtime_error:
+            click.echo(f"  {ui.RED}✗ runtime record: {runtime_error} — `down` cannot restore from it{ui.R}")
         if simulator:
             click.echo(
                 f"  simulator: {simulator.get('name')} ({simulator.get('udid')}) "
                 f"{ui.DIM}· CA + relaunch only; the PAC is not scoped to it{ui.R}"
             )
 
-    raise SystemExit(0 if health is not None and intercepting else 1)
+    raise SystemExit(0 if health is not None and intercepting and runtime_error is None else 1)
 
 
 @click.command()
@@ -1121,7 +1384,10 @@ def _should_retire() -> bool:
     """
     with open(config.lock_file(), "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        runtime = config.read_runtime()
+        try:
+            runtime = config.read_runtime()
+        except config.RuntimeRecordUnreadable:
+            return False  # unreadable is not gone: keep watching, and leave the file for `down`
         if not runtime:
             return True  # `down` has been, or this port's record belongs to another state root
         recorded = runtime.get("watchdogPid")
@@ -1150,7 +1416,11 @@ def _repair_pac(service: str) -> None:
     """
     with open(config.lock_file(), "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        if config.read_runtime().get("service") != service:
+        try:
+            recorded_service = config.read_runtime().get("service")
+        except config.RuntimeRecordUnreadable:
+            return  # whose service this is cannot be read: neither repair nor give up, ask again
+        if recorded_service != service:
             return  # migrated away from, or `down` has been: not ours to touch any more
         try:
             pac = netproxy.pac_status(service)
@@ -1179,7 +1449,20 @@ def _restore_after_death(service: str) -> bool:
         fcntl.flock(lock, fcntl.LOCK_EX)
         if api._health() is not None:
             return False
-        runtime = config.read_runtime()
+        try:
+            runtime = config.read_runtime()
+        except config.RuntimeRecordUnreadable:
+            # What to put back is unknown; that the Mac must not stay routed at a dead port is
+            # not. Ours is switched off, the file is kept for `down` and the person reading it.
+            # See test_watchdog_switches_ours_off_and_keeps_a_record_it_cannot_read.
+            for _ in range(_WATCHDOG_RESTORE_ATTEMPTS):
+                try:
+                    _restore_previous_pac(service, {})
+                except netproxy.NetworkSetupError:
+                    time.sleep(2)
+                    continue
+                break
+            return True
         if runtime.get("service") not in (None, service):
             # The record is another service's — an `up` moved the route and then failed before
             # it could replace this watchdog. Restoring *our* service from it would read the PAC
@@ -1191,10 +1474,20 @@ def _restore_after_death(service: str) -> bool:
             except netproxy.NetworkSetupError:
                 time.sleep(2)
                 continue
-            # Clear the runtime file: the settings it describes have been put back, so a later
-            # `up` must snapshot the network afresh rather than trust this record.
-            with contextlib.suppress(OSError):
-                config.runtime_file().unlink()
+            # The settings it describes have been put back, so a later `up` must snapshot the
+            # network afresh rather than trust this record — but the record also names the
+            # proxy, and one that is alive with its control port hung is exactly what this path
+            # sees as dead. Deleted, `down` had nothing left to stop it by. See
+            # test_watchdog_keeps_the_record_of_a_proxy_that_is_alive_but_silent.
+            try:
+                survivor = _pid_is_ours(runtime.get("proxyPid"), "addon.py")
+            except ProcessCheckError:
+                survivor = True  # unverifiable: keep the record rather than lose the pid
+            if survivor:
+                _record(runtime, previousPac=None)
+            else:
+                with contextlib.suppress(OSError):
+                    config.runtime_file().unlink()
             return True
         # Could not read the PAC, or could not put it back. The runtime file is the only record
         # of what to restore, so it stays for `down` — or the next `up` — to act on; deleting it

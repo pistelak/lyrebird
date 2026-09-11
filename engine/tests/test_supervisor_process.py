@@ -16,7 +16,13 @@ import pytest
 
 import simulator as sim
 import supervisor
-from supervisor import ProcessCheckError, Termination
+from supervisor import Identity, ProcessCheckError, Termination
+
+
+@pytest.fixture(autouse=True)
+def _real_identity(monkeypatch, _no_real_process_identity):
+    """These tests are about the real classifier; put it back under the CLI-wide double."""
+    monkeypatch.setattr(supervisor, "_identity_of", _no_real_process_identity)
 
 
 def _kill_raising(monkeypatch, error):
@@ -111,7 +117,7 @@ def test_terminate_reports_a_process_that_survives_sigkill(monkeypatch):
     ours throughout, both signals delivered. The outcome is STILL_RUNNING, not "stopped"."""
     sent = []
     _alive(monkeypatch)
-    monkeypatch.setattr(supervisor, "_pid_is_ours", lambda pid, marker: True)
+    monkeypatch.setattr(supervisor, "_identity_of", lambda pid, marker: supervisor.Identity.OURS)
     monkeypatch.setattr(supervisor, "_signal", lambda pid, sig: sent.append(sig) or True)
     monkeypatch.setattr(supervisor, "_DOWN_WAIT_SECONDS", 0.05)
     monkeypatch.setattr(supervisor, "_KILL_WAIT_SECONDS", 0.05)
@@ -124,9 +130,9 @@ def test_terminate_does_not_sigkill_a_pid_reused_during_the_wait(monkeypatch):
     """SIGTERM lands, the proxy exits, and the pid is handed to something else before the poll
     sees it gone. Without the ownership re-check, SIGKILL reaches the newcomer."""
     sent = []
-    ownership = iter([True, False])  # ours at the first look; somebody else's by the second
+    ownership = iter([Identity.OURS, Identity.THEIRS])  # ours at the first look; somebody else's by the second
     _alive(monkeypatch)
-    monkeypatch.setattr(supervisor, "_pid_is_ours", lambda pid, marker: next(ownership))
+    monkeypatch.setattr(supervisor, "_identity_of", lambda pid, marker: next(ownership))
     monkeypatch.setattr(supervisor, "_signal", lambda pid, sig: sent.append(sig) or True)
     monkeypatch.setattr(supervisor, "_DOWN_WAIT_SECONDS", 0.05)
 
@@ -149,7 +155,7 @@ def test_terminate_raises_when_the_signal_cannot_be_sent(monkeypatch):
     """`os.kill` refusing (EPERM: the process changed hands) was suppressed, and the proxy it
     named went on running under a "stopped"."""
     _alive(monkeypatch)
-    monkeypatch.setattr(supervisor, "_pid_is_ours", lambda pid, marker: True)
+    monkeypatch.setattr(supervisor, "_identity_of", lambda pid, marker: supervisor.Identity.OURS)
     _kill_raising(monkeypatch, PermissionError(errno.EPERM, "Operation not permitted"))
     with pytest.raises(ProcessCheckError, match="could not send SIGTERM to pid 4242"):
         supervisor._terminate(4242, "addon.py")
@@ -170,9 +176,13 @@ ROOT_ID = "0123456789ab"
 @pytest.mark.parametrize(
     ("command", "ours"),
     [
-        ("mitmdump --set lyrebird_control_port=8088 -s /path/to/addon.py", True),
+        (
+            f"mitmdump --set lyrebird_control_port=8088 --set lyrebird_state_root_id={ROOT_ID} -s /path/to/addon.py",
+            True,
+        ),
+        ("mitmdump --set lyrebird_control_port=8088 --set lyrebird_state_root_id=fedcba987654 -s /addon.py", False),
         ("mitmdump --set lyrebird_control_port=9099 -s /path/to/addon.py", False),
-        ("mitmdump -s /path/to/addon.py", True),  # a proxy older than the token: the port is unique anyway
+        ("mitmdump -s /path/to/addon.py", True),  # a proxy older than the tokens: the port is unique anyway
         (f"python cli.py _watchdog --control-port 8088 --state-root-id {ROOT_ID} Wi-Fi", True),
         (f"python cli.py _watchdog --control-port 9099 --state-root-id {ROOT_ID} Wi-Fi", False),
         ("python cli.py _watchdog --control-port 8088 --state-root-id fedcba987654 Ethernet", False),
@@ -180,6 +190,7 @@ ROOT_ID = "0123456789ab"
     ],
     ids=[
         "proxy ours",
+        "proxy other state root",
         "proxy other port",
         "proxy pre-token",
         "watchdog ours",
@@ -236,3 +247,42 @@ def test_pid_is_ours_refuses_a_foreign_process_whose_path_names_our_port(monkeyp
     command = "mitmdump --set lyrebird_control_port=9099 --set confdir=/tmp/lyrebird_control_port=8088/x -s addon.py\n"
     monkeypatch.setattr(sim, "_run", lambda args: subprocess.CompletedProcess(args, 0, command, ""))
     assert supervisor._pid_is_ours(4242, "addon.py") is False
+
+
+def test_a_proxy_without_tokens_is_unmarked_not_ours(monkeypatch):
+    """`_pid_is_ours` still accepts it — the port is unique and an upgrade must be able to stop
+    the previous version's proxy — but the callers that adopt or tear down a proxy their record
+    does not name ask `_identity_of`, and UNMARKED is not OURS."""
+    _alive(monkeypatch)
+    monkeypatch.setattr(sim, "_run", lambda args: subprocess.CompletedProcess(args, 0, "mitmdump -s /addon.py\n", ""))
+    assert supervisor._identity_of(4242, "addon.py") is Identity.UNMARKED
+    assert supervisor._pid_is_ours(4242, "addon.py") is True
+
+
+def test_proxies_on_port_finds_this_ports_proxies_in_the_process_table(monkeypatch, _no_real_process_scan):
+    listing = (
+        "  100 /usr/bin/something --set lyrebird_control_port=8088 unrelated\n"
+        "  101 mitmdump --set lyrebird_control_port=8088 --set lyrebird_state_root_id=x -s /a/addon.py\n"
+        "  102 mitmdump --set lyrebird_control_port=9099 -s /a/addon.py\n"
+        "  103 mitmdump -s /a/addon.py\n"
+    )
+    monkeypatch.setattr(supervisor.config, "CONTROL_PORT", 8088)
+    monkeypatch.setattr(sim, "_run", lambda args: subprocess.CompletedProcess(args, 0, listing, ""))
+    assert _no_real_process_scan() == [101]
+
+
+def test_proxies_on_port_raises_when_the_scan_fails(monkeypatch, _no_real_process_scan):
+    monkeypatch.setattr(sim, "_run", lambda args: subprocess.CompletedProcess(args, 1, "", "ps: no"))
+    with pytest.raises(ProcessCheckError, match="ps -axo"):
+        _no_real_process_scan()
+
+
+def test_a_proxy_with_only_the_port_token_is_unmarked(monkeypatch):
+    """The argv of a proxy started between the port token and the state-root token: it names
+    the port, which proves nothing about the directory. Read as OURS, another directory's was
+    stopped from a directory whose record was corrupt."""
+    _alive(monkeypatch)
+    monkeypatch.setattr(supervisor.config, "CONTROL_PORT", 8088)
+    command = "mitmdump --set lyrebird_control_port=8088 -s /path/to/addon.py\n"
+    monkeypatch.setattr(sim, "_run", lambda args: subprocess.CompletedProcess(args, 0, command, ""))
+    assert supervisor._identity_of(4242, "addon.py") is Identity.UNMARKED

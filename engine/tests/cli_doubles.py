@@ -115,7 +115,15 @@ def _up_after_a_crash(profile, monkeypatch, pac_status, *, service="Wi-Fi", heal
 
     monkeypatch.setattr(netproxy, "pac_status", read)
     monkeypatch.setattr(netproxy, "set_pac", install)
-    monkeypatch.setattr(supervisor, "_pid_is_ours", lambda pid, marker: True)
+    # The crashed proxy (99) is gone; everything else a test names — the live proxy, a watchdog —
+    # is alive and this Lyrebird's. `up` checks the recorded pid before it spawns over it, and
+    # the answering pid before it adopts it, so "ours for every pid" would refuse every start.
+    monkeypatch.setattr(supervisor, "_pid_alive", lambda pid: pid not in (None, 99))
+    monkeypatch.setattr(
+        supervisor,
+        "_identity_of",
+        lambda pid, marker: supervisor.Identity.GONE if pid in (None, 99) else supervisor.Identity.OURS,
+    )
     monkeypatch.setattr(supervisor, "_spawn_watchdog", lambda service: 4242)
 
 

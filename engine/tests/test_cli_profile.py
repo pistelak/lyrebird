@@ -16,6 +16,7 @@ import cli
 import config
 import netproxy
 import rules
+import supervisor
 from cli_doubles import (
     _BASE_SEQ,
     FOREIGN_FINGERPRINT,
@@ -242,11 +243,16 @@ def test_down_still_stops_a_proxy_that_belongs_to_another_profile(profile, runne
         lambda: None if fake_network["terminated"] else {"pid": 4242, "profileFingerprint": FOREIGN_FINGERPRINT},
     )
 
+    monkeypatch.setattr(
+        supervisor, "_identity_of", lambda pid, marker: supervisor.Identity.OURS
+    )  # this state directory's
+
     result = runner.invoke(cli.cli, ["down"])
 
-    assert result.exit_code == 0
-    assert fake_network["restored"] is not None, "the PAC must be restored whoever owns the proxy"
+    assert result.exit_code == 1, "the record is unreadable, so the previous PAC is unknown — never 0 here"
+    assert fake_network["restored"] == ("Wi-Fi", "", False), "ours switched off whoever owns the proxy"
     assert (4242, "addon.py") in fake_network["terminated"]
+    assert f"runs another profile ({FOREIGN_FINGERPRINT}) — stopping it anyway" in result.output
 
 
 def test_override_add_help_lists_every_override_field(profile, runner):

@@ -235,7 +235,15 @@ def _bound_simulator(selector: str | None) -> Simulator:
     rule as `up`'s applies (the single booted candidate, or a refusal naming them).
     """
     if selector is None:
-        recorded = config.read_runtime().get("simulator")
+        try:
+            recorded = config.read_runtime().get("simulator")
+        except config.RuntimeRecordUnreadable as error:
+            # Not "nothing recorded": that would resolve to whatever is booted, which may not be
+            # the device holding the CA. See test_relaunch_refuses_over_a_record_it_cannot_read.
+            raise SimulatorError(
+                f"the device this run trusted is recorded in {error.path}, which cannot be read "
+                f"({error.reason}) — pass --simulator, or fix or remove the file"
+            ) from None
         if isinstance(recorded, dict) and recorded.get("udid"):
             selector = str(recorded["udid"])
     return resolve_simulator(selector)

@@ -67,7 +67,7 @@ class Lyrebird:
         # health reports when the observation overruns: the service is discovered once and rarely
         # changes, so the last known name is a better answer than None — and None is what a fresh
         # proxy honestly has.
-        self._observation: asyncio.Future[tuple[str | None, bool, str | None]] | None = None
+        self._observation: asyncio.Future[tuple[str | None, bool, str | None, str | None]] | None = None
         self._last_service: str | None = None
 
     # MARK: - Lifecycle
@@ -78,6 +78,7 @@ class Lyrebird:
         # instance's proxy from another Lyrebird's after a pid is reused. The port itself still
         # arrives by environment.
         loader.add_option("lyrebird_control_port", int, 0, "the control port this proxy was started for")
+        loader.add_option("lyrebird_state_root_id", str, "", "the state directory this proxy was started from")
 
     async def running(self) -> None:
         if self._control_started:
@@ -119,11 +120,11 @@ class Lyrebird:
         try:
             # Shielded: the deadline gives up on *this* answer, not on the observation — cancelling
             # it would leave the next poll starting another thread against the same stuck command.
-            service, intercepting, pac_error = await asyncio.wait_for(
+            service, intercepting, pac_error, runtime_error = await asyncio.wait_for(
                 asyncio.shield(observation), timeout=_OBSERVE_DEADLINE
             )
         except TimeoutError:
-            service, intercepting = self._last_service, False
+            service, intercepting, runtime_error = self._last_service, False, None
             pac_error = f"PAC read did not finish within {_OBSERVE_DEADLINE}s"
         else:
             self._last_service = service
@@ -143,14 +144,17 @@ class Lyrebird:
         }
         if pac_error:
             meta["pacError"] = pac_error
+        if runtime_error:
+            meta["runtimeError"] = runtime_error
         return meta
 
     def _forget_observation(self, task: asyncio.Future) -> None:
         if self._observation is task:
             self._observation = None
 
-    def _observe(self) -> tuple[str | None, bool, str | None]:
-        """Everything in `_meta` that touches the OS, run on a worker thread.
+    def _observe(self) -> tuple[str | None, bool, str | None, str | None]:
+        """Everything in `_meta` that touches the OS, run on a worker thread: the service, whether
+        it intercepts, the PAC read's failure if any, and the runtime record's if any.
 
         Touches no `Store`: the store is only safe on the loop, and nothing here needs it.
         Discovery is inside the `try` too — `_service` may shell out to `route` and
@@ -158,19 +162,28 @@ class Lyrebird:
         can, and a failure there is the same unproven answer.
         """
         service = self._last_service  # kept if discovery itself is what fails
+        runtime_error = None
         try:
-            service = self._service()
-            return service, netproxy.intercepting(service), None
+            try:
+                service = self._service()
+            except config.RuntimeRecordUnreadable as error:
+                # What the OS says about the route is still a fact, and `intercepting` reports
+                # it; that `down` cannot restore from this record is a different fact, carried
+                # in its own field rather than by falsifying the first. See
+                # test_health_reports_an_unreadable_record_without_denying_the_route.
+                runtime_error = str(error)
+                service = netproxy.active_service()
+            return service, netproxy.intercepting(service), None, runtime_error
         except netproxy.NetworkSetupError as error:
             # Health must keep answering. The CLI reads "no health" as "no proxy": the watchdog
             # would restore the network over a live proxy, and `up` would start a second one. So
             # a PAC that could not be read is reported as such, next to an `intercepting` that
             # is false because it is unproven — not because the PAC was seen to be off.
-            return service, False, str(error)
+            return service, False, str(error), runtime_error
         except OSError as error:
             # `networksetup` or `route` could not be launched at all. Same claim as above — the
             # PAC is unread, not off — and the same field says so.
-            return service, False, f"could not run networksetup: {error}"
+            return service, False, f"could not run networksetup: {error}", runtime_error
 
     @staticmethod
     def _service() -> str | None:
