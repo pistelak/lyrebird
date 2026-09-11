@@ -36,6 +36,10 @@ def _run(args: list[str], check: bool = False) -> subprocess.CompletedProcess:
         # Raised, never returned as empty output: a `networksetup` that did not answer has told us
         # nothing about the PAC, and reading that as "no PAC" is the mistake `pac_status` documents.
         raise NetworkSetupError(f"`{' '.join(args)}` did not finish within {_COMMAND_TIMEOUT:g}s") from None
+    except OSError as error:
+        # A command that could not be started is the same silence as one that did not finish; a
+        # traceback out of `down` used to be the report — see test_a_command_that_cannot_start_is_a_network_setup_error.
+        raise NetworkSetupError(f"could not run `{' '.join(args)}`: {error}") from None
     if check and result.returncode != 0:
         detail = (result.stderr or result.stdout or "").strip()
         raise NetworkSetupError(f"`{' '.join(args)}` failed: {detail or result.returncode}")
@@ -43,16 +47,36 @@ def _run(args: list[str], check: bool = False) -> subprocess.CompletedProcess:
 
 
 def active_service() -> str | None:
-    """The network service carrying the default route (e.g. 'Wi-Fi')."""
-    match = re.search(r"interface:\s*(\S+)", _run(["route", "-n", "get", "default"]).stdout)
+    """The network service carrying the default route (e.g. 'Wi-Fi'), or None when there is none.
+
+    None is a claim — "this Mac has no default route right now" (Wi-Fi off) — and only one output
+    earns it: `route` exits 0 with `not in table` on stderr and nothing on stdout. Everything else
+    that yields no interface raises: a non-zero exit, or an exit 0 that answered something we do
+    not recognise. Before, all of those were None too, and `down` read "no default route" off a
+    `route` that had failed and exited 0 with "nothing to stop" — see
+    test_a_failed_route_command_is_not_no_default_route.
+    """
+    route = _run(["route", "-n", "get", "default"])
+    if "not in table" in route.stderr:
+        return None  # recognised before the exit status is judged: it is the one answer that is None
+    if route.returncode != 0:
+        raise NetworkSetupError(f"`route -n get default` failed: {_first_line(route) or route.returncode}")
+    match = re.search(r"^\s*interface:\s*(\S+)\s*$", route.stdout, re.MULTILINE)
     if not match:
-        return None
+        raise NetworkSetupError(f"`route -n get default` answered without an interface: {_first_line(route)!r}")
     interface = match.group(1)
-    order = _run(["networksetup", "-listnetworkserviceorder"]).stdout
-    for name, device in re.findall(r"\(\d+\)\s*(.+?)\n\(Hardware Port:.*?Device:\s*(\w+)\)", order):
+    order = _run(["networksetup", "-listnetworkserviceorder"], check=True).stdout
+    services = re.findall(r"\(\d+\)\s*(.+?)\n\(Hardware Port:.*?Device:\s*(\w+)\)", order)
+    if not services:
+        raise NetworkSetupError(f"`networksetup -listnetworkserviceorder` listed no services: {order.strip()[:80]!r}")
+    for name, device in services:
         if device == interface:
             return name.strip()
-    return None
+    return None  # a VPN's utun, say: the route is real and no service carries it
+
+
+def _first_line(result: subprocess.CompletedProcess) -> str:
+    return ((result.stderr or result.stdout or "").strip().splitlines() or [""])[0]
 
 
 def pac_url() -> str:
@@ -79,11 +103,21 @@ def pac_status(service: str) -> PacStatus:
     back. Callers that can carry on without the answer catch this; the ones named for restoring
     the network do not."""
     out = _run(["networksetup", "-getautoproxyurl", service], check=True).stdout
-    url_match = re.search(r"URL:\s*(\S+)", out)
-    url = url_match.group(1) if url_match else ""
+    # Whole lines, anchored: `\s*` used to cross a newline, so `URL: ` with no value read the next
+    # line's `Enabled:` as the URL, and an unanchored `Enabled:` could match inside a URL's path.
+    # See test_pac_status_reads_each_field_from_its_own_whole_line.
+    url_match = re.search(r"^URL:[ \t]*(\S+)[ \t]*$", out, re.MULTILINE)
+    enabled_match = re.search(r"^Enabled:[ \t]*(Yes|No)[ \t]*$", out, re.MULTILINE)
+    if url_match is None or enabled_match is None:
+        # Exit 0 with neither line is not "no PAC, not ours": `down` read that off a truncated
+        # answer and left the PAC in place — see test_pac_status_raises_when_the_answer_has_no_url_or_enabled_line.
+        raise NetworkSetupError(
+            f"`networksetup -getautoproxyurl {service}` answered without a URL/Enabled line: {out.strip()[:80]!r}"
+        )
+    url = url_match.group(1)
     if url.lower() == "(null)":
         url = ""
-    enabled = "Enabled: Yes" in out
+    enabled = enabled_match.group(1) == "Yes"
     return PacStatus(url=url, enabled=enabled, ours=url == pac_url())
 
 

@@ -15,6 +15,7 @@ import os
 from datetime import UTC, datetime
 
 from mitmproxy import ctx, http
+from mitmproxy.addonmanager import Loader
 
 import config
 import netproxy
@@ -70,6 +71,13 @@ class Lyrebird:
         self._last_service: str | None = None
 
     # MARK: - Lifecycle
+
+    def load(self, loader: Loader) -> None:
+        # Not read by anything: the option exists so `up` can pass `--set lyrebird_control_port=N`
+        # and the port appears in `ps`, which is how `supervisor._pid_is_ours` tells this
+        # instance's proxy from another Lyrebird's after a pid is reused. The port itself still
+        # arrives by environment.
+        loader.add_option("lyrebird_control_port", int, 0, "the control port this proxy was started for")
 
     async def running(self) -> None:
         if self._control_started:

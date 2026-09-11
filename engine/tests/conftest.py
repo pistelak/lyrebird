@@ -67,8 +67,11 @@ def _no_real_watchdog(monkeypatch):
 
     Doubled here rather than in each test that calls `up`: a test that forgets leaves a process
     behind and passes anyway, which is not a failure anything would report. Pinned by
-    `test_up_spawns_no_real_watchdog_subprocess`."""
+    `test_up_spawns_no_real_watchdog_subprocess`. Yields the real function for the one test that
+    checks what it would have spawned, against a `Popen` of its own."""
+    real = supervisor._spawn_watchdog
     monkeypatch.setattr(supervisor, "_spawn_watchdog", lambda service: 4242)
+    yield real
 
 
 @pytest.fixture
@@ -88,7 +91,11 @@ def fake_network(monkeypatch):
         state["restored"] = (service, url, enabled)
 
     monkeypatch.setattr(netproxy, "restore_pac", restore)
-    monkeypatch.setattr(supervisor, "_terminate", lambda pid, marker: state["terminated"].append((pid, marker)))
+    monkeypatch.setattr(
+        supervisor,
+        "_terminate",
+        lambda pid, marker: state["terminated"].append((pid, marker)) or supervisor.Termination.STOPPED,
+    )
     return state
 
 

@@ -92,8 +92,12 @@ def test_active_service_maps_the_default_route_to_a_service_name(monkeypatch):
     assert netproxy.active_service() == "Wi-Fi"
 
 
-def test_active_service_is_none_without_a_default_route(monkeypatch):
-    fake_run(monkeypatch, stdout="")
+@pytest.mark.parametrize("returncode", [0, 1], ids=["as macOS does", "if a release ever exits 1"])
+def test_active_service_is_none_without_a_default_route(monkeypatch, returncode):
+    """What macOS actually does with Wi-Fi off: `route` exits 0, prints nothing, and says
+    `not in table` on stderr. That message, and only that, is "no default route" — recognised
+    before the exit status is judged, so a release that exits 1 for it would say the same."""
+    fake_run(monkeypatch, stdout="", returncode=returncode, stderr="route: writing to routing socket: not in table\n")
     assert netproxy.active_service() is None
 
 
@@ -240,3 +244,86 @@ def test_a_command_that_does_not_finish_is_raised_not_read_as_no_pac(monkeypatch
 
 
 # MARK: - The PAC we advertise
+
+
+# MARK: - An answer that says nothing is not "no PAC" / "no route"
+
+
+def test_a_failed_route_command_is_not_no_default_route(monkeypatch):
+    """`route` exiting non-zero used to parse as "no default route" — the same None as Wi-Fi
+    off — and `down`, finding no service, printed "nothing to stop" over a PAC it never read."""
+    fake_run(monkeypatch, stdout="", returncode=1, stderr="route: writing to routing socket: Operation not permitted")
+    with pytest.raises(netproxy.NetworkSetupError, match="route -n get default"):
+        netproxy.active_service()
+
+
+def test_a_route_answer_without_an_interface_is_raised(monkeypatch):
+    """Exit 0 and no `interface:` line is only "no default route" when `route` says `not in
+    table`; anything else is an answer this code does not understand, and None would be a guess."""
+    fake_run(monkeypatch, stdout="", stderr="route: writing to routing socket: Invalid argument\n")
+    with pytest.raises(netproxy.NetworkSetupError, match="without an interface"):
+        netproxy.active_service()
+
+
+@pytest.mark.parametrize("listing", [("", 1, "** Error: not permitted"), ("", 0, "")], ids=["failed", "empty"])
+def test_a_service_listing_that_fails_or_lists_nothing_is_raised(monkeypatch, listing):
+    """A Mac with a default route has at least one network service. A listing that fails, or that
+    exits 0 with nothing in it, used to read as "no service carries this interface" — and `down`
+    then had no service to restore on."""
+    stdout, returncode, stderr = listing
+    outputs = iter([("  interface: en0\n", 0, ""), (stdout, returncode, stderr)])
+
+    def _subprocess_run(args, *rest, **kwargs):
+        out, code, err = next(outputs)
+        return subprocess.CompletedProcess(args, code, out, err)
+
+    monkeypatch.setattr(netproxy.subprocess, "run", _subprocess_run)
+    with pytest.raises(netproxy.NetworkSetupError, match="listnetworkserviceorder"):
+        netproxy.active_service()
+
+
+@pytest.mark.parametrize("stdout", ["", "URL: http://proxy.example.com/corp.pac\n", "Enabled: Yes\n"])
+def test_pac_status_raises_when_the_answer_has_no_url_or_enabled_line(monkeypatch, stdout):
+    """`networksetup` exiting 0 without both lines is not a PAC that is absent and not ours: read
+    as `("", False, False)`, `down` said "not ours — left untouched" and deleted the record, with
+    Lyrebird's PAC still installed."""
+    fake_run(monkeypatch, stdout=stdout)
+    with pytest.raises(netproxy.NetworkSetupError, match="without a URL/Enabled line"):
+        netproxy.pac_status("Wi-Fi")
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    ["URL: \nEnabled: Yes\n", "URL:\nEnabled: No\n"],
+    ids=["value missing after a space", "value missing"],
+)
+def test_pac_status_raises_when_a_url_label_has_no_value(monkeypatch, stdout):
+    """`URL: ` with nothing after it used to be read across the newline as `URL: Enabled:` — a
+    foreign PAC — and `down` left the real one untouched."""
+    fake_run(monkeypatch, stdout=stdout)
+    with pytest.raises(netproxy.NetworkSetupError, match="without a URL/Enabled line"):
+        netproxy.pac_status("Wi-Fi")
+
+
+def test_pac_status_reads_each_field_from_its_own_whole_line(monkeypatch):
+    """A colon is legal in a URL path, so `Enabled:No` can appear inside the PAC URL. Pins the
+    anchoring: an `Enabled:` matched anywhere in the output would read the state off the URL and
+    snapshot an enabled PAC as disabled. (Not a regression of the original parser, which looked
+    for the literal `Enabled: Yes`; the anchored form is what keeps both fields on their lines.)"""
+    fake_run(monkeypatch, stdout="URL: http://proxy.example.com/Enabled:No/corp.pac\nEnabled: Yes\n")
+    status = netproxy.pac_status("Wi-Fi")
+    assert status.url == "http://proxy.example.com/Enabled:No/corp.pac"
+    assert status.enabled is True
+
+
+def test_a_command_that_cannot_start_is_a_network_setup_error(monkeypatch):
+    """A `networksetup` that could not be spawned is the same silence as one that hung, and it
+    used to leave `_discover_service` — which catches only `NetworkSetupError` — to traceback out
+    of `up`, `down` and `status --json`."""
+
+    def _subprocess_run(args, *rest, **kwargs):
+        raise FileNotFoundError(2, "No such file or directory", args[0])
+
+    monkeypatch.setattr(netproxy.subprocess, "run", _subprocess_run)
+    with pytest.raises(netproxy.NetworkSetupError, match="could not run `networksetup -getautoproxyurl Wi-Fi`"):
+        netproxy.pac_status("Wi-Fi")

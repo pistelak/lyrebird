@@ -6,11 +6,13 @@ import contextlib
 import fcntl
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
 import sys
 import time
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +27,7 @@ import ui
 
 MITMDUMP = config.ROOT / ".venv" / "bin" / "mitmdump"
 _DOWN_WAIT_SECONDS = 5.0  # how long `down` waits for SIGTERM to take effect
+_KILL_WAIT_SECONDS = 2.0  # and for SIGKILL, which the kernel honours or the process is unkillable
 _WATCHDOG_RESTORE_ATTEMPTS = 5  # `networksetup` fails transiently; one try is not a restore
 # An attempt is four `networksetup`/`route` calls, each bounded by `netproxy._COMMAND_TIMEOUT`,
 # so a hung command costs ~20s per attempt rather than the whole restore.
@@ -48,40 +51,190 @@ def _discover_service() -> tuple[str | None, str | None]:
         return None, str(error)
 
 
+class ProcessCheckError(RuntimeError):
+    """A process could not be inspected or signalled, so nothing about it is known — which is a
+    different claim from "it is not running", and the one `down` used to make in its place."""
+
+
+class Termination(Enum):
+    """What `_terminate` achieved. `gone` is the question callers ask: is the process this pid
+    named no longer running? NOT_OURS answers yes as surely as NOT_RUNNING — a pid is held by one
+    process at a time, so one found under another command line has been reused, which only
+    happens after the original died. It is "not stopped by us", never "not stopped"."""
+
+    NOT_RUNNING = "not running"
+    NOT_OURS = "not ours"  # the pid is alive under another command line: reused, left alone
+    STOPPED = "stopped"
+    STILL_RUNNING = "still running"  # alive after SIGTERM and SIGKILL
+    UNVERIFIED = "unverified"  # `_stop` only: a check failed, and the reason has been printed
+
+    @property
+    def gone(self) -> bool:
+        """The process this pid named no longer runs — whether we stopped it or found it gone."""
+        return self in (Termination.STOPPED, Termination.NOT_RUNNING, Termination.NOT_OURS)
+
+
 def _pid_alive(pid: int | None) -> bool:
+    """Whether a process with this pid exists. Raises rather than answering when it cannot tell.
+
+    EPERM is an answer — the pid exists and belongs to somebody we may not signal — and reading it
+    as "dead" let `down` delete the record of a proxy that was still running under another user.
+    See test_pid_alive_reads_permission_denied_as_alive.
+    """
     if not pid:
         return False
     try:
         os.kill(pid, 0)
-        return True
-    except OSError:
+    except ProcessLookupError:
         return False
+    except PermissionError:
+        return True
+    except OSError as error:
+        raise ProcessCheckError(f"could not check pid {pid}: {error}") from None
+    return True
+
+
+def _identity(marker: str) -> tuple[bool, list[tuple[str, str]]]:
+    """What a process with this marker must say on its command line to be this instance's:
+    (required, [(option, expected value)]). The proxy needs only the control port — one process
+    can bind it — and an older proxy without the option is accepted, so an upgrade does not strand
+    the one it finds running. The watchdog needs the state root too: watchdogs of two state roots
+    can share a port, and each restores from its own record. A watchdog without the tokens is
+    not ours: one is cheap to replace, and adopting another root's used to leave this root's
+    record unwatched. See test_pid_is_ours_refuses_a_watchdog_of_another_state_root.
+    """
+    if marker == "_watchdog":
+        return True, [("--control-port ", str(config.CONTROL_PORT)), ("--state-root-id ", config.state_root_id())]
+    return False, [("--set lyrebird_control_port=", str(config.CONTROL_PORT))]
+
+
+def _first_token(option: str, command: str) -> str | None:
+    """The value after the *first* occurrence of the option as a whole word. Ours is the first
+    thing after the executable in both argvs, so a state directory or a service named like the
+    option — `Office --control-port 9099` — comes later and is not consulted."""
+    match = re.search(r"(?:^|\s)" + re.escape(option) + r"(\S+)(?=\s|$)", command)
+    return match.group(1) if match else None
 
 
 def _pid_is_ours(pid: int | None, marker: str) -> bool:
-    """PIDs are reused. Never signal one whose command line isn't recognisably ours."""
+    """PIDs are reused. Never signal one whose command line isn't recognisably ours.
+
+    Ours means this instance's, not any Lyrebird's: both children are spawned with the control
+    port on their command line, and a pid reused by another instance's proxy or watchdog — same
+    marker, another port — used to be adopted by `up` and killed by `down`. A command line with
+    no port token predates this and is accepted on the marker alone, so an upgrade does not
+    strand the proxy it finds running. See test_pid_is_ours_refuses_another_instances_process.
+
+    A `ps` that fails is raised, not read as "not ours": that reading made `down` skip the signal
+    and print "stopped" — see test_pid_is_ours_raises_when_ps_fails.
+    """
     if not _pid_alive(pid):
         return False
     # `sim._run` is the generic capture-output subprocess helper; it lives in `simulator.py`
     # because every simctl call goes through it, and `fake_simctl` in the tests replaces that one.
-    result = sim._run(["ps", "-p", str(pid), "-o", "command="])
-    return marker in result.stdout
+    try:
+        result = sim._run(["ps", "-p", str(pid), "-o", "command="])
+    except OSError as error:
+        raise ProcessCheckError(f"could not run `ps -p {pid}`: {error}") from None
+    if result.returncode != 0:
+        if not _pid_alive(pid):
+            return False  # it exited between the two looks, which is what `ps` exits 1 for
+        detail = (result.stderr or result.stdout or "").strip()
+        raise ProcessCheckError(f"`ps -p {pid}` failed: {detail or result.returncode}")
+    if marker not in result.stdout:
+        return False
+    required, tokens = _identity(marker)
+    for option, expected in tokens:
+        found = _first_token(option, result.stdout)
+        if found is None:
+            if required:
+                return False
+            continue
+        if found != expected:
+            return False
+    return True
 
 
-def _terminate(pid: int | None, marker: str) -> None:
-    if pid is None or not _pid_is_ours(pid, marker):
-        return
-    with contextlib.suppress(OSError):
-        os.kill(pid, signal.SIGTERM)
+def _signal(pid: int, sig: signal.Signals) -> bool:
+    """Deliver `sig`; False when the process was already gone. Raises when it could not be sent."""
+    try:
+        os.kill(pid, sig)
+    except ProcessLookupError:
+        return False
+    except OSError as error:
+        raise ProcessCheckError(f"could not send {sig.name} to pid {pid}: {error}") from None
+    return True
+
+
+def _wait_for_exit(pid: int, seconds: float) -> bool:
+    deadline = time.time() + seconds
+    while _pid_alive(pid):
+        if time.time() >= deadline:
+            return False
+        time.sleep(0.1)
+    return True
+
+
+def _terminate(pid: int | None, marker: str) -> Termination:
+    """Stop the process, and say whether it is gone.
+
+    Returned, not assumed: `down` used to send SIGTERM and print "stopped" on the strength of the
+    control port going quiet, which a live proxy with a hung event loop also does — see
+    test_down_reports_a_proxy_that_is_alive_but_silent. SIGTERM first, SIGKILL if that is
+    ignored, ownership re-checked in between because the pid could have been reused in the wait.
+    """
+    if pid is None or not _pid_alive(pid):
+        return Termination.NOT_RUNNING
+    if not _pid_is_ours(pid, marker):
+        return Termination.NOT_OURS
+    if not _signal(pid, signal.SIGTERM) or _wait_for_exit(pid, _DOWN_WAIT_SECONDS):
+        return Termination.STOPPED
+    if not _pid_is_ours(pid, marker):
+        return Termination.STOPPED  # gone, and the pid already belongs to something else
+    if not _signal(pid, signal.SIGKILL) or _wait_for_exit(pid, _KILL_WAIT_SECONDS):
+        return Termination.STOPPED
+    return Termination.STILL_RUNNING
 
 
 def _child_env() -> dict:
     return {**os.environ, "LYREBIRD_PROFILE": str(config.PROFILE_DIR)}
 
 
+def _watchdog_argv(service: str) -> list[str]:
+    # `--control-port` is read by nobody; it is on the command line for `_pid_is_ours` to read
+    # back from `ps`, as `lyrebird_control_port` is on the proxy's — and first, before the
+    # user-named service, so it is the match `_PORT_TOKEN` finds.
+    return [
+        sys.executable,
+        str(config.ROOT / "cli.py"),
+        "_watchdog",
+        "--control-port",
+        str(config.CONTROL_PORT),
+        "--state-root-id",
+        config.state_root_id(),
+        service,
+    ]
+
+
+def _proxy_argv() -> list[str]:
+    return [
+        str(MITMDUMP),
+        "--set",
+        f"lyrebird_control_port={config.CONTROL_PORT}",  # first, for `ps`; see _pid_is_ours
+        "--listen-host",
+        config.PROXY_LISTEN_HOST,
+        "--listen-port",
+        str(config.PROXY_PORT),
+        "--set",
+        f"confdir={config.mitmproxy_confdir()}",
+        "-s",
+        str(config.ROOT / "addon.py"),
+    ]
+
+
 def _spawn_watchdog(service: str) -> int:
     proc = subprocess.Popen(
-        [sys.executable, str(config.ROOT / "cli.py"), "_watchdog", service],
+        _watchdog_argv(service),
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         start_new_session=True,
@@ -332,17 +485,7 @@ def _up_locked(
         # Popen dups the fd for the child, so closing our copy immediately is correct.
         with open(config.LOG_FILE, "a", encoding="utf-8") as log:
             proc = subprocess.Popen(
-                [
-                    str(MITMDUMP),
-                    "--listen-host",
-                    config.PROXY_LISTEN_HOST,
-                    "--listen-port",
-                    str(config.PROXY_PORT),
-                    "--set",
-                    f"confdir={config.mitmproxy_confdir()}",
-                    "-s",
-                    str(config.ROOT / "addon.py"),
-                ],
+                _proxy_argv(),
                 cwd=str(config.ROOT),
                 stdout=log,
                 stderr=subprocess.STDOUT,
@@ -354,19 +497,31 @@ def _up_locked(
             health = api._health()
             if health is not None:
                 break
-            if not _pid_alive(proc.pid):
-                click.echo(f"{ui.RED}proxy exited on startup — last log lines:{ui.R}\n{ui._tail_log(20)}")
-                raise SystemExit(1)
+            # A check that failed has not shown the child exited; the deadline below decides.
+            with contextlib.suppress(ProcessCheckError):
+                if not _pid_alive(proc.pid):
+                    click.echo(f"{ui.RED}proxy exited on startup — last log lines:{ui.R}\n{ui._tail_log(20)}")
+                    raise SystemExit(1)
             if time.time() >= deadline:
-                # Don't leave an orphan that becomes healthy after we have given up on it.
-                proc.terminate()
+                # Don't leave an orphan that becomes healthy after we have given up on it — and
+                # say so if it is left anyway, rather than reporting a timeout over a child that
+                # is still there. See test_up_names_a_child_that_survives_its_startup_cleanup.
+                left = ""
                 try:
-                    proc.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                        with contextlib.suppress(subprocess.TimeoutExpired):
+                            proc.wait(timeout=_KILL_WAIT_SECONDS)
+                except OSError as error:
+                    left = f"\n   the proxy (pid {proc.pid}) could not be signalled ({error}) — stop it by hand"
+                if not left and proc.poll() is None:
+                    left = f"\n   the proxy (pid {proc.pid}) is still running — stop it by hand"
                 click.echo(
                     f"{ui.RED}proxy did not become healthy in time — last log lines:{ui.R}\n"
-                    f"{ui._tail_log(20)}\n   full log: {config.LOG_FILE}"
+                    f"{ui._tail_log(20)}\n   full log: {config.LOG_FILE}{left}"
                 )
                 raise SystemExit(1)
             time.sleep(0.3)
@@ -410,8 +565,24 @@ def _up_locked(
         # it re-enables our PAC wherever it finds it disabled — which is exactly what restoring
         # "no previous PAC" leaves behind. The lock this `up` holds keeps that loop out until the
         # signal lands, and the loop checks whose record it is once it gets in.
-        _terminate(runtime.get("watchdogPid"), "_watchdog")
-        runtime = {**runtime, "watchdogPid": None}
+        try:
+            stopped = _terminate(runtime.get("watchdogPid"), "_watchdog")
+            why = None if stopped.gone else stopped.value
+        except ProcessCheckError as error:
+            why = str(error)
+        if why is not None:
+            # Proven gone or `up` goes no further: its live loop re-enables our PAC wherever it
+            # finds it disabled, which is what the restore below leaves on the old service. See
+            # test_up_refuses_to_migrate_over_a_watchdog_it_could_not_stop.
+            click.echo(
+                f"{ui.RED}✗ the watchdog for '{recorded_service}' (pid {runtime.get('watchdogPid')}) "
+                f"could not be stopped: {why}{ui.R}\n"
+                f"   the record is kept; stop it by hand and run `lyrebird up` again."
+            )
+            raise SystemExit(1)
+        # On disk, not only in this dict: if the restore below fails the record is kept, and one
+        # still naming a stopped pid makes the next `up` refuse over a watchdog already gone.
+        runtime = _record(runtime, watchdogPid=None)
         try:
             _restore_previous_pac(recorded_service, runtime)
         except netproxy.NetworkSetupError as error:
@@ -462,11 +633,41 @@ def _up_locked(
         # A watchdog watches one service, given on its command line. One left over from a run on
         # another service would restore that service's record and then delete this one's.
         watchdog_pid = runtime.get("watchdogPid")
-        if not (_pid_is_ours(watchdog_pid, "_watchdog") and recorded_service == service):
-            _terminate(watchdog_pid, "_watchdog")
+        try:
+            reuse = _pid_is_ours(watchdog_pid, "_watchdog") and recorded_service == service
+            why = None if reuse or _terminate(watchdog_pid, "_watchdog").gone else "is still running"
+        except ProcessCheckError as error:
+            why = f"could not be checked: {error}"
+        if why is not None:
+            # No second watchdog. One this run cannot verify cannot verify its successor either
+            # (`_should_retire` keeps watching when `ps` fails), and two loops on one record was
+            # the state the record's single `watchdogPid` exists to rule out. The record keeps
+            # naming the old one, so the next `up` asks again. See
+            # test_up_refuses_rather_than_spawn_a_second_watchdog.
+            state["watchdogPid"] = watchdog_pid
+            config.write_runtime(state)
+            click.echo(
+                f"{ui.RED}✗ the previous watchdog (pid {watchdog_pid}) {why} — the PAC is installed but "
+                f"this run could not give it one watchdog{ui.R}\n"
+                f"   stop pid {watchdog_pid} by hand and run `lyrebird up` again, or `lyrebird down`."
+            )
+            raise SystemExit(1)
+        if not reuse:
             watchdog_pid = _spawn_watchdog(service)
         state["watchdogPid"] = watchdog_pid
         click.echo(f"✓ PAC installed on '{service}' (configured hosts → proxy, everything else DIRECT)")
+        if discovery_error:
+            # Installed on the recorded service — the record must keep describing a service
+            # `down` can restore — but not claimed as interception: the read that would have
+            # shown which service carries the route failed, and a crash record can name
+            # yesterday's. See test_up_fails_when_discovery_fails_even_with_a_recorded_service.
+            click.echo(
+                f"{ui.RED}✗ could not detect the active network service ({discovery_error}) — the PAC is on "
+                f"'{service}' from the last run, which may no longer carry the default route{ui.R}"
+            )
+            failures.append(
+                f"active network service unknown ({discovery_error}): interception on '{service}' is unproven"
+            )
     else:
         # The discovery error is appended rather than replacing the message: "no active network
         # service" is what it means for the run, and the `route`/`networksetup` failure is why —
@@ -527,9 +728,15 @@ def _up_locked(
         click.echo(f"{ui.RED}✗ could not read the PAC on '{service}' after installing it: {error}{ui.R}")
         failures.append(f"could not read the PAC on '{service}': {error}")
     else:
-        ui._banner(final, service, intercepting)
-        if service and not intercepting:
-            failures.append(f"PAC on '{service}' is not routing to the proxy — disabled, or not ours")
+        if discovery_error and service:
+            # No banner either way: "INTERCEPT ACTIVE" would claim a route this command could not
+            # read, and "NOT INTERCEPTING — PAC is disabled/not ours" a diagnosis it never made.
+            # The failure was printed, with the reason, when discovery failed.
+            click.echo(f"{ui.YELLOW}🟠 PROXY UP, ROUTE UNKNOWN{ui.R} — PAC on '{service}'; interception unproven")
+        else:
+            ui._banner(final, service, intercepting)
+            if service and not intercepting:
+                failures.append(f"PAC on '{service}' is not routing to the proxy — disabled, or not ours")
 
     # Exit non-zero unless the whole point of `up` was achieved. Reporting a warning and returning 0
     # meant a script — or an agent — could believe it was mocking when nothing was intercepted.
@@ -622,8 +829,22 @@ def _down_locked() -> None:
         click.echo(f"{ui.DIM}nothing to stop — no proxy running and no runtime state{ui.R}")
         return
 
-    # Kill the watchdog FIRST so it can't reinstall the PAC mid-teardown.
-    _terminate(runtime.get("watchdogPid"), "_watchdog")
+    # Kill the watchdog FIRST so it can't reinstall the PAC mid-teardown — and go no further
+    # until it is proven gone. Left alive with a record `down` then keeps (a proxy that would not
+    # stop), its live loop re-enables the PAC this command just switched off, and its death path
+    # restores from the record and deletes it. See test_down_touches_nothing_while_the_watchdog_lives.
+    watchdog = _stop(runtime.get("watchdogPid"), "_watchdog")
+    if not watchdog.gone:
+        click.echo(
+            f"{ui.RED}✗ the watchdog (pid {runtime.get('watchdogPid')}) is {watchdog.value} — nothing was "
+            f"changed; stop it by hand (`kill -9 {runtime.get('watchdogPid')}`) and run `lyrebird down` again{ui.R}"
+        )
+        raise SystemExit(1)
+    # From here the record is rewritten as each obligation is met, so a `down` that has to stop
+    # early leaves the next one exactly what remains — not a watchdog to stop again, and not a
+    # PAC to restore a second time over whatever the user set in between. See
+    # test_down_records_what_is_left_when_the_proxy_will_not_stop.
+    runtime = _record(runtime, watchdogPid=None)
 
     service = runtime.get("service")
     unrestorable = False
@@ -654,23 +875,82 @@ def _down_locked() -> None:
             click.echo(f"✓ restored the previous PAC on '{service}': {previous['url']}")
         else:
             click.echo(f"✓ PAC removed from '{service}' — direct networking restored")
+        runtime = _record(runtime, previousPac=None)
 
-    _terminate(runtime.get("proxyPid"), "addon.py")
-    if config.runtime_file().is_file():
-        config.runtime_file().unlink()
+    proxy_pid = runtime.get("proxyPid")
+    proxy = _stop(proxy_pid, "addon.py")
+    # A proxy answering under another pid — on the first reading or now — once the record's is
+    # proven gone: a replacement started under a different state root, or an `up` that died
+    # before it could record its child. `down` stops what is on its port (the PAC points there)
+    # rather than exiting 1 over the stale pid on every run, and the first reading counts because
+    # a replacement that hung between the two readings would otherwise be forgotten. See
+    # test_down_stops_the_proxy_that_answers_when_the_recorded_one_is_gone and
+    # test_down_does_not_forget_a_replacement_that_went_silent.
+    seen = [(reading or {}).get("pid") for reading in (health, api._health())]
+    for replacement in dict.fromkeys(pid for pid in seen if pid not in (None, proxy_pid)):
+        if not proxy.gone:
+            break
+        proxy_pid = replacement
+        runtime = _record(runtime, proxyPid=proxy_pid)  # before the signal: a failed stop must not lose it
+        proxy = _stop(proxy_pid, "addon.py")
 
-    # SIGTERM is a request. Give it a moment and say which actually happened, rather than
-    # printing "stopped" over a proxy that is still serving.
+    # "stopped" needs two proofs, and the record outlives both: the pid is gone, *and* nothing
+    # answers on the control port. Either alone used to be enough — the record was deleted before
+    # the port was even polled — and a proxy whose event loop had hung, or one whose pid the
+    # record never knew, was reported stopped with the PAC still pointing at it. See
+    # test_down_reports_a_proxy_that_is_alive_but_silent and
+    # test_down_keeps_the_record_when_the_proxy_cannot_be_checked.
+    if not proxy.gone:
+        click.echo(
+            f"{ui.RED}✗ proxy pid {proxy_pid} is {proxy.value} — the record is kept; stop it by hand "
+            f"(`kill -9 {proxy_pid}`) and run `lyrebird down` again{ui.R}"
+        )
+        raise SystemExit(1)
     deadline = time.time() + _DOWN_WAIT_SECONDS
     while time.time() < deadline and api._health() is not None:
         time.sleep(0.2)
-    if api._health() is None:
-        click.echo(f"{ui.GREEN}stopped{ui.R}")
-    else:
-        click.echo(f"{ui.YELLOW}⚠ proxy still responding on port {config.CONTROL_PORT} after SIGTERM{ui.R}")
+    if api._health() is not None:
+        if proxy is Termination.STOPPED:
+            why = f"after pid {proxy_pid} stopped — something else holds the port"
+        else:
+            why = f"and pid {proxy_pid} is {proxy.value} — this is not the proxy the record names"
+        click.echo(f"{ui.YELLOW}⚠ proxy still responding on port {config.CONTROL_PORT} {why}; the record is kept{ui.R}")
         raise SystemExit(1)
+    if config.runtime_file().is_file():
+        config.runtime_file().unlink()
+    click.echo(f"{ui.GREEN}stopped{ui.R}")
     if unrestorable:
         raise SystemExit(1)  # the proxy is down; the network was never put back
+
+
+def _record(runtime: dict, **remaining: Any) -> dict:
+    """Rewrite the runtime record with these fields updated — `None` drops one. Written whether or
+    not a file existed: a `down` that found no record and a proxy it could not stop used to say
+    "the record is kept" with nothing on disk, and the next `down` knew no pid to try. See
+    test_down_writes_the_record_it_reconstructed_when_the_proxy_will_not_stop.
+
+    A write that fails is reported and survived: this is bookkeeping for the *next* `down`, and
+    raising here — after the watchdog is stopped, before the PAC is restored — left the network
+    routed at a proxy nothing was watching. See test_down_restores_the_network_when_the_record_cannot_be_written.
+    """
+    updated = {**runtime, **remaining}
+    updated = {key: value for key, value in updated.items() if value is not None}
+    try:
+        config.write_runtime(updated)
+    except OSError as error:
+        click.echo(f"{ui.YELLOW}⚠ could not update {config.runtime_file()}: {error} — carrying on{ui.R}")
+    return updated
+
+
+def _stop(pid: int | None, marker: str) -> Termination:
+    """`_terminate` for `down`: a failed check is printed where it happened and returned as
+    UNVERIFIED rather than raised, because there is a restore to finish either way and the exit
+    code is decided once it is."""
+    try:
+        return _terminate(pid, marker)
+    except ProcessCheckError as error:
+        click.echo(f"{ui.RED}✗ could not stop pid {pid}: {error}{ui.R}")
+        return Termination.UNVERIFIED
 
 
 @click.command()
@@ -804,7 +1084,9 @@ def logs() -> None:
 
 @click.command(name="_watchdog", hidden=True)
 @click.argument("service")
-def watchdog(service: str) -> None:
+@click.option("--control-port", type=int, default=None, help="Ignored; puts the port in `ps` for `_pid_is_ours`.")
+@click.option("--state-root-id", default=None, help="Ignored; puts the state root in `ps` for `_pid_is_ours`.")
+def watchdog(service: str, control_port: int | None, state_root_id: str | None) -> None:
     while True:
         if api._health() is None:
             if _restore_after_death(service):
@@ -843,8 +1125,11 @@ def _should_retire() -> bool:
         if not runtime:
             return True  # `down` has been, or this port's record belongs to another state root
         recorded = runtime.get("watchdogPid")
-        if recorded is not None and recorded != os.getpid() and _pid_is_ours(recorded, "_watchdog"):
-            return True  # a live successor owns the record; two of us repairing one service is nobody's design
+        try:
+            if recorded is not None and recorded != os.getpid() and _pid_is_ours(recorded, "_watchdog"):
+                return True  # a live successor owns the record; two of us repairing one service is nobody's design
+        except ProcessCheckError:
+            return False  # unverifiable is not "handed over": keep watching, ask again next poll
         health = api._health()
         if health is None:
             return False  # it died while we waited: the next look takes the restore path, not this one

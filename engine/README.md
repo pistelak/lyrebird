@@ -491,7 +491,9 @@ The largest of them is the CLI suite, split by concern the way the commands are:
 scenario before the app is launched) · `test_cli_simulator.py` (which device the CA and the
 relaunch land on), over the doubles they share in `cli_doubles.py`. It is almost entirely failure
 paths — an unreadable runtime file, a foreign PAC, nothing to stop, a proxy running someone else's
-profile.
+profile, a proxy that is alive but silent. Underneath it, `test_supervisor_process.py` covers the
+three process helpers `up` and `down` decide with (`_pid_alive`, `_pid_is_ours`, `_terminate`) at
+the `os.kill` and `ps` seams, including one real process that ignores SIGTERM.
 
 All of it is hermetic — the simulator, the network and the proxy are replaced with doubles — so it
 checks the orchestration but cannot prove that CA trust, relaunch, PAC routing or teardown work

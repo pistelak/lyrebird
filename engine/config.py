@@ -136,6 +136,11 @@ def configure(profile: str | None = None) -> None:
     LOG_FILE = LOG_ROOT / f"{PROFILE_FINGERPRINT}.log"
 
 
+def state_root_id() -> str:
+    """The state root as a command-line token: the path itself has a space in it by default."""
+    return hashlib.sha256(str(STATE_ROOT).encode("utf-8")).hexdigest()[:12]
+
+
 def runtime_file() -> Path:
     """Keyed by control port, not profile — `down` must find the live instance from anywhere."""
     return STATE_ROOT / f"runtime-{CONTROL_PORT}.json"
