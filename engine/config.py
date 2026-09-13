@@ -87,7 +87,7 @@ def _default_log_root() -> Path:
     """What a person reads: `~/Library/Logs/Lyrebird`.
 
     Apple's directory for user-visible logs, which is where the Console app looks — so putting the
-    proxy log here means it can be read and searched without `lyrebird logs` at all.
+    proxy log here means it can be read and searched with the tools already on the machine.
     """
     return Path.home() / "Library" / "Logs" / "Lyrebird"
 

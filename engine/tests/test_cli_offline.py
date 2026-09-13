@@ -381,66 +381,6 @@ def test_explain_match_against_the_proxy_does_not_claim_its_scenario_loaded_whol
     assert "problems" not in json.loads(result.output)
 
 
-# MARK: - The profile layout from before the rename
-#
-# `sessions/` became `scenarios/`, and an unrenamed profile still holds every scenario it ever had.
-# The failure to prevent is the encouraging one: a green "0 scenario(s) load whole", or a "no
-# scenario 'orders-outage'" that sends an operator to write the file again — for a profile in which
-# it is sitting one directory away.
-
-
-def make_legacy_profile(profile):
-    """The `profile` fixture's directory, with its `scenarios/` renamed back to `sessions/`."""
-    (profile / "scenarios").rename(profile / "sessions")
-    return profile
-
-
-def test_validate_refuses_a_legacy_sessions_layout(profile, runner, offline):
-    legacy = make_legacy_profile(profile)
-    result = runner.invoke(cli.cli, ["validate"])
-    assert result.exit_code == 1
-    assert f"mv {legacy / 'sessions'} {legacy / 'scenarios'}" in result.output
-    assert "load whole" not in result.output
-    assert not (legacy / "scenarios").exists()
-
-
-def test_validate_json_stays_json_for_a_legacy_sessions_layout(profile, runner, offline):
-    """The refusal reaches a parsing caller through the envelope `--json` promises, not as a bare
-    sentence printed past it."""
-    legacy = make_legacy_profile(profile)
-    result = runner.invoke(cli.cli, ["validate", "--json"])
-    assert result.exit_code == 1
-    payload = json.loads(result.output)
-    assert payload["ok"] is False and payload["scenarios"] == []
-    assert any(f"mv {legacy / 'sessions'}" in problem for problem in payload["problems"])
-
-
-def test_validate_by_name_refuses_a_legacy_sessions_layout(profile, runner, offline):
-    """Naming a scenario takes the other path through `_resolve_scenario`, and "no scenario X
-    (found: none)" is exactly the wrong answer for a profile that has it under the old name."""
-    legacy = make_legacy_profile(profile)
-    result = runner.invoke(cli.cli, ["validate", "whole"])
-    assert result.exit_code == 1
-    assert f"mv {legacy / 'sessions'} {legacy / 'scenarios'}" in result.output
-    assert "found: none" not in result.output
-
-
-def test_explain_match_refuses_a_legacy_sessions_layout(profile, runner, offline):
-    legacy = make_legacy_profile(profile)
-    result = runner.invoke(cli.cli, ["explain-match", "--scenario", "whole", "GET", "/api/v1/orders/42"])
-    assert result.exit_code == 1
-    assert f"mv {legacy / 'sessions'} {legacy / 'scenarios'}" in result.output
-
-
-def test_explain_match_json_stays_json_for_a_legacy_sessions_layout(profile, runner, offline):
-    legacy = make_legacy_profile(profile)
-    result = runner.invoke(cli.cli, ["explain-match", "--scenario", "whole", "--json", "GET", "/api/v1/orders/42"])
-    assert result.exit_code == 1
-    payload = json.loads(result.output)
-    assert payload["selected"] is None and payload["candidates"] == []
-    assert any(f"mv {legacy / 'sessions'}" in problem for problem in payload["problems"])
-
-
 # MARK: - Grouped scenarios, offline
 #
 # `validate` is the command an operator reaches for after hand-editing the directory, which is
@@ -540,28 +480,6 @@ def test_validate_reports_a_dotfile_as_a_verdict_not_a_traceback(profile, runner
     payload = json.loads(result.output)
     assert payload["scenarios"], "the file gets a verdict"
     assert payload["scenarios"][0]["loaded"] is False
-
-
-def test_validate_by_name_refuses_an_identity_discovery_skipped(profile, runner, offline, monkeypatch):
-    """A file discovery skipped must not validate cleanly under the name nothing serves. Resolving
-    by `is_file()` blessed exactly that — and, on a case-folding filesystem, blessed a mis-cased
-    name the proxy would refuse as well."""
-    write_scenario(profile, "whole", _WHOLE)
-    scenarios = profile / "scenarios"
-    real = store.Path.iterdir
-
-    def listing(self):
-        if self == scenarios:
-            return iter([scenarios / "whole.json", scenarios / "Whole.json"])
-        return real(self)
-
-    monkeypatch.setattr(store.Path, "iterdir", listing)
-
-    result = runner.invoke(cli.cli, ["validate", "whole", "--json"])
-
-    assert result.exit_code == 1
-    payload = json.loads(result.output)
-    assert any("differ only by case" in problem for problem in payload["problems"])
 
 
 def test_explain_match_accepts_a_qualified_name(profile, runner, offline):

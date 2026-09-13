@@ -17,7 +17,6 @@ from __future__ import annotations
 import json
 import re
 import secrets
-import shlex
 from collections import deque
 from datetime import UTC, datetime
 from pathlib import Path
@@ -39,33 +38,6 @@ class ReloadRefused(RuntimeError):
     def __init__(self, problems: list[str]) -> None:
         super().__init__("; ".join(problems))
         self.problems = problems
-
-
-class LegacyProfileLayout(RuntimeError):
-    """A profile still keeping its scenarios in `sessions/`, from before the directory was renamed."""
-
-
-def refuse_legacy_layout(profile_dir: Path) -> None:
-    """Refuse a profile whose scenarios are still under `sessions/`, naming the move that fixes it.
-
-    Raised rather than reported as a directory that could not be read: an unrenamed profile is a
-    profile whose scenarios are all there, under the old name, and "cannot read scenarios/" sends
-    the operator looking for a permissions problem instead of naming the `mv` that fixes it. See
-    test_store_refuses_a_legacy_sessions_layout.
-
-    Takes the profile explicitly rather than reading `config.PROFILE_DIR`, so `init PATH` can check
-    the directory it is about to write into.
-    """
-    legacy, current = profile_dir / "sessions", profile_dir / "scenarios"
-    if legacy.is_dir() and not current.exists():
-        # `shlex.join`, not an f-string: a profile under a path with a space in it produced a
-        # remedy the shell reads as four arguments, so the one line this message exists to hand
-        # over was the one thing that did not work — see
-        # test_the_legacy_remedy_is_a_command_a_shell_can_run.
-        raise LegacyProfileLayout(
-            f"{profile_dir} keeps its scenarios in {legacy} — Lyrebird reads {current} now.\n"
-            f"  rename it:  {shlex.join(['mv', str(legacy), str(current)])}"
-        )
 
 
 def safe_component(name: object, kind: str = "name") -> str:
@@ -168,14 +140,6 @@ def _relative_label(file: Path) -> str:
         return file.name
 
 
-def _case_collisions(names: list[str]) -> dict[str, list[str]]:
-    """Sibling names that differ only by case, keyed by every member of the collision."""
-    folded: dict[str, list[str]] = {}
-    for name in names:
-        folded.setdefault(name.lower(), []).append(name)
-    return {name: members for members in folded.values() if len(members) > 1 for name in members}
-
-
 def _entries(directory: Path) -> tuple[list[Path], str | None]:
     """What is in `directory`, or the message saying it could not be read.
 
@@ -233,12 +197,9 @@ def _owner(file: Path) -> str | None:
         return None
 
 
-def _group_files(directory: Path, colliding: list[str] | None, problems: list[tuple[str | None, str]]) -> list[Path]:
+def _group_files(directory: Path, problems: list[tuple[str | None, str]]) -> list[Path]:
     """The scenario files one group holds, appending whatever stopped one from being read."""
     label = directory.name
-    if colliding:
-        problems.append((None, f"skipped {'/, '.join(sorted(colliding))}/: names differ only by case"))
-        return []
     try:
         safe_component(label, "scenario group")
     except UnsafeName as error:
@@ -255,15 +216,7 @@ def _group_files(directory: Path, colliding: list[str] | None, problems: list[tu
     for nested in nested_directories:
         problems.append((None, f"skipped {label}/{nested.name}/: scenarios nest one level deep (group/name)"))
 
-    collisions = _case_collisions([file.name for file in group_files])
-    kept: list[Path] = []
-    for file in group_files:
-        if members := collisions.get(file.name):
-            names = ", ".join(f"{label}/{member}" for member in sorted(members))
-            problems.append((_owner(file), f"skipped {names}: names differ only by case"))
-            continue
-        kept.append(file)
-    return kept
+    return group_files
 
 
 def scenario_files() -> tuple[list[Path], list[tuple[str | None, str]]]:
@@ -273,34 +226,20 @@ def scenario_files() -> tuple[list[Path], list[tuple[str | None, str]]]:
     belongs to no single scenario: `up --use NAME` reads `scenariosNotWhole[NAME]` to decide whether
     the scenario it was asked for loaded whole, so a problem filed under no name would let a
     synthesised `default` pass as whole while its own file was being skipped — see
-    test_sibling_names_that_differ_only_by_case_are_refused_and_blamed_on_each.
+    test_health_reports_a_scenario_that_did_not_load_whole.
 
     Shared with the offline commands so "which files are a profile's scenarios" has one answer:
     a file the loader would read but an inspection command would not is a file whose problems
     only ever surface as a proxy that behaves oddly.
-
-    Raises `LegacyProfileLayout` rather than globbing a directory that is not there: an old profile
-    would otherwise report "no scenario files" for a profile that has them all, under the old name —
-    see test_validate_refuses_a_legacy_sessions_layout.
     """
-    refuse_legacy_layout(config.PROFILE_DIR)
     entries, failure = _entries(config.SCENARIOS_DIR)
     if failure is not None:
         return [], [(None, failure)]
 
-    root_files, directories, problems = _classify(entries)
+    files, directories, problems = _classify(entries)
 
-    files: list[Path] = []
-    collisions = _case_collisions([file.name for file in root_files])
-    for file in root_files:
-        if members := collisions.get(file.name):
-            problems.append((_owner(file), f"skipped {', '.join(sorted(members))}: names differ only by case"))
-            continue
-        files.append(file)
-
-    group_collisions = _case_collisions([directory.name for directory in directories])
     for directory in directories:
-        files.extend(_group_files(directory, group_collisions.get(directory.name), problems))
+        files.extend(_group_files(directory, problems))
     return files, problems
 
 
@@ -498,10 +437,6 @@ class Store:
         return scenarios, problems, on_disk
 
     def _load(self) -> None:
-        # Named as the rename it is, rather than left to `scenario_files` to report as a directory
-        # it could not read — see test_store_refuses_a_legacy_sessions_layout. Nothing creates
-        # `scenarios/`: `init` writes it, and a profile without one is a reported load problem.
-        refuse_legacy_layout(config.PROFILE_DIR)
         self.scenarios, problems, self._disk_names = self._read_snapshot()
         for owner, problem in problems:
             self._problem(problem, owner)

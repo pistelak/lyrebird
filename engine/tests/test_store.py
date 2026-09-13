@@ -2,7 +2,6 @@
 
 import errno
 import json
-import shlex
 
 import pytest
 
@@ -709,75 +708,6 @@ def test_answer_and_sequence_states_report_one_run_not_two(profile):
     assert answers["seq"] == subject.sequence_states()[0]["runId"]
 
 
-# MARK: - The profile layout from before the rename
-
-
-def make_legacy_profile(profile, *, with_scenarios=False):
-    """A profile written before `sessions/` became `scenarios/`, with `config` pointed at it.
-
-    Built beside the `profile` fixture's directory rather than inside it, because the fixture
-    creates `scenarios/` and the whole point of this layout is that it has none. The fixture's
-    teardown puts `config` back.
-    """
-    legacy = profile.parent / "legacy"
-    (legacy / "sessions").mkdir(parents=True)
-    if with_scenarios:
-        (legacy / "scenarios").mkdir()
-    (legacy / "profile.json").write_text('{"hosts": []}')
-    config.configure(str(legacy))
-    config.reload_profile()
-    return legacy
-
-
-def test_store_refuses_a_legacy_sessions_layout(profile):
-    """`sessions/` was renamed to `scenarios/` before the first release, and an unrenamed profile has
-    every scenario it ever had, under the old name. Read as an ordinary unreadable directory it would
-    be a load problem about permissions, and the operator would go looking for one; the refusal names
-    both paths and the `mv` that fixes it."""
-    legacy = make_legacy_profile(profile)
-
-    with pytest.raises(store.LegacyProfileLayout) as raised:
-        store.Store()
-
-    assert f"mv {legacy / 'sessions'} {legacy / 'scenarios'}" in str(raised.value)
-    assert not (legacy / "scenarios").exists(), "the refusal must not leave the directory behind"
-
-
-def test_a_profile_with_both_directories_loads_from_scenarios(profile):
-    """Only the *absence* of `scenarios/` is the old layout. Once it is there it is the one that is
-    read, and a `sessions/` left behind is somebody's backup — not a second place to look."""
-    legacy = make_legacy_profile(profile, with_scenarios=True)
-    (legacy / "scenarios" / "kept.json").write_text(json.dumps({"name": "kept", "overrides": []}))
-    (legacy / "sessions" / "stale.json").write_text(json.dumps({"name": "stale", "overrides": []}))
-
-    subject = store.Store()
-
-    assert "kept" in subject.scenarios
-    assert "stale" not in subject.scenarios
-
-
-def test_the_legacy_remedy_is_a_command_a_shell_can_run(profile):
-    """The message exists to hand over one line to paste. Interpolated bare, a profile under
-    `/path/to/My Profile` produced `mv /path/to/My Profile/sessions …` — four arguments to `mv`,
-    so the remedy for the refusal was the one part of it that did not work."""
-    spaced = profile.parent / "My Profile"
-    (spaced / "sessions").mkdir(parents=True)
-
-    with pytest.raises(store.LegacyProfileLayout) as raised:
-        store.refuse_legacy_layout(spaced)
-
-    remedy = str(raised.value).rsplit("rename it:  ", 1)[1]
-    assert shlex.split(remedy) == ["mv", str(spaced / "sessions"), str(spaced / "scenarios")]
-
-
-def test_scenario_files_refuses_a_legacy_sessions_layout(profile):
-    """The offline commands list a profile's files through this, so without the refusal here they
-    would report "no scenario files" for a profile that has every one of them."""
-    make_legacy_profile(profile)
-    with pytest.raises(store.LegacyProfileLayout):
-        store.scenario_files()
-
-
 # MARK: - Identity for the recent list
 #
 # `/recent` is polled, and a client keeps a selection across polls. Position cannot carry that — a
@@ -865,16 +795,6 @@ def _group_file(profile, group, name, payload=None):
     return path
 
 
-def _folds_case(profile):
-    """Whether the filesystem under `profile` folds case, which decides what a collision even is."""
-    probe = profile / "scenarios" / "CaseProbe.tmp"
-    probe.parent.mkdir(parents=True, exist_ok=True)
-    probe.write_text("")
-    folded = (probe.parent / "caseprobe.tmp").exists()
-    probe.unlink()
-    return folded
-
-
 @pytest.mark.parametrize(
     "name",
     ["../x", "a/../b", "a//b", "a/b/c", "a\\b", "/a", "a/", "", "%2e%2e/x", ".hidden/x", "a/.hidden"],
@@ -919,72 +839,6 @@ def test_a_third_level_is_a_reported_load_problem_not_a_skipped_file(profile):
     assert not any(name.startswith("checkout") for name in subject.scenarios)
     assert any("nest one level deep" in problem for problem in subject.load_problems)
     assert any("checkout/retries" in problem for problem in subject.load_problems)
-
-
-def test_sibling_names_that_differ_only_by_case_are_refused_and_blamed_on_each(profile):
-    """Neither file loads, and every identity involved is told why.
-
-    The blame matters as much as the refusal: `up --use default` asks `scenariosNotWhole['default']`
-    whether the scenario it was handed loaded whole, and a problem recorded against no name would
-    let the synthesised `default` pass as whole while its own file was being skipped.
-    """
-    if _folds_case(profile):
-        pytest.skip("the filesystem folds case, so the two files are one")
-    _write(profile, "default", {"overrides": []})
-    _write(profile, "Default", {"overrides": []})
-
-    subject = make_store(profile)
-
-    assert "Default" not in subject.scenarios
-    assert subject.scenarios_not_whole.get("default"), "the name `up --use` would ask about"
-    assert subject.scenarios_not_whole.get("Default")
-    assert all("differ only by case" in p for p in subject.scenarios_not_whole["default"])
-
-
-def test_group_names_that_differ_only_by_case_are_refused(profile):
-    if _folds_case(profile):
-        pytest.skip("the filesystem folds case, so the two directories are one")
-    _group_file(profile, "checkout", "a")
-    _group_file(profile, "Checkout", "b")
-
-    subject = make_store(profile)
-
-    assert not any("/" in name for name in subject.scenarios)
-    assert any("differ only by case" in problem for problem in subject.load_problems)
-
-
-def test_case_collisions_name_every_member(profile):
-    """The pure half of the collision rule, so it is checked on a case-folding filesystem too — where
-    the two files cannot both exist and the integration tests below skip."""
-    assert store._case_collisions(["a.json", "A.json", "b.json"]) == {
-        "a.json": ["a.json", "A.json"],
-        "A.json": ["a.json", "A.json"],
-    }
-    assert store._case_collisions(["a.json", "b.json"]) == {}
-
-
-def test_a_case_colliding_pair_is_skipped_and_blamed_on_both_identities(profile, monkeypatch):
-    """The discovery path itself, driven without needing a case-sensitive filesystem: macOS folds
-    case by default, so the pair below cannot be created there — but a profile synced from a
-    case-sensitive machine can hold one, and then neither file may load."""
-    make_store(profile)
-    scenarios = config.SCENARIOS_DIR
-    real = store.Path.iterdir
-
-    def listing(self):
-        if self == scenarios:
-            return iter([scenarios / "orders-outage.json", scenarios / "Orders-Outage.json"])
-        return real(self)
-
-    monkeypatch.setattr(store.Path, "iterdir", listing)
-    (scenarios / "orders-outage.json").write_text(json.dumps({"overrides": []}))
-
-    files, problems = store.scenario_files()
-
-    assert files == [], "neither file may load: nothing can say which one a name means"
-    owners = {owner for owner, _problem in problems}
-    assert owners == {"orders-outage", "Orders-Outage"}, "both identities are told why"
-    assert all("differ only by case" in problem for _owner, problem in problems)
 
 
 def test_an_unreadable_group_is_a_reported_problem_not_an_empty_group(profile, monkeypatch):

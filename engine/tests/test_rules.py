@@ -137,11 +137,6 @@ def test_rejects_non_string_path():
         rules.validate_override({"mode": "replace", "match": {"path": 42}})
 
 
-def test_rejects_excessive_wildcards():
-    with pytest.raises(rules.ValidationError):
-        rules.validate_override({"mode": "replace", "match": {"path": "/" + "*a" * 50}})
-
-
 def test_rejects_out_of_range_status():
     with pytest.raises(rules.ValidationError):
         rules.validate_override({"mode": "replace", "status": 9999})
@@ -368,11 +363,6 @@ def test_sequence_validation_rejects(override):
     on every request that reaches the proxy."""
     with pytest.raises(rules.ValidationError):
         rules.validate_override(override)
-
-
-def test_too_many_steps_is_rejected():
-    with pytest.raises(rules.ValidationError):
-        rules.validate_override(_sequenced(steps=[{"status": 200}] * (rules.MAX_SEQUENCE_STEPS + 1)))
 
 
 def test_a_valid_sequence_is_accepted():

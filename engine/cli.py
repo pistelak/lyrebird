@@ -16,8 +16,6 @@
     lyrebird sequence wait <id> --step N  block until a sequence serves a given step
     lyrebird status [--json]              show intercept state (honest about PAC on/off)
     lyrebird relaunch [BUNDLEID]          relaunch the app on the simulator this run is bound to
-    lyrebird untrust-ca                   how to drop the CA from a simulator again
-    lyrebird logs                         print the last 60 lines; path on stderr
 
 Routing uses a *host-scoped PAC* so only the hosts in your profile go through the proxy; everything
 else stays DIRECT. Whatever PAC you had before is recorded in this user's one session journal and
@@ -66,8 +64,6 @@ cli.add_command(evidence.assert_answered)
 cli.add_command(offline.validate)
 cli.add_command(offline.explain_match)
 cli.add_command(sim.relaunch_cmd)
-cli.add_command(sim.untrust_ca_cmd)
-cli.add_command(supervisor.logs)
 
 
 if __name__ == "__main__":

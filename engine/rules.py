@@ -42,8 +42,6 @@ from functools import lru_cache
 from typing import Any, TypeGuard
 
 SCHEMA_VERSION = 1  # the scenario-file format this engine reads; see `normalise_scenario`
-MAX_WILDCARDS = 10  # a bounded number of wildcards keeps the generated regex cheap to evaluate
-MAX_SEQUENCE_STEPS = 50  # bounded for the same reason: a pasted file must not cost unbounded memory
 # The ceiling on a per-override `delayMs`, so a typo cannot wedge a flow indefinitely. Here
 # rather than in `config` because it is not configuration: the proxy applies it and
 # `describe_rewrite` reports it, and a rule described as waiting two minutes while the wire
@@ -106,9 +104,6 @@ EXHAUSTED_ERROR = "error"
 @lru_cache(maxsize=512)
 def glob_to_regex(glob: str) -> re.Pattern:
     """`*` is the only special character; everything else is literal.
-
-    Wildcard count is capped at validation time (see MAX_WILDCARDS) rather than here, so that
-    matching semantics stay exactly as they were for already-saved scenarios.
 
     Cached because this runs once per rule per request and dominated that cost: the `re.sub` and
     the f-string run before `re.compile` can reach its own internal cache. Keys are glob strings
@@ -602,11 +597,8 @@ def _validate_matcher(matcher: Any, where: str, *, require_constraint: bool = Fa
             )
 
     path = matcher.get("path")
-    if path is not None:
-        if not isinstance(path, str):
-            raise ValidationError(f"{where}.path must be a string")
-        if path.count("*") > MAX_WILDCARDS:
-            raise ValidationError(f"{where}.path has more than {MAX_WILDCARDS} wildcards")
+    if path is not None and not isinstance(path, str):
+        raise ValidationError(f"{where}.path must be a string")
 
     method = matcher.get("method")
     if method is not None and not isinstance(method, str):
@@ -677,8 +669,6 @@ def _validate_sequence(sequence: Any, mode: str) -> None:
         raise ValidationError("sequence.steps must be a list")
     if not steps:
         raise ValidationError("sequence.steps must not be empty — such a rule could never answer")
-    if len(steps) > MAX_SEQUENCE_STEPS:
-        raise ValidationError(f"sequence.steps has more than {MAX_SEQUENCE_STEPS} steps")
 
     for index, step in enumerate(steps):
         where = f"sequence.steps[{index}]"

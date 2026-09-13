@@ -31,7 +31,6 @@ import ownership
 import procs
 import session
 import simulator as sim
-import store
 import ui
 from ownership import Absent, Configured, Off, Owner, Pac, PacClass, ServiceRef, SessionRecord, Unreadable
 
@@ -147,13 +146,6 @@ def init(path: str | None) -> None:
     target = Path(path).expanduser().resolve() if path else config.PROFILE_DIR
     if (target / "profile.json").exists():
         raise SystemExit(f"{ui.RED}{target}/profile.json already exists — refusing to overwrite{ui.R}")
-    # Checked on the target, not on `config.PROFILE_DIR`: `init PATH` writes somewhere else. Copying
-    # the examples into a profile that still has `sessions/` would leave two directories of scenarios
-    # with only one of them read — see test_init_refuses_a_legacy_sessions_layout.
-    try:
-        store.refuse_legacy_layout(target)
-    except store.LegacyProfileLayout as error:
-        raise SystemExit(f"{ui.RED}{error}{ui.R}") from None
     target.mkdir(parents=True, exist_ok=True)
     shutil.copytree(config.EXAMPLES_DIR, target, dirs_exist_ok=True)
     click.echo(f"✓ profile created at {ui.BOLD}{target}{ui.R}")
@@ -373,12 +365,6 @@ def _up_locked(
         raise
 
     if failures:
-        if len(failures) > 1:
-            click.echo(f"\n{ui.RED}✗ up did not finish cleanly:{ui.R}")
-            for failure in failures:
-                click.echo(f"   · {failure.splitlines()[0]}")
-        else:
-            click.echo(f"{ui.RED}✗ up did not finish cleanly.{ui.R}")
         # Any failure unwinds: an acquisition that could not achieve its postcondition puts the
         # network back rather than leaving a proxy the operator must remember to stop.
         _teardown(sess, record)
@@ -871,28 +857,8 @@ def status(as_json: bool) -> None:
             )
         else:
             ui._banner(raw, service, intercepting)
-        if raw and not foreign:
-            click.echo(f"  scenarios: {', '.join(raw['scenarios'])}")
-            for state in raw.get("sequences", []):
-                position = (
-                    f"next step {state['nextStep']}/{state['stepCount']}"
-                    if state["nextStep"]
-                    else f"{ui.RED}exhausted{ui.R}"
-                )
-                overrun = f" {ui.YELLOW}· overrun{ui.R}" if state["hasOverrun"] else ""
-                trigger = "own calls" if state["advanceOn"] == "self" else "advanceOn"
-                click.echo(f"  sequence {state['id']}: {position} · {trigger}{overrun}")
-        if pac is not None:
-            state = "enabled" if pac.enabled else f"{ui.RED}DISABLED{ui.R}"
-            owner = "" if ours or not pac.url else " · not ours"
-            click.echo(f"  PAC on '{service}': {pac.url or '(none)'} · {state}{owner}")
         for reason in reasons:
             click.echo(f"  {ui.RED}✗ {reason}{ui.R}")
-        if simulator:
-            click.echo(
-                f"  simulator: {simulator['name']} ({simulator['udid']}) "
-                f"{ui.DIM}· CA + relaunch only; the PAC is not scoped to it{ui.R}"
-            )
 
     raise SystemExit(1 if reasons else 0)
 
@@ -957,10 +923,3 @@ def _status_reasons(
     elif route.device != journal.service.device:
         reasons.append(f"route moved to {route.device} — `lyrebird down && lyrebird up`")
     return reasons
-
-
-@click.command()
-def logs() -> None:
-    """Print the last 60 lines of the proxy log (not a follow — use `tail -f` on the path shown)."""
-    click.echo(ui._tail_log(60))
-    click.echo(f"{ui.DIM}{config.LOG_FILE}{ui.R}", err=True)
