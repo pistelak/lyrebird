@@ -52,7 +52,18 @@ extension AppTests {
         @Test
         func clearUsesScopedDeleteAndRefreshesTraffic() async throws {
             try await withAppTestEnvironment {
-                StubURLProtocol.install { request in Stub.read(request) }
+                // The refresh after a clear reads the traffic only from a proxy that says it is ours,
+                // so the health it sees carries this profile's fingerprint.
+                StubURLProtocol.install { request in
+                    request.url?.path == "/__mock__/health"
+                        ? (
+                            Stub.response(request, 200),
+                            Data(
+                                #"{"activeScenario":"baseline","proxyUp":true,"intercepting":true,"#
+                                    .appending(#""profileFingerprint":"abc123"}"#).utf8)
+                        )
+                        : Stub.read(request)
+                }
                 let model = makeModel(expecting: "abc123")
                 await model.clearRecent()
                 let request = StubURLProtocol.requests.first

@@ -90,12 +90,20 @@ final class SettingsWindowController: NSWindowController {
             self.error.stringValue = error.localizedDescription
             return
         }
-        Config.defaults.set(text, forKey: Config.controlURLKey)
-        Config.defaults.set(launcher.stringValue, forKey: Config.lyrebirdPathKey)
-        Config.defaults.set(profile.stringValue, forKey: Config.profilePathKey)
-        Config.defaults.set(dock.state == .on, forKey: Config.dockOnlyWhileWindowOpenKey)
-        close()
-        Task { await model.settingsChanged() }
+        // The model writes the settings, because a changed control URL has to stop the session the
+        // old one addresses first — and a `down` that fails keeps the window open with the reason.
+        let launcher = self.launcher.stringValue
+        let profile = self.profile.stringValue
+        let dockOnly = dock.state == .on
+        Task {
+            if let refusal = await model.commitSettings(
+                controlURL: text, launcher: launcher, profile: profile, dockOnlyWhileWindowOpen: dockOnly)
+            {
+                self.error.stringValue = refusal
+                return
+            }
+            close()
+        }
     }
 
 }

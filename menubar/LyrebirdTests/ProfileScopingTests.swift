@@ -219,10 +219,11 @@ extension AppTests {
         }
 
         @Test
-        func anEngineTooOldToReportItsProfileIsAcceptedTheWayTheCLIAcceptsIt() async throws {
+        func anEngineTooOldToReportItsProfileIsAnotherProfileUntilItSaysOtherwise() async throws {
             try await withAppTestEnvironment {
-                // A missing fingerprint is a proxy that cannot answer the question, not one that answered
-                // it differently — `cli.status` treats it the same way.
+                // A missing fingerprint is a proxy nothing can vouch for. Accepted as ours it let the
+                // app activate and reset a stranger's profile behind a daemon that enforces no guard;
+                // the CLI refuses it the same way now.
                 StubURLProtocol.install { request in
                     request.url?.path == "/__mock__/health"
                         ? (Stub.response(request, 200), Fixture.health(fingerprint: nil))
@@ -232,7 +233,8 @@ extension AppTests {
 
                 await model.refresh()
 
-                #expect(model.status == .intercepting)
+                #expect(model.status == .foreignProfile(running: "none reported"))
+                #expect(model.ownHealth == nil, "and nothing of it is shown under this profile's name")
             }
         }
 
@@ -586,6 +588,75 @@ private final class MutableFingerprint: @unchecked Sendable {
             lock.lock()
             stored = newValue
             lock.unlock()
+        }
+    }
+}
+
+/// Changing the control port in Settings wrote the new URL and reconnected, and the proxy on the
+/// old port kept intercepting with the PAC installed while the menu said Stopped and offered Start.
+/// `down` needs no port since the session journal, so the fix is an order: stop the session the
+/// old URL addresses, then write the new one — and refuse the edit when that stop fails.
+extension AppTests {
+    @MainActor
+    struct SettingsCommitTests {
+        private static let newURL = "http://127.0.0.1:9000"
+
+        private func modelWithAProxyUp() async -> AppModel {
+            StubURLProtocol.install { request in
+                request.url?.path == "/__mock__/health"
+                    ? (Stub.response(request, 200), Fixture.health(fingerprint: Fixture.ours))
+                    : Stub.read(request)
+            }
+            let model = makeModel(expecting: Fixture.ours)
+            await model.refresh()
+            return model
+        }
+
+        private func commit(_ model: AppModel, to url: String, launcher: String) async -> String? {
+            await model.commitSettings(controlURL: url, launcher: launcher, profile: "", dockOnlyWhileWindowOpen: false)
+        }
+
+        @Test
+        func aChangedControlURLStopsTheOldSessionBeforeItIsWritten() async throws {
+            try await withAppTestEnvironment {
+                // `/usr/bin/true` stands in for a `down` that succeeds.
+                Config.defaults.set("/usr/bin/true", forKey: Config.lyrebirdPathKey)
+                let model = await modelWithAProxyUp()
+
+                let refusal = await commit(model, to: Self.newURL, launcher: "/usr/bin/true")
+
+                #expect(refusal == nil)
+                #expect(Config.defaults.string(forKey: Config.controlURLKey) == Self.newURL)
+            }
+        }
+
+        @Test
+        func aDownThatFailsRefusesTheEditAndKeepsTheOldURL() async throws {
+            try await withAppTestEnvironment {
+                // `/usr/bin/false` stands in for a `down` that could not put the network back.
+                Config.defaults.set("/usr/bin/false", forKey: Config.lyrebirdPathKey)
+                let model = await modelWithAProxyUp()
+                let before = Config.defaults.string(forKey: Config.controlURLKey)
+
+                let refusal = await commit(model, to: Self.newURL, launcher: "/usr/bin/false")
+
+                #expect(refusal?.contains("could not be stopped") == true)
+                #expect(Config.defaults.string(forKey: Config.controlURLKey) == before, "nothing written")
+            }
+        }
+
+        @Test
+        func anUnchangedControlURLRunsNoDown() async throws {
+            try await withAppTestEnvironment {
+                // A `down` here would refuse, so a nil refusal proves none ran.
+                Config.defaults.set("/usr/bin/false", forKey: Config.lyrebirdPathKey)
+                let model = await modelWithAProxyUp()
+                let current = Config.defaults.string(forKey: Config.controlURLKey) ?? Config.defaultControlURL
+
+                let refusal = await commit(model, to: current, launcher: "/usr/bin/false")
+
+                #expect(refusal == nil)
+            }
         }
     }
 }
