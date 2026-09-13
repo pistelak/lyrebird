@@ -43,7 +43,7 @@ these belong to is [AGENTS.md](AGENTS.md).
 | `override add` / `override clear` | Edit the file, then `scenario reload` |
 | `trust-ca` on its own | `up --simulator X`; for another device, `down && up --simulator Y` |
 | `untrust-ca` | `xcrun simctl keychain <udid> reset` clears the certificates added to that simulator |
-| `logs` | The proxy log is `~/Library/Logs/Lyrebird/proxy.log`; `up` prints its last lines when the proxy fails to start |
+| `logs` | The proxy log is `~/Library/Logs/Lyrebird/<profileFingerprint>.log` (the fingerprint is in `status --json`); `up` prints its last lines when the proxy fails to start |
 | `recent --limit` | `recent --json \| jq` |
 | A `status` that lists scenarios, sequences, the PAC and the simulator | `status --json` carries all four |
 | A migration hint for a profile still keeping its scenarios in `sessions/` | Rename the directory to `scenarios/` |
@@ -98,8 +98,9 @@ Substitute your own network service for `"Wi-Fi"` — `networksetup -listallnetw
 them. That leaves the stale URL sitting in the field, which is what an ordinary `down` leaves too:
 macOS rejects an empty PAC URL, so when you had no PAC to begin with, "restored" means *disabled*.
 
-The proxy log is `~/Library/Logs/Lyrebird/proxy.log`; `up` prints its last lines when the proxy
-fails to start. Later failures (CA, PAC, relaunch) report their own reason instead.
+The proxy log is `~/Library/Logs/Lyrebird/<profileFingerprint>.log` — the fingerprint is
+`profileFingerprint` in `status --json` — and `up` prints its last lines when the proxy fails to
+start. Later failures (CA, PAC, relaunch) report their own reason instead.
 
 ## Run the old `down` before you upgrade
 

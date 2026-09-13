@@ -102,7 +102,7 @@ is why it lives in `~/.config` and neither of the above does.
 ```bash
 ../bin/lyrebird init ~/lyrebird-profiles/my-app
 ../bin/lyrebird --profile ~/lyrebird-profiles/my-app up --use orders-outage   # start, CA, PAC, scenario, app
-../bin/lyrebird --profile ~/lyrebird-profiles/my-app status  # intercepting? which scenario? PAC state?
+../bin/lyrebird --profile ~/lyrebird-profiles/my-app status --json  # intercepting? which scenario? PAC state?
 ../bin/lyrebird --profile ~/lyrebird-profiles/my-app use another-scenario   # switch, from here on
 ../bin/lyrebird --profile ~/lyrebird-profiles/my-app down    # stop and restore previous settings
 ```
@@ -141,8 +141,8 @@ relaunching the app are one command, and what to do when something else owns the
 Without it, the single booted simulator is used; with several booted and no choice made,
 `up` **refuses and lists them** rather than pass simctl's `booted` keyword, which — per
 `simctl help` — "will choose one of them" without saying which. A UI-test runner that already
-picked a device should pass the same UDID here. `status` reports the device the last `up` used,
-in the text output and as `simulator` in `--json`, and `lyrebird relaunch [BUNDLEID]` relaunches
+picked a device should pass the same UDID here. `status --json` reports the device the last `up`
+used as `simulator`, and `lyrebird relaunch [BUNDLEID]` relaunches
 the app on it (`--simulator` overrides; that is the command the menu-bar app's Relaunch runs).
 
 Names and UDIDs must match exactly and in full (`iPhone 17 Pro`, not `iPhone 17`). A device that
