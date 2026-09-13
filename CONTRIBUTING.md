@@ -131,10 +131,11 @@ the app and reads its container itself, and a second booted device makes "which 
 nothing here can answer. Boot one yourself, or name one in `LYREBIRD_ACCEPTANCE_SIMULATOR` (udid or
 device name) and the run boots it and shuts it down again.
 
-With nothing booted and nothing named the run **skips** and says so; a name that matches no device,
-two booted simulators, or a Lyrebird PAC already enabled on the network service **fail** — the
-machine could have run the check, and the answer would not have meant anything. Once the
-prerequisites pass nothing skips.
+With nothing booted and nothing named the run **fails** and says so — `make acceptance` exits 0
+only when its one test actually ran, so `make acceptance && …` cannot proceed on a check that
+never happened. A name that matches no device, two booted simulators, or a Lyrebird PAC already
+enabled on the network service fail the same way: the machine could have run the check, and the
+answer would not have meant anything.
 
 **What it checks.** It is one test with five phases, not five tests: they share one proxy, one app
 and one container of evidence, and each depends on the state the last left, so separate test

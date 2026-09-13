@@ -59,10 +59,10 @@ known-first-party = ["cli_doubles"]
 # for tables whose alignment conveys meaning; ordinary code follows the formatter.
 
 [tool.mypy]
-files = ["addon.py", "api.py", "cli.py", "config.py",
-         "control.py", "evidence.py", "netproxy.py", "offline.py", "ownership.py",
-         "procs.py", "rules.py", "scenario.py", "session.py", "simulator.py",
-         "store.py", "supervisor.py", "ui.py"]
+# Every module in the flat layout, discovered rather than listed: a new one is checked without being
+# named here. Tests are excluded on purpose (their doubles are untyped by design), as is the venv.
+files = ["."]
+exclude = ["^tests/", "^\\.venv/", "^examples/"]
 mypy_path = "."            # flat layout: `import config` must resolve from engine/
 python_version = "3.12"
 disallow_untyped_defs = true
