@@ -312,8 +312,8 @@ def load_scenario_file(file: Path) -> tuple[dict | None, list[str]]:
     loaded without the rule you are looking for" send an operator to different places.
 
     A module-level function rather than a `Store` method, so a command can ask "what would the proxy
-    make of this file?" without constructing a store — which creates directories, synthesises a
-    `default` scenario, neither of which an inspection may do.
+    make of this file?" without constructing a store — which synthesises a `default` scenario and
+    reads the whole profile, neither of which an inspection of one file should do.
     `Store._load` is a loop around this function, so an offline answer cannot drift from startup's.
     """
     label = _relative_label(file)

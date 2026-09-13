@@ -350,9 +350,9 @@ they live outside this repository. A scenario file can contain a real response b
 **`rules.py` stays pure.** No proxy or IO imports — it is the one module that can be unit-tested
 with the standard library alone, and that is worth protecting.
 
-**Validate at the boundary.** Overrides are validated when they are stored, not when they are used,
-so a malformed rule fails at the API call that created it rather than raising inside a proxy hook on
-every matching request. Anything that becomes a filesystem path goes through
+**Validate at the boundary.** Scenario files are validated when they load, not when a rule is used:
+a malformed rule is reported at startup and refuses a whole `scenario reload`, rather than raising
+inside a proxy hook on every matching request. Anything that becomes a filesystem path goes through
 `store.safe_component`.
 
 **A function named for an outcome must fail when it does not achieve it.** This is the bug this

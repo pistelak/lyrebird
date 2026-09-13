@@ -63,7 +63,8 @@ that:
 
 Scenario names arrive from that API and become filesystem paths, so they are
 validated as single path components and the resolved path is confirmed to stay inside the profile
-before any read, write, listing or unlink. This constrains *names supplied through the API*. It
+before any read or listing; nothing in the proxy writes into a profile. This constrains *names
+supplied through the API*. It
 does not sandbox the profile directory itself: scenario files found at startup are read from
 wherever `--profile` points, symlinks included, exactly as you told it to.
 

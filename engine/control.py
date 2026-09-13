@@ -60,7 +60,7 @@ async def _guard(request: web.Request, handler: Handler) -> web.StreamResponse:
         return web.json_response({"error": "cross_origin_denied"}, status=403)
 
     # One proxy holds the control port, so a CLI invoked with `--profile B` while profile A is
-    # running would otherwise switch A's scenario, add rules to A and reset A's counters — every
+    # running would otherwise switch A's scenario, reload A's files and reset A's counters — every
     # call reporting success for work done somewhere the operator was not looking. The header is a
     # scoping declaration, not a credential: it is absent from older CLIs and from curl, and those
     # stay unchecked. Fingerprints only — the profile path belongs to whoever wrote it.

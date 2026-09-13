@@ -318,9 +318,9 @@ because a typo'd field is not a stricter matcher but a missing constraint:
 | `query` | Query parameters that must all be present with these exact values. Others are ignored. |
 | `bodyContains` | A substring that must appear in the request body. |
 
-The vocabulary lives once, in `OVERRIDE_FIELD_HELP` and `MATCHER_FIELD_HELP` in `rules.py`, and the
-validation that accepts or rejects a rule is generated from it. The two tables above mirror that
-vocabulary; they are maintained by hand, so keep them in step with it.
+The vocabulary lives once, in `OVERRIDE_FIELDS` and `MATCHER_FIELDS` in `rules.py`, and the
+validation that accepts or rejects a rule is generated from it. The two tables above are its
+documentation, maintained by hand, so keep them in step with it.
 
 `delayMs` delays a matched response (that flow only), up to a ceiling of 60 s — a typo must not be
 able to wedge a flow indefinitely. The delay is applied before the mode is looked at, so it holds a

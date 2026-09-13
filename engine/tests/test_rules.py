@@ -487,8 +487,8 @@ def test_advance_matcher_is_none_for_the_self_default():
 
 
 def test_duplicate_override_ids_are_reported_and_dropped():
-    """Ids address a rule: add replaces by id, reset names one by id, and sequence state is keyed
-    by it. Two rules sharing an id would share a cursor."""
+    """Ids address a rule: reset names one by id, evidence is filed by it, and sequence state is
+    keyed by it. Two rules sharing an id would share a cursor."""
     scenario = rules.normalise_scenario(
         {
             "overrides": [
