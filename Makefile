@@ -8,8 +8,9 @@ ENGINE_PYTHON := .venv/bin/python
 SWIFT_FORMAT := .build/tools/bin/swift-format
 XCODEGEN := .build/tools/bin/xcodegen
 SWIFT_SOURCES := menubar/Lyrebird menubar/LyrebirdTests menubar/LyrebirdUITests acceptance/FixtureApp/FixtureApp
-SHELL_SCRIPTS := bin/lyrebird scripts/setup-tools.sh scripts/check-tools.sh scripts/check-swift-format.sh \
-	menubar/scripts/verify-version.sh menubar/scripts/install-app.sh
+# Discovered, not listed: a script added under either directory is checked without anyone remembering
+# to name it here. `bin/lyrebird` has no extension and is the one entry named by hand.
+SHELL_SCRIPTS := bin/lyrebird $(wildcard scripts/*.sh menubar/scripts/*.sh)
 
 .PHONY: help setup setup-engine setup-app doctor check check-engine check-app check-shell \
 	format format-engine format-app lint-engine lint-app types test test-engine test-app \
@@ -24,6 +25,7 @@ help:
 	@echo 'make format        Format Python and Swift sources'
 	@echo 'make install-app   Build the menu-bar app as Release into /Applications and launch it'
 	@echo 'make test-engine   Fast Python tests (TEST_ARGS="-k reset" to select tests)'
+	@echo 'make test-app      App unit and UI tests (TEST=LyrebirdTests/Suite/test to select; fails if none ran)'
 	@echo 'make acceptance    Real simulator/network checks; opt-in, see CONTRIBUTING.md'
 	@echo 'make lock          Regenerate hashed requirements after editing *.in'
 
@@ -90,12 +92,20 @@ lint-app:
 # stays a named exclusion rather than dropping the target — a runner that can drive the app should
 # go on driving it.
 APP_TEST_SKIP ?=
+# TEST=<identifier> runs one test, class or target (`-only-testing:` syntax, e.g. TEST=LyrebirdTests).
+# The result bundle is read back afterwards: `-only-testing:` with a name that matches nothing exits 0
+# as "0 tests, passed", and a run that executed nothing is not a run that passed.
+TEST ?=
+APP_RESULTS := .build/test-app.xcresult
 test-app:
 	bash scripts/check-tools.sh
 	cd menubar && ../$(XCODEGEN) generate
+	rm -rf menubar/$(APP_RESULTS)
 	cd menubar && xcodebuild -quiet -project Lyrebird.xcodeproj -scheme Lyrebird \
 		-configuration Debug -derivedDataPath .build -destination 'platform=macOS' \
-		$(APP_TEST_SKIP) build test
+		-resultBundlePath $(APP_RESULTS) \
+		$(APP_TEST_SKIP) $(if $(TEST),"-only-testing:$(TEST)",) build test
+	bash scripts/check-app-test-count.sh menubar/$(APP_RESULTS) "$(TEST)"
 
 # APP_INSTALL_DIR=/path/to/dir to install somewhere other than /Applications.
 APP_INSTALL_DIR ?= /Applications

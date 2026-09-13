@@ -9,16 +9,12 @@ command is what runs: `up --simulator`, `lyrebird relaunch`, `assert-answered --
 called directly only for what Lyrebird has no command for — install, uninstall, boot, shutdown, and
 reading the app's container.
 
-Prerequisites are settled before anything is started, and they split two ways on purpose:
-
-* **Skip** when the machine simply cannot run this — no full Xcode, no xcodegen, no booted
-  simulator. Those are environment facts, and reporting them as failures would make a laptop
-  without a simulator look like a regression.
-* **Fail** when the machine *could* run it but the answer would not mean anything — two booted
-  simulators, a simulator named in the environment that does not exist, another Lyrebird already
-  holding the network service's PAC.
-
-Once the prerequisites pass, nothing skips.
+Prerequisites are settled before anything is started, and every one that is missing is a
+**failure**, never a skip: no full Xcode, no xcodegen, no booted simulator, two booted simulators, a
+simulator named in the environment that does not exist, another Lyrebird already holding the
+network service's PAC. pytest exits 0 on an all-skipped run, so a skip here let `make acceptance &&
+…` proceed as if the one check that drives a real simulator had passed. The message says what to
+boot, name, install or stop; the exit code says the check did not run.
 
 **The cleanup runs the shipped command, once.** `lyrebird down` is the only recovery command
 there is, so the finalizer runs exactly that — as a subprocess, taking its own lock — and then
@@ -301,36 +297,30 @@ def _devices() -> list[dict]:
 
 
 def _require_xcode() -> None:
-    """Skip unless a full Xcode with a simulator platform is selected.
+    """Fail unless a full Xcode with a simulator platform is selected.
 
     `xcrun` alone proves nothing: the Command Line Tools ship the shims without the simulator
     platform behind them, and `simctl` then fails in a way that reads as a broken check rather
-    than as a machine that cannot run one.
+    than as a machine that cannot run one. A failure rather than a skip, like every other missing
+    prerequisite here: an all-skipped run exits 0, and `make acceptance` must not.
     """
     if shutil.which("xcrun") is None or shutil.which("xcodebuild") is None:
-        pytest.skip("no `xcrun`/`xcodebuild` on PATH — these checks need Xcode")
+        pytest.fail("no `xcrun`/`xcodebuild` on PATH — these checks need Xcode")
     selected = _run(["xcode-select", "-p"], timeout=60)
     developer = Path(selected.stdout.strip()) if selected.returncode == 0 else None
     if developer is None or not (developer / "Platforms/iPhoneSimulator.platform").is_dir():
-        pytest.skip(
+        pytest.fail(
             "no full Xcode selected (`xcode-select -p` does not point at a developer "
             "directory with an iPhoneSimulator platform) — these checks need one"
         )
 
 
-@pytest.fixture(scope="session")
-def simulator() -> Iterator[str]:
-    """The udid this run means, everywhere.
+def _select_device(wanted: str | None, devices: list[dict]) -> dict:
+    """The one device this run means, or a failure saying why there is none.
 
-    It is passed to `up --simulator`, so the CA and the relaunch are bound to it rather than to
-    whatever `booted` would resolve to. This still refuses to run with two simulators booted: the
-    harness installs the app and reads its container itself, and "which one" is then a question
-    nothing here can answer.
+    Never a skip: a run that skipped here exited 0 and `make acceptance && …` went on as if the
+    check had passed — see test_no_booted_and_no_named_simulator_is_a_failure_not_a_skip.
     """
-    _require_xcode()
-
-    wanted = os.environ.get("LYREBIRD_ACCEPTANCE_SIMULATOR")
-    devices = _devices()
     booted = [device for device in devices if device.get("state") == "Booted"]
 
     if wanted:
@@ -354,7 +344,9 @@ def simulator() -> Iterator[str]:
             )
     else:
         if not booted:
-            pytest.skip(
+            # A failure, not a skip: pytest exits 0 on an all-skipped run, so `make acceptance`
+            # said "verified" having verified nothing.
+            pytest.fail(
                 "no booted simulator. Boot one (`xcrun simctl boot <udid>`) or set "
                 "LYREBIRD_ACCEPTANCE_SIMULATOR=<udid-or-name> to have this boot it"
             )
@@ -365,6 +357,21 @@ def simulator() -> Iterator[str]:
                 + ", ".join(f"{other['name']} ({other['udid']})" for other in booted)
             )
         device = booted[0]
+    return device
+
+
+@pytest.fixture(scope="session")
+def simulator() -> Iterator[str]:
+    """The udid this run means, everywhere.
+
+    It is passed to `up --simulator`, so the CA and the relaunch are bound to it rather than to
+    whatever `booted` would resolve to. This still refuses to run with two simulators booted: the
+    harness installs the app and reads its container itself, and "which one" is then a question
+    nothing here can answer.
+    """
+    _require_xcode()
+
+    device = _select_device(os.environ.get("LYREBIRD_ACCEPTANCE_SIMULATOR"), _devices())
 
     udid = device["udid"]
     # Set before the call that starts it, not after: `simctl boot` can time out having already
@@ -406,7 +413,7 @@ def fixture_app(simulator: str) -> Iterator[Path]:
     earlier run's records in place, where the first check would read them as this run's.
     """
     if shutil.which("xcodegen") is None:
-        pytest.skip("xcodegen is not installed (run `make setup-app`, then `make acceptance`)")
+        pytest.fail("xcodegen is not installed (run `make setup-app`, then `make acceptance`)")
 
     generated = _run(
         ["xcodegen", "generate", "--project", str(FIXTURE_APP_DIR), "--spec", str(FIXTURE_APP_DIR / "project.yml")]

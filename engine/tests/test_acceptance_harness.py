@@ -57,6 +57,35 @@ def test_a_networksetup_answer_without_both_lines_is_not_a_pac(monkeypatch, stdo
     assert harness._read_pac() is None
 
 
+def _device(udid: str, state: str = "Booted", name: str = "iPhone 17 Pro") -> dict:
+    return {"udid": udid, "name": name, "state": state}
+
+
+def test_no_booted_and_no_named_simulator_is_a_failure_not_a_skip():
+    """pytest exits 0 on an all-skipped run, so `make acceptance && echo verified` printed `verified`
+    with nothing booted and nothing named — a check that never happened, reported as passed."""
+    module = _harness_module()
+    with pytest.raises(pytest.fail.Exception, match="no booted simulator"):
+        module._select_device(None, [_device("SIM-1", state="Shutdown")])
+
+
+def test_a_named_simulator_that_matches_nothing_is_a_failure():
+    module = _harness_module()
+    with pytest.raises(pytest.fail.Exception, match="matches no simulator"):
+        module._select_device("nope", [_device("SIM-1")])
+
+
+def test_two_booted_simulators_with_none_named_is_a_failure():
+    module = _harness_module()
+    with pytest.raises(pytest.fail.Exception, match="more than one simulator is booted"):
+        module._select_device(None, [_device("SIM-1"), _device("SIM-2", name="iPhone 17")])
+
+
+def test_the_one_booted_simulator_is_the_device_when_none_is_named():
+    module = _harness_module()
+    assert module._select_device(None, [_device("SIM-1"), _device("SIM-2", state="Shutdown")])["udid"] == "SIM-1"
+
+
 def test_a_whole_networksetup_answer_is_read_verbatim(monkeypatch):
     module = _harness_module()
     harness = _answering(module, monkeypatch, "URL: http://proxy.example.com/corp.pac\nEnabled: Yes\n")
