@@ -8,11 +8,15 @@ look same-origin. These tests pin the three checks that close that gap.
 import asyncio
 import errno
 import json
+import socket
+import urllib.error
 import urllib.parse
+import urllib.request
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
+import api
 import config
 import control
 import store
@@ -1295,3 +1299,52 @@ def test_reload_refusing_the_missing_active_scenario_is_a_409(profile):
 
     assert status == 409
     assert body["error"] == "reload_refused"
+
+
+# MARK: - A reader on another port
+#
+# `down` and the watchdog ask the *journal's* port, which need not be this process's configured
+# one. The guard answers 421 to any Host but its own, so both halves of the request have to follow
+# that port — and only a real server proves it.
+
+
+def _free_port():
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+def test_health_on_a_port_answers_a_real_control_server(profile, monkeypatch, _no_real_control_transport):
+    """Read through the configured origin instead, a `down` invoked with another
+    `LYREBIRD_CONTROL_PORT` asked the wrong port and reported the live proxy as gone."""
+    monkeypatch.setattr(api, "_open", _no_real_control_transport)
+    port = _free_port()
+    stranger = _free_port()
+    monkeypatch.setattr(config, "CONTROL_PORT", port)
+    monkeypatch.setattr(config, "CONTROL_HOST_HEADER", f"127.0.0.1:{port}")
+    (profile / "profile.json").write_text('{"hosts": []}', encoding="utf-8")
+    config.reload_profile()
+    subject = store.Store()
+
+    def probe():
+        payload = api._health(port)
+        wrong_host = urllib.request.Request(
+            f"http://127.0.0.1:{port}/__mock__/health", headers={"Host": f"127.0.0.1:{stranger}"}
+        )
+        try:
+            api._open(wrong_host, 1.5)
+            refused = None
+        except urllib.error.HTTPError as error:
+            refused = error.code
+        return payload, refused
+
+    async def main():
+        runner = await control.start(subject, _meta)
+        try:
+            return await asyncio.get_running_loop().run_in_executor(None, probe)
+        finally:
+            await runner.cleanup()
+
+    payload, refused = asyncio.run(main())
+    assert payload is not None and payload["proxyUp"] is True
+    assert refused == 421, "the Host header is what the guard judges, so sending the wrong one must fail"

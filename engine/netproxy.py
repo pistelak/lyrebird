@@ -15,6 +15,7 @@ import subprocess
 from typing import NamedTuple
 
 import config
+import ownership
 
 
 class NetworkSetupError(RuntimeError):
@@ -29,9 +30,18 @@ class NetworkSetupError(RuntimeError):
 _COMMAND_TIMEOUT = 5.0
 
 
-def _run(args: list[str], check: bool = False) -> subprocess.CompletedProcess:
+def _run(args: list[str], check: bool = False, *, pass_fds: tuple[int, ...] = ()) -> subprocess.CompletedProcess:
+    """`pass_fds` hands the session lock's descriptor to the child: flock is per open-file
+    description, so a `networksetup` that outlives a killed parent keeps the lock until it exits."""
     try:
-        result = subprocess.run(args, check=False, capture_output=True, text=True, timeout=_COMMAND_TIMEOUT)
+        result = subprocess.run(
+            args, check=False, capture_output=True, text=True, timeout=_COMMAND_TIMEOUT, pass_fds=pass_fds
+        )
+    except UnicodeDecodeError as error:
+        # `text=True` decodes, and a service named in bytes this locale cannot decode raises here.
+        # Anything but a NetworkSetupError escapes the observers' mapping and kills the watchdog —
+        # see test_a_command_with_undecodable_output_is_a_network_setup_error.
+        raise NetworkSetupError(f"`{' '.join(args)}` answered with output that could not be decoded: {error}") from None
     except subprocess.TimeoutExpired:
         # Raised, never returned as empty output: a `networksetup` that did not answer has told us
         # nothing about the PAC, and reading that as "no PAC" is the mistake `pac_status` documents.
@@ -162,3 +172,141 @@ def intercepting(service: str | None) -> bool:
         return False
     status = pac_status(service)
     return status.enabled and status.ours
+
+
+# MARK: - Route, service table and resolution
+#
+# Everything below is addressed by *name* at the moment of the call, and resolved from the recorded
+# device immediately before each one: a service renamed mid-session must not have somebody else's
+# settings written to whatever now carries the old name.
+
+
+class RouteAmbiguous(NetworkSetupError):
+    """Two network services claim the device carrying the default route: which one holds the PAC is
+    not something this Mac can be asked."""
+
+
+class ServiceChanged(NetworkSetupError):
+    """The recorded service could not be resolved to exactly one name, right now."""
+
+
+class UnexpectedPac(NetworkSetupError):
+    """A PAC that is neither the state a recipe admitted before writing nor one it wrote."""
+
+
+_LEGEND = re.compile(r"^an asterisk \(\*\) denotes", re.IGNORECASE)
+_ENTRY = re.compile(r"^\((?:\d+|\*)\)\s*(\S.*?)\s*$")
+_HARDWARE = re.compile(r"^\(Hardware Port:\s*(.*?),\s*Device:\s*(.*?)\)$")
+
+
+def route_device() -> str | None:
+    """The interface carrying the default route (e.g. 'en0'), or None when there is none.
+
+    None is a claim — "this Mac has no default route right now" — and only one output earns it:
+    `route` exiting 0 with `not in table`. Everything else raises; read as None, `down` reported
+    "nothing to stop" off a `route` that had failed (test_a_failed_route_command_is_not_no_default_route).
+    """
+    route = _run(["route", "-n", "get", "default"])
+    if "not in table" in route.stderr:
+        return None
+    if route.returncode != 0:
+        raise NetworkSetupError(f"`route -n get default` failed: {_first_line(route) or route.returncode}")
+    match = re.search(r"^\s*interface:\s*(\S+)\s*$", route.stdout, re.MULTILINE)
+    if not match:
+        raise NetworkSetupError(f"`route -n get default` answered without an interface: {_first_line(route)!r}")
+    return match.group(1)
+
+
+def service_table() -> list[tuple[str, str]]:
+    """Every network service as (name, device), parsed as a whole-output grammar.
+
+    A `findall` over this listing drops silently whatever it cannot match, so one truncated entry
+    for the journalled device read as `Gone` — and `down` archived a session whose service was
+    right there. Any line the grammar does not consume raises instead
+    (test_service_table_rejects_a_partially_parsable_listing). A `(*)` entry is a *disabled*
+    service: still listed, still holding its PAC, and kept
+    (test_service_table_keeps_a_disabled_service).
+    """
+    out = _run(["networksetup", "-listnetworkserviceorder"], check=True).stdout
+    lines = out.splitlines()
+    while lines and not lines[-1].strip():
+        lines.pop()
+    if not lines or not _LEGEND.match(lines[0].strip()):
+        raise NetworkSetupError(
+            f"`networksetup -listnetworkserviceorder` answered without its legend line: {out.strip()[:80]!r}"
+        )
+    services: list[tuple[str, str]] = []
+    index = 1
+    while index < len(lines):
+        line = lines[index]
+        if not line.strip():
+            index += 1
+            continue
+        entry = _ENTRY.match(line.strip())
+        if entry is None or index + 1 >= len(lines):
+            raise NetworkSetupError(f"`networksetup -listnetworkserviceorder` printed a line we cannot read: {line!r}")
+        hardware = _HARDWARE.match(lines[index + 1].strip())
+        if hardware is None:
+            raise NetworkSetupError(
+                f"`networksetup -listnetworkserviceorder` printed no hardware line for {entry.group(1)!r}"
+            )
+        services.append((entry.group(1), hardware.group(2)))
+        index += 2
+    if not services:
+        raise NetworkSetupError(f"`networksetup -listnetworkserviceorder` listed no services: {out.strip()[:80]!r}")
+    return services
+
+
+def resolve(ref: ownership.ServiceRef) -> ownership.Present | ownership.Gone | ownership.ServiceAmbiguous:
+    """The name that carries `ref.device` now. Raises `NetworkSetupError` when the table could not
+    be read — which is a different answer from `Gone`, and the executors map it to `ServiceFailed`."""
+    table = service_table()
+    on_device = [name for name, device in table if device == ref.device]
+    if ref.name in on_device:
+        return ownership.Present(ref.name)
+    if len(on_device) == 1:
+        return ownership.Present(on_device[0])
+    if len(on_device) > 1:
+        return ownership.ServiceAmbiguous()
+    return ownership.Gone()
+
+
+def resolved_name(ref: ownership.ServiceRef) -> str:
+    """The immediate-before check every mutator makes: one name, or nothing is written."""
+    resolved = resolve(ref)
+    if isinstance(resolved, ownership.Present):
+        return resolved.name
+    if isinstance(resolved, ownership.ServiceAmbiguous):
+        raise ServiceChanged(f"two network services now carry device '{ref.device}'")
+    raise ServiceChanged(f"no network service carries device '{ref.device}' any more")
+
+
+def list_all_services() -> list[str]:
+    """Every service name, disabled ones included — the sweep's only list, since this command
+    carries no devices.
+
+    A listing without its legend line, or with no services at all, raises: read as an empty list it
+    would be a clean sweep over a machine nobody looked at
+    (test_list_all_services_rejects_a_malformed_listing).
+    """
+    out = _run(["networksetup", "-listallnetworkservices"], check=True).stdout
+    lines = [line.strip() for line in out.splitlines() if line.strip()]
+    if not lines or not _LEGEND.match(lines[0]):
+        raise NetworkSetupError(
+            f"`networksetup -listallnetworkservices` answered without its legend line: {out.strip()[:80]!r}"
+        )
+    # A leading `*` marks a service as disabled; it still has a PAC, so the name is kept.
+    names = [line[1:].strip() if line.startswith("*") else line for line in lines[1:]]
+    if not names:
+        raise NetworkSetupError("`networksetup -listallnetworkservices` listed no services")
+    return names
+
+
+def write_pac_url(name: str, url: str, *, lock_fd: int) -> None:
+    """One command, no read-back of its own: the read-back belongs to the recipe, which performs it
+    against a freshly resolved name."""
+    _run(["networksetup", "-setautoproxyurl", name, url], check=True, pass_fds=(lock_fd,))
+
+
+def write_pac_state(name: str, on: bool, *, lock_fd: int) -> None:
+    _run(["networksetup", "-setautoproxystate", name, "on" if on else "off"], check=True, pass_fds=(lock_fd,))

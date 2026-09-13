@@ -60,10 +60,17 @@ known-first-party = ["cli_doubles"]
 
 [tool.mypy]
 files = ["addon.py", "api.py", "cli.py", "config.py",
-         "control.py", "evidence.py", "netproxy.py", "offline.py", "rules.py",
-         "scenario.py", "simulator.py", "store.py", "supervisor.py", "ui.py"]
+         "control.py", "evidence.py", "netproxy.py", "offline.py", "ownership.py",
+         "procs.py", "rules.py", "scenario.py", "session.py", "simulator.py",
+         "store.py", "supervisor.py", "ui.py"]
 mypy_path = "."            # flat layout: `import config` must resolve from engine/
 python_version = "3.12"
 disallow_untyped_defs = true
+# A branch the type system can prove is dead, or a comparison between types that can never be
+# equal, is a decision nobody takes — and the ownership core is where that would be a PAC nobody
+# restores. Enabled for every module, which they all pass.
+warn_unreachable = true
+strict_equality = true
 # Tests are excluded deliberately: they are validated by running, and annotating fixtures and
-# parametrised cases is ceremony. All three runtime deps ship py.typed, so no stubs are needed.
+# parametrised cases is ceremony. mitmproxy, aiohttp and click ship py.typed; psutil does not, so
+# `types-psutil` is in the development lock.

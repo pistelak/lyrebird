@@ -10,6 +10,7 @@ import subprocess
 import pytest
 
 import netproxy
+import ownership as own
 
 
 def fake_run(monkeypatch, stdout="", returncode=0, stderr=""):
@@ -326,4 +327,164 @@ def test_a_command_that_cannot_start_is_a_network_setup_error(monkeypatch):
 
     monkeypatch.setattr(netproxy.subprocess, "run", _subprocess_run)
     with pytest.raises(netproxy.NetworkSetupError, match="could not run `networksetup -getautoproxyurl Wi-Fi`"):
+        netproxy.pac_status("Wi-Fi")
+
+
+# MARK: - The by-device half: route, service table, resolution
+#
+# The PAC is set by *name* and the session records a *device*, because a name can be changed while
+# a session holds the PAC. Everything below is about the two failing the same way: a listing that
+# could not be parsed whole is not a service that is gone, and a service that is gone is a proof.
+
+LISTING = """An asterisk (*) denotes that a network service is disabled.
+(1) Wi-Fi
+(Hardware Port: Wi-Fi, Device: en0)
+
+(2) Thunderbolt Bridge
+(Hardware Port: Thunderbolt Bridge, Device: bridge0)
+
+(*) Old Ethernet
+(Hardware Port: Ethernet, Device: en5)
+
+"""
+
+ALL_SERVICES = """An asterisk (*) denotes that a network service is disabled.
+Wi-Fi
+Thunderbolt Bridge
+*Old Ethernet
+"""
+
+
+def answering(monkeypatch, output, returncode=0, stderr=""):
+    """One `networksetup`/`route` answer for every call, with the kwargs recorded."""
+    calls = []
+
+    def _subprocess_run(args, *rest, **kwargs):
+        calls.append((args, kwargs))
+        return subprocess.CompletedProcess(args, returncode, output, stderr)
+
+    monkeypatch.setattr(netproxy.subprocess, "run", _subprocess_run)
+    return calls
+
+
+def test_service_table_reads_every_entry(monkeypatch):
+    answering(monkeypatch, LISTING)
+    assert netproxy.service_table() == [("Wi-Fi", "en0"), ("Thunderbolt Bridge", "bridge0"), ("Old Ethernet", "en5")]
+
+
+def test_service_table_keeps_a_disabled_service(monkeypatch):
+    """`(*)` means disabled, not absent: it is still listed and still holds its PAC, and dropping
+    it would have `down` archive a session whose service was right there."""
+    answering(monkeypatch, LISTING)
+    assert ("Old Ethernet", "en5") in netproxy.service_table()
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        LISTING.replace("(Hardware Port: Ethernet, Device: en5)", "(Hardware Port: Ethernet, Devic"),
+        LISTING.replace("(2) Thunderbolt Bridge", "2) Thunderbolt Bridge"),
+        LISTING + "and one more thing\n",
+        LISTING.replace("An asterisk (*) denotes that a network service is disabled.\n", ""),
+        "",
+    ],
+    ids=["a truncated hardware line", "a mangled entry line", "a line after the last block", "no legend", "nothing"],
+)
+def test_service_table_rejects_a_partially_parsable_listing(monkeypatch, output):
+    """A `findall` drops what it cannot match: one truncated entry for the journalled device read
+    as `Gone`, and `down` archived a session that had nothing wrong with it."""
+    answering(monkeypatch, output)
+    with pytest.raises(netproxy.NetworkSetupError):
+        netproxy.service_table()
+
+
+def test_route_device_reads_the_interface(monkeypatch):
+    answering(monkeypatch, "   gateway: 192.0.2.1\n  interface: en0\n")
+    assert netproxy.route_device() == "en0"
+
+
+def test_route_device_is_none_only_for_a_route_that_is_not_in_the_table(monkeypatch):
+    answering(monkeypatch, "", stderr="route: writing to routing socket: not in table\n")
+    assert netproxy.route_device() is None
+    answering(monkeypatch, "", returncode=1, stderr="route: bad address")
+    with pytest.raises(netproxy.NetworkSetupError):
+        netproxy.route_device()
+
+
+def test_resolve_follows_the_device_through_a_rename(monkeypatch):
+    """The name is what `networksetup` takes and the device is what survives a rename; resolving by
+    name alone would write the session's PAC to whatever now carries the old one."""
+    answering(monkeypatch, LISTING.replace("(1) Wi-Fi", "(1) Office Wi-Fi"))
+    assert netproxy.resolve(own.ServiceRef("Wi-Fi", "en0")) == own.Present("Office Wi-Fi")
+    assert netproxy.resolved_name(own.ServiceRef("Wi-Fi", "en0")) == "Office Wi-Fi"
+
+
+def test_resolve_reports_a_device_no_service_carries_as_gone(monkeypatch):
+    answering(monkeypatch, LISTING)
+    ref = own.ServiceRef("Wi-Fi", "en9")
+    assert isinstance(netproxy.resolve(ref), own.Gone)
+    with pytest.raises(netproxy.ServiceChanged):
+        netproxy.resolved_name(ref)
+
+
+def test_resolve_reports_two_services_on_one_device_as_ambiguous(monkeypatch):
+    answering(monkeypatch, LISTING.replace("Device: bridge0", "Device: en0"))
+    ref = own.ServiceRef("Nothing Like This", "en0")
+    assert isinstance(netproxy.resolve(ref), own.ServiceAmbiguous)
+    with pytest.raises(netproxy.ServiceChanged):
+        netproxy.resolved_name(ref)
+
+
+def test_list_all_services_keeps_the_disabled_ones_without_their_marker(monkeypatch):
+    """The sweep has only names — `-listallnetworkservices` carries no devices — and a disabled
+    service still holds a PAC, so its name is kept without the `*` `networksetup` will not take."""
+    answering(monkeypatch, ALL_SERVICES)
+    assert netproxy.list_all_services() == ["Wi-Fi", "Thunderbolt Bridge", "Old Ethernet"]
+
+
+@pytest.mark.parametrize("output", ["", "Wi-Fi\n", "An asterisk (*) denotes that a network service is disabled.\n"])
+def test_list_all_services_rejects_a_malformed_listing(monkeypatch, output):
+    """Read as an empty list, a listing without its legend would be a clean sweep over a machine
+    nobody looked at."""
+    answering(monkeypatch, output)
+    with pytest.raises(netproxy.NetworkSetupError):
+        netproxy.list_all_services()
+
+
+# MARK: - The single-command writers
+
+
+def test_write_pac_url_is_one_command_carrying_the_lock(monkeypatch):
+    """flock is per open-file-description, so the descriptor the child inherits keeps the session
+    locked even if the command that started it is killed. No read-back here: that belongs to the
+    recipe, which re-resolves the name for it."""
+    calls = answering(monkeypatch, "")
+    netproxy.write_pac_url("Wi-Fi", "http://proxy.example.com/corp.pac", lock_fd=7)
+    assert calls == [(["networksetup", "-setautoproxyurl", "Wi-Fi", "http://proxy.example.com/corp.pac"], calls[0][1])]
+    assert calls[0][1]["pass_fds"] == (7,)
+
+
+@pytest.mark.parametrize(("on", "word"), [(True, "on"), (False, "off")])
+def test_write_pac_state_is_one_command_carrying_the_lock(monkeypatch, on, word):
+    calls = answering(monkeypatch, "")
+    netproxy.write_pac_state("Wi-Fi", on, lock_fd=7)
+    assert calls[0][0] == ["networksetup", "-setautoproxystate", "Wi-Fi", word]
+    assert calls[0][1]["pass_fds"] == (7,)
+
+
+def test_a_write_that_exits_non_zero_is_a_network_setup_error(monkeypatch):
+    answering(monkeypatch, "", returncode=1, stderr="** Error: The parameters were not valid.")
+    with pytest.raises(netproxy.NetworkSetupError):
+        netproxy.write_pac_state("Wi-Fi", True, lock_fd=7)
+
+
+def test_a_command_with_undecodable_output_is_a_network_setup_error(monkeypatch):
+    """`subprocess.run(text=True)` decodes strictly. Anything but a `NetworkSetupError` out of an
+    observation escapes the executors' mapping and kills the watchdog tick that met it."""
+
+    def _subprocess_run(args, *rest, **kwargs):
+        raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+    monkeypatch.setattr(netproxy.subprocess, "run", _subprocess_run)
+    with pytest.raises(netproxy.NetworkSetupError, match="could not be decoded"):
         netproxy.pac_status("Wi-Fi")

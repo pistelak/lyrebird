@@ -7,7 +7,6 @@ call now names its profile, and a command that reads or writes for the wrong one
 
 import json
 import time
-import urllib.request
 
 import pytest
 
@@ -44,11 +43,14 @@ def _records_the_request(monkeypatch, payload):
         def read():
             return json.dumps(payload).encode()
 
-    def fake_urlopen(request, timeout=None):
+    def fake_open(request, timeout=None):
+        seen["url"] = request.full_url
         seen["headers"] = {name.lower(): value for name, value in request.header_items()}
         return _Response()
 
-    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    # `api._open` is the one call every request goes through, and the autouse transport guard
+    # replaces it: a double installed on `urllib.request.urlopen` would now double nothing.
+    monkeypatch.setattr(api, "_open", fake_open)
     return seen
 
 

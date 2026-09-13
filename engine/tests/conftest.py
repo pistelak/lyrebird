@@ -18,8 +18,14 @@ os.environ.setdefault("LYREBIRD_STATE_DIR", os.path.join(tempfile.gettempdir(), 
 import api
 import config
 import netproxy
+import procs
+import session
 import store
 import supervisor
+
+# After the engine imports: `cli_doubles` imports them too, and `config` resolves its paths at
+# import from the environment set above.
+from cli_doubles import FakePsutil  # noqa: E402
 
 
 @pytest.fixture
@@ -93,6 +99,44 @@ def _no_real_process_identity(monkeypatch):
     Lyrebird's unless a test says otherwise; the process tests take the real function back."""
     real = supervisor._identity_of
     monkeypatch.setattr(supervisor, "_identity_of", lambda pid, marker: supervisor.Identity.OURS)
+    yield real
+
+
+@pytest.fixture(autouse=True)
+def _no_real_session_root(monkeypatch, tmp_path):
+    """The session journal lives at one fixed per-user path — `~/Library/Application
+    Support/Lyrebird/session` — which is a contributor's *own* session. Every construction of a
+    `Session` goes through `default_root()`, so this one patch keeps the whole suite off it.
+    Pinned by `test_the_real_per_user_root_is_never_the_one_a_test_sees`."""
+    root = tmp_path / "session"
+    monkeypatch.setattr(session, "default_root", lambda: root)
+    return root
+
+
+@pytest.fixture(autouse=True)
+def _no_real_control_transport(monkeypatch):
+    """Every control-API request goes through `api._open`. Left real, a test would reach whatever
+    answers on 8088 — a contributor's own running proxy — and the reading would look perfectly
+    plausible. Pinned by `test_an_unstubbed_health_observation_fails_before_any_network_access`;
+    the two tests that start a real control server put this back explicitly, and the acceptance
+    conftest overrides it by name."""
+    real = api._open
+
+    def refuse(request, timeout):
+        raise AssertionError(f"a test reached the network: {request.full_url}")
+
+    monkeypatch.setattr(api, "_open", refuse)
+    yield real
+
+
+@pytest.fixture(autouse=True)
+def _no_real_psutil(monkeypatch):
+    """`procs` is the only importer of psutil, as a module attribute, so one patch replaces the
+    process table. Empty by default: the pids a test invents belong to whatever happens to run on
+    the machine — dead on one Mac, a system daemon on the CI runner. Yields the real module for the
+    tests that drive real child processes."""
+    real = procs.psutil
+    monkeypatch.setattr(procs, "psutil", FakePsutil())
     yield real
 
 

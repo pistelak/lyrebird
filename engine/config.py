@@ -155,9 +155,14 @@ def mitmproxy_confdir() -> Path:
     return STATE_ROOT / "mitmproxy"
 
 
-def atomic_write(path: Path, text: str) -> None:
+def atomic_write(path: Path, text: str, *, durable: bool = False) -> None:
     """Write privately and indivisibly: these files hold response payloads and pids, so they must
     not be world-readable and must never be observed half-written.
+
+    `durable=True` also fsyncs the file before the rename and the directory after it, so a caller
+    can say the record is *on disk* rather than merely visible. Off by default: a log or a state
+    file that a power cut loses costs nothing, and the session journal — which a crash losing would
+    strand somebody's PAC — is the one caller that pays for it.
 
     `mkstemp` rather than a name of our own, for two reasons. It creates the file no more
     permissively than 0600 before handing back a descriptor — the umask can make it stricter still,
@@ -195,12 +200,24 @@ def atomic_write(path: Path, text: str) -> None:
                 handle.close()
             raise
         handle.close()  # not suppressed here — this is where buffered data reports failure
+        if durable:
+            # After the close that flushed the buffers and before the rename: fsyncing an
+            # unflushed descriptor would promise durability for bytes still in this process.
+            os.fsync(descriptor)
         # Closed before the rename, not after, so anything that fails does so while the
         # destination is still untouched. Marked released first: `close` can free the descriptor
         # and still raise, and retrying it below would then be closing someone else's file.
         descriptor_released = True
         os.close(descriptor)
         tmp.replace(path)
+        if durable:
+            # The rename is a directory change of its own: without this, a crash can leave the
+            # destination naming the old file (or nothing) with the new one fully written.
+            directory = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
     except BaseException:
         # Every cleanup here is best-effort and silent. The caller needs to hear why the write
         # failed; a close or unlink that also fails would otherwise replace that answer with its own.

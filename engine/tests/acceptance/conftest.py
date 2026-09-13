@@ -973,3 +973,31 @@ def harness(tmp_path_factory: pytest.TempPathFactory, simulator: str, fixture_ap
         problems = world.clean_up()
         if problems:
             pytest.fail("\n\n".join(problems))
+
+
+# MARK: - The isolation the fast suite needs, and this one must not have
+#
+# The root `tests/conftest.py` collects these checks too, so its autouse fixtures apply here unless
+# a nested conftest overrides them by name. Each of the three below is exactly that: an acceptance
+# run *is* the real per-user session root, the real process table and the real control port — its
+# subprocess `up` writes the journal this run then reads back, and a doubled psutil or a refused
+# transport would make every assertion about a real machine meaningless.
+
+
+@pytest.fixture(autouse=True)
+def _no_real_session_root():
+    """Overrides the fast suite's temporary root: an acceptance `up` runs in another process, which
+    inherits no monkeypatch, and the harness has to read the file that process wrote."""
+    return None
+
+
+@pytest.fixture(autouse=True)
+def _no_real_psutil():
+    """The processes here are real, and so is the table they are found in."""
+    return None
+
+
+@pytest.fixture(autouse=True)
+def _no_real_control_transport():
+    """The harness's own in-process health reads go to the proxy this run started."""
+    return None

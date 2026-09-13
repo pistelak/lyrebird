@@ -6,18 +6,142 @@ Not named `test_*`, so pytest does not collect it. A double only one module uses
 module.
 """
 
+import collections
 import json
+import os
 import subprocess
 import urllib.error
-import urllib.request
 
 import click
+import psutil
 
 import api
 import config
 import netproxy
 import simulator as sim
 import supervisor
+
+_Uids = collections.namedtuple("_Uids", "real effective saved")
+
+
+class FakeProc:
+    """One process as the fake table knows it.
+
+    `errors` raises on a named call (`status`, `create_time`, `cmdline`, `uids`, `terminate`,
+    `kill`, `wait`), `waits` is the sequence `wait()` answers with, and `on_terminate`/`on_kill`
+    let a test say what the signal did — the real psutil exception classes throughout, because
+    `procs` catches those and nothing else.
+    """
+
+    def __init__(
+        self,
+        *,
+        create_time=1000.5,
+        cmdline=(),
+        uid=None,
+        status=psutil.STATUS_RUNNING,
+        errors=None,
+        waits=(),
+        on_terminate=None,
+        on_kill=None,
+        gone=False,
+    ):
+        self.create_time = create_time
+        self.cmdline = list(cmdline)
+        self.uid = os.getuid() if uid is None else uid
+        self.status = status
+        self.errors = dict(errors or {})
+        self.waits = list(waits)
+        self.on_terminate = on_terminate
+        self.on_kill = on_kill
+        self.gone = gone
+
+
+class _FakeProcess:
+    def __init__(self, table, pid, spec):
+        self.table = table
+        self.pid = pid
+        self.spec = spec
+
+    def _check(self, call):
+        error = self.spec.errors.get(call)
+        if error is not None:
+            raise error
+        if self.spec.gone:
+            raise psutil.NoSuchProcess(self.pid)
+
+    def status(self):
+        self._check("status")
+        return self.spec.status
+
+    def create_time(self):
+        self._check("create_time")
+        return self.spec.create_time
+
+    def cmdline(self):
+        self._check("cmdline")
+        if self.spec.status == psutil.STATUS_ZOMBIE:
+            raise psutil.ZombieProcess(self.pid)  # as macOS answers for a zombie
+        return list(self.spec.cmdline)
+
+    def uids(self):
+        self._check("uids")
+        return _Uids(real=self.spec.uid, effective=self.spec.uid, saved=self.spec.uid)
+
+    def terminate(self):
+        self._check("terminate")
+        self.table.signalled.append((self.pid, "terminate"))
+        if self.spec.on_terminate is not None:
+            self.spec.on_terminate(self.spec)
+
+    def kill(self):
+        self._check("kill")
+        self.table.signalled.append((self.pid, "kill"))
+        if self.spec.on_kill is not None:
+            self.spec.on_kill(self.spec)
+
+    def wait(self, timeout=None):
+        self._check("wait")
+        outcome = self.spec.waits.pop(0) if self.spec.waits else 0
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+
+class FakePsutil:
+    """The process table `procs` sees. One `monkeypatch.setattr(procs, "psutil", fake)` is the
+    whole seam, so the adapter's own error normalisation is what is under test rather than a
+    double's idea of it. Counts constructions, so a test can prove inspection and signal went
+    through one instance."""
+
+    Error = psutil.Error
+    NoSuchProcess = psutil.NoSuchProcess
+    ZombieProcess = psutil.ZombieProcess
+    AccessDenied = psutil.AccessDenied
+    TimeoutExpired = psutil.TimeoutExpired
+    STATUS_ZOMBIE = psutil.STATUS_ZOMBIE
+    STATUS_RUNNING = psutil.STATUS_RUNNING
+
+    def __init__(self, processes=None, *, pids_error=None):
+        self.processes = dict(processes or {})
+        self.pids_error = pids_error
+        self.constructed = []
+        self.signalled = []
+
+    def pids(self):
+        if self.pids_error is not None:
+            raise self.pids_error
+        return list(self.processes)
+
+    def Process(self, pid):  # noqa: N802 — the name psutil uses, which `procs` calls
+        self.constructed.append(pid)
+        spec = self.processes.get(pid)
+        if spec is None:
+            raise psutil.NoSuchProcess(pid)
+        construct = spec.errors.get("construct")
+        if construct is not None:
+            raise construct
+        return _FakeProcess(self, pid, spec)
 
 
 def _discovery_times_out():
@@ -217,7 +341,7 @@ def _answers_with_a_conflict(monkeypatch, payload=None):
             ),
         )
 
-    monkeypatch.setattr(urllib.request, "urlopen", raise_http)
+    monkeypatch.setattr(api, "_open", raise_http)
 
 
 def _status_network(monkeypatch):
