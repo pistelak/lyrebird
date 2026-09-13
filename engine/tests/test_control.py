@@ -303,6 +303,20 @@ def test_health_reports_no_load_problems_when_every_scenario_loaded(profile):
     assert body["loadProblems"] == [] and body["scenariosNotWhole"] == {}
 
 
+def test_health_names_the_scenario_its_counts_come_from(profile):
+    """A store whose active scenario has gone heals to `default` the moment anything reads it. The
+    runtime views are read before the name now, so one snapshot cannot say `activeScenario: gone`
+    beside counts and sequences that belong to `default`."""
+
+    def orphan(subject):
+        subject.active_name = "gone"
+
+    _, _, body = call(profile, "GET", "/__mock__/health", prepare=orphan)
+
+    assert body["activeScenario"] == "default"
+    assert body["overrideCount"] == 0 and body["sequences"] == [] and body["answers"] == []
+
+
 # MARK: - What /health may disclose
 
 
