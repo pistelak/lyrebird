@@ -69,7 +69,8 @@ extension AppTests {
                 let result = await Control.up()
 
                 #expect(result.failure == nil)
-                #expect(recordedCalls(launcher.calls).contains("up port=9000"))
+                // The whole line: `contains` would also pass a subcommand this is not.
+                #expect(recordedCalls(launcher.calls) == "up port=9000\n")
             }
         }
 
@@ -80,13 +81,14 @@ extension AppTests {
                 // simctl choose when two simulators are booted — so the button could relaunch the app
                 // on a device that never received Lyrebird's CA. The device is the engine's to decide,
                 // and `booted` must not appear anywhere in what the app runs.
+                Config.defaults.set("http://127.0.0.1:9001", forKey: Config.controlURLKey)
                 let launcher = try spyLauncher(exiting: 0)
 
                 _ = await Control.relaunch(bundleId: "com.example.Store")
 
-                let calls = recordedCalls(launcher.calls)
-                #expect(calls.contains("relaunch com.example.Store"))
-                #expect(!calls.contains("booted") && !calls.contains("simctl"))
+                // Exactly this, port included: no `booted`, no `simctl`, and the port the CLI needs
+                // to find the device `up` recorded.
+                #expect(recordedCalls(launcher.calls) == "relaunch com.example.Store port=9001\n")
             }
         }
 
@@ -101,7 +103,7 @@ extension AppTests {
 
                 _ = await Control.up()
 
-                #expect(recordedCalls(launcher.calls).hasPrefix("--profile /tmp/lyrebird-profile up "))
+                #expect(recordedCalls(launcher.calls) == "--profile /tmp/lyrebird-profile up port=8088\n")
             }
         }
     }
