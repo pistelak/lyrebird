@@ -717,13 +717,12 @@ def _fake_proxy(
     load_problems=(),
     not_whole=(),
     unreachable=False,
-    steps=None,
 ):
     """A live proxy the CLI can select scenarios on, and an app whose launch makes one request.
 
-    `launched` holds what that request was answered with — the scenario that served it, that
-    scenario's status, and the sequence step it got. `events` holds what happened in what order,
-    for the cases where nothing is launched at all.
+    `launched` holds what that request was answered with — the scenario that served it and that
+    scenario's status. `events` holds what happened in what order, for the cases where nothing is
+    launched at all.
 
     `load_problems` (the flat strings a person reads) and `not_whole` (the same problems keyed by
     scenario) are set independently, because the reason the second field exists is that the first
@@ -734,7 +733,6 @@ def _fake_proxy(
         "scenarios": list(scenarios),
         "loadProblems": list(load_problems),
         "notWhole": None if not_whole is None else dict(not_whole),
-        "steps": dict(steps or {}),
         "events": [],
         "launched": [],
         "devices": [],
@@ -750,19 +748,12 @@ def _fake_proxy(
             click.echo(f"✗ no scenario named '{payload['name']}' in this profile")
             raise SystemExit(1)
         state["active"] = payload["name"]
-        state["steps"][payload["name"]] = 1  # activating a scenario rewinds its sequences
         return {"active": state["active"]}
 
     def relaunch(bundle_id, simulator):
         state["events"].append(("relaunch", bundle_id))
         state["devices"].append(simulator.udid)
-        state["launched"].append(
-            {
-                "scenario": state["active"],
-                "status": _SCENARIOS[state["active"]],
-                "step": state["steps"].get(state["active"], 1),
-            }
-        )
+        state["launched"].append({"scenario": state["active"], "status": _SCENARIOS[state["active"]]})
         return True, bundle_id
 
     monkeypatch.setattr(api, "_control", control)

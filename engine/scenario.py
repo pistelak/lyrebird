@@ -28,10 +28,9 @@ def use(name: str) -> None:
 
 @click.command()
 @click.option("--json", "as_json", is_flag=True, help="Machine-readable output.")
-@click.option("--limit", default=20, help="How many to show.")
-def recent(as_json: bool, limit: int) -> None:
+def recent(as_json: bool) -> None:
     """What has come through the proxy, and which overrides answered it."""
-    entries = (api._control("/__mock__/recent") or [])[:limit]
+    entries = api._control("/__mock__/recent") or []
 
     if as_json:
         click.echo(json.dumps(entries, indent=2))

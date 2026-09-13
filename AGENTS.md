@@ -462,5 +462,5 @@ scenarios.
 
 ## When it does not work
 
-The symptom → cause table is in [TROUBLESHOOTING.md](TROUBLESHOOTING.md), together with what
-`lyrebird logs` prints and how to follow the proxy log.
+The symptom → cause table is in [TROUBLESHOOTING.md](TROUBLESHOOTING.md), together with where the
+proxy log is and how to read it.

@@ -27,7 +27,6 @@ these belong to is [AGENTS.md](AGENTS.md).
 | A scenario file is on disk but the proxy does not have it | Same cause: reads are held to the same rule, so it is skipped at load. `lyrebird validate` names it |
 | A scenario file added or moved by hand is not in the list | The engine reads the files once. `lyrebird scenario reload` re-reads them — it resets run evidence, so `reset` after it, not before |
 | `scenarios nest one level deep` | `scenarios/a/b/c.json` is too deep to name. Scenarios live in `scenarios/` or one folder below it |
-| `names differ only by case` | Two siblings that a case-folding filesystem cannot tell apart. Neither loads; rename one |
 | 409 `reload_refused` | A file cannot be read whole, so nothing was published and the proxy still serves what it had. Fix the file it names, or `down && up` — startup is the lenient one |
 
 ## Things Lyrebird does not do
@@ -42,7 +41,13 @@ these belong to is [AGENTS.md](AGENTS.md).
 | `scenario rm` | Delete the file, then `scenario reload` (naming a survivor with `--use` if it was the active one) |
 | `scenario list` | `status --json` lists the names; the menu-bar app shows them by folder |
 | `override add` / `override clear` | Edit the file, then `scenario reload` |
-| `trust-ca` on its own | `up --simulator X`; for another device, `down && up --simulator Y`. Removing the CA again is `untrust-ca`, which prints the `simctl` line |
+| `trust-ca` on its own | `up --simulator X`; for another device, `down && up --simulator Y` |
+| `untrust-ca` | `xcrun simctl keychain <udid> reset` clears the certificates added to that simulator |
+| `logs` | The proxy log is `~/Library/Logs/Lyrebird/proxy.log`; `up` prints its last lines when the proxy fails to start |
+| `recent --limit` | `recent --json \| jq` |
+| A `status` that lists scenarios, sequences, the PAC and the simulator | `status --json` carries all four |
+| A migration hint for a profile still keeping its scenarios in `sessions/` | Rename the directory to `scenarios/` |
+| Sibling scenario names that differ only by case | On a case-folding filesystem they are one file; rename one before moving the profile to such a machine |
 | `onExhausted: passThrough` | `repeatLast`, or add the steps the run actually makes |
 | A remembered active scenario across restarts | The proxy starts on `default`; `up --use NAME` names it each time |
 
@@ -93,9 +98,8 @@ Substitute your own network service for `"Wi-Fi"` — `networksetup -listallnetw
 them. That leaves the stale URL sitting in the field, which is what an ordinary `down` leaves too:
 macOS rejects an empty PAC URL, so when you had no PAC to begin with, "restored" means *disabled*.
 
-`lyrebird logs` prints the last 60 lines of the proxy log and writes the path to stderr, so
-`tail -f "$(lyrebird logs 2>&1 >/dev/null)"` follows it. When the proxy itself fails to start, `up` prints the last
-lines for you; later failures (CA, PAC, relaunch) report their own reason instead.
+The proxy log is `~/Library/Logs/Lyrebird/proxy.log`; `up` prints its last lines when the proxy
+fails to start. Later failures (CA, PAC, relaunch) report their own reason instead.
 
 ## Run the old `down` before you upgrade
 

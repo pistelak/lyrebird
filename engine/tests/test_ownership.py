@@ -199,12 +199,6 @@ def _reject(payload):
     return str(raised.value)
 
 
-def test_decode_rejects_an_unknown_key():
-    """A record written by something that knows more than we do. Guessing at it is how a journal
-    from a newer engine gets acted on by an older `down`."""
-    assert "unknown" in _reject(_payload(phase={"kind": "active"}))
-
-
 def test_decode_rejects_a_missing_key():
     payload = _payload()
     del payload["proxy"]

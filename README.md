@@ -304,8 +304,8 @@ the CA.
 ## More
 
 `bin/lyrebird` has `init`, `up`, `down`, `status`, `use`, `recent`, `validate`, `explain-match`,
-`reset`, `assert-answered`, `sequence`, `scenario reload`, `relaunch`,
-`untrust-ca` and `logs`. `bin/lb` is a shorter alias for it.
+`reset`, `assert-answered`, `sequence`, `scenario reload` and `relaunch`. `bin/lb` is a shorter
+alias for it.
 
 - [Engine guide](engine/README.md) — the full rule schema, matching order, control API, ports, tests
 - [macOS scenario browser](menubar/README.md) — inspect scenarios prepared by your agent; build and install the optional app

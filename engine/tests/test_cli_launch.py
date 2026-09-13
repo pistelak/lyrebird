@@ -36,24 +36,11 @@ def test_up_selects_the_scenario_before_it_relaunches_the_app(profile, runner, m
     result = runner.invoke(cli.cli, ["up", "--use", "orders-outage"])
 
     assert result.exit_code == 0, result.output
-    assert state["launched"] == [{"scenario": "orders-outage", "status": 500, "step": 1}], (
+    assert state["launched"] == [{"scenario": "orders-outage", "status": 500}], (
         "the app's launch request was answered by a scenario the caller did not ask for"
     )
     assert state["events"] == [("activate", "orders-outage"), ("relaunch", "com.example.Store")]
     assert state["devices"] == [_PHONE["udid"]], "the launch goes to the resolved device, by UDID"
-
-
-def test_up_rewinds_the_scenario_it_selects_so_the_launch_starts_at_step_one(profile, runner, monkeypatch):
-    """`--use` on the scenario that is already active is not a no-op: activation rewinds its
-    sequences, and without it the relaunch resumes mid-scenario at whatever step the last run
-    left behind."""
-    state = _fake_proxy(monkeypatch, active="orders-outage", steps={"orders-outage": 3})
-    _up_with_a_proxy(profile, monkeypatch, state)
-
-    result = runner.invoke(cli.cli, ["up", "--use", "orders-outage"])
-
-    assert result.exit_code == 0, result.output
-    assert state["launched"] == [{"scenario": "orders-outage", "status": 500, "step": 1}]
 
 
 def test_up_does_not_relaunch_under_a_fallback_when_the_scenario_is_unknown(profile, runner, monkeypatch):
@@ -127,7 +114,7 @@ def test_up_ignores_a_load_problem_belonging_to_no_scenario_of_this_name(profile
     result = runner.invoke(cli.cli, ["up", "--use", "orders-outage"])
 
     assert result.exit_code == 0, result.output
-    assert state["launched"] == [{"scenario": "orders-outage", "status": 500, "step": 1}]
+    assert state["launched"] == [{"scenario": "orders-outage", "status": 500}]
 
 
 def test_up_does_not_relaunch_when_the_proxy_cannot_say_what_loaded(profile, runner, monkeypatch):
@@ -179,7 +166,7 @@ def test_up_use_accepts_a_grouped_name(profile, runner, monkeypatch):
 
     assert result.exit_code == 0
     assert ("activate", "checkout/orders-outage") in state["events"]
-    assert state["launched"] == [{"scenario": "checkout/orders-outage", "status": 503, "step": 1}]
+    assert state["launched"] == [{"scenario": "checkout/orders-outage", "status": 503}]
 
 
 def test_up_prints_both_fingerprints_when_the_activation_is_refused_for_another_profile(profile, runner, monkeypatch):
@@ -271,22 +258,22 @@ def test_up_refuses_a_contradictory_launch_request_before_it_starts_anything(pro
 
 
 def test_up_prints_the_startup_refusal_the_proxy_died_of(profile, runner, monkeypatch):
-    """There is no `up`-side check for a profile still keeping its scenarios in `sessions/`: the
-    store is built when the addon is imported, so mitmproxy exits at startup and the refusal is in
-    its log. This is the path that has to carry it to the terminal — without it the operator sees a
-    proxy that "exited on startup" and nothing about the one-line `mv` that fixes it.
+    """There is no `up`-side check for a profile the store refuses to load: the store is built when
+    the addon is imported, so mitmproxy exits at startup and the refusal is in its log. This is the
+    path that has to carry it to the terminal — without it the operator sees a proxy that "exited on
+    startup" and nothing about what it refused.
     """
     state = _fake_proxy(monkeypatch)
     world = _up_with_a_proxy(profile, monkeypatch, state)
     # The child exits the instant it is started, and nothing ever answers on the port.
     FakeHealth(sequence=[SILENT]).install(monkeypatch)
     spawning_proxy(monkeypatch, world["table"], dead=True)
-    remedy = f"mv {profile / 'sessions'} {profile / 'scenarios'}"
-    config.LOG_FILE.write_text(f"store.LegacyProfileLayout: ...\n  rename it:  {remedy}\n", encoding="utf-8")
+    refusal = "store.ReloadRefused: orders-outage.json: not valid JSON"
+    config.LOG_FILE.write_text(f"{refusal}\n", encoding="utf-8")
 
     result = runner.invoke(cli.cli, ["up", "--use", "orders-outage"])
 
     assert result.exit_code == 1
     assert "exited on startup" in result.output
-    assert remedy in result.output
+    assert refusal in result.output
     assert state["launched"] == [] and state["events"] == []

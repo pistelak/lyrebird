@@ -161,9 +161,6 @@ def test_status_reports_the_simulator_the_last_up_used(profile, runner, monkeypa
         "udid": _PAD["udid"],
         "name": _PAD["name"],
     }
-    plain = runner.invoke(cli.cli, ["status"])
-    assert _PAD["udid"] in plain.output
-    assert "not scoped to it" in plain.output, "device selection must not read as traffic isolation"
 
 
 def test_up_still_selects_the_scenario_when_there_is_no_simulator_to_relaunch_on(profile, runner, monkeypatch):

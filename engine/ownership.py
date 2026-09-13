@@ -163,15 +163,10 @@ def _object(value: object, where: str) -> dict[str, object]:
 
 
 def _exact(data: dict[str, object], keys: tuple[str, ...], where: str) -> None:
-    """Exactly these keys. A missing one is a record half this reader's shape; an unknown one is a
-    record written by something that knows more than we do, and guessing at either is how a journal
-    from a newer engine gets acted on — see test_decode_rejects_an_unknown_key."""
-    missing = sorted(set(keys) - set(data))
-    unknown = sorted(set(data) - set(keys))
-    if missing:
+    """Every one of these keys. A missing one is a record half this reader's shape, and guessing at
+    it is how a journal this reader cannot read gets acted on — see test_decode_rejects_a_missing_key."""
+    if missing := sorted(set(keys) - set(data)):
         raise DecodeError(f"{where}: missing {', '.join(missing)}")
-    if unknown:
-        raise DecodeError(f"{where}: unknown {', '.join(unknown)}")
 
 
 def _string(value: object, where: str) -> str:
@@ -251,8 +246,10 @@ def _decode_baseline(value: object) -> Pac:
 def decode(data: object) -> SessionRecord:
     """The one reader. Raises `DecodeError`; never returns a partially understood record.
 
-    Strict on purpose: what this accepts, `down` acts on. A record it accepted loosely — an unknown
-    key, a pid of `True`, a port of 0 — is a record something signalled or restored from.
+    Strict on purpose: what this accepts, `down` acts on. A record it accepted loosely — a missing
+    key, a pid of `True`, a port of 0 — is a record something signalled or restored from. A key this
+    reader does not know is read past: a record from a newer engine is read for the fields this one
+    knows.
     """
     top = _object(data, "record")
     _exact(top, ("version", "owner", "service", "baseline", "proxy", "simulator"), "record")

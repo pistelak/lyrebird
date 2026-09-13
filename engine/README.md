@@ -38,9 +38,8 @@ the folder is part of the name every command takes: `lyrebird use checkout/cart-
 from the path and ignored, so moving a file in Finder renames the scenario with nothing left to
 contradict it. Two folders may each hold a `retry.json`; they are two scenarios.
 
-Grouping stops at one level. A file deeper than that, sibling names
-differing only by case, and a folder that cannot be listed are all **reported** rather than skipped
-quietly — they appear in `loadProblems`, in `validate`, and against the scenario they belong to in
+Grouping stops at one level. A file deeper than that and a folder that cannot be listed are both
+**reported** rather than skipped quietly — they appear in `loadProblems`, in `validate`, and against the scenario they belong to in
 `scenariosNotWhole`, which is what `up --use NAME` reads before it launches anything.
 
 Select one with `--profile PATH` (wins) or `LYREBIRD_PROFILE`; the default is
@@ -50,7 +49,7 @@ Select one with `--profile PATH` (wins) or `LYREBIRD_PROFILE`; the default is
 `hosts` are **exact hostnames** — `api.example.com` does not imply `sub.api.example.com`. An empty
 list means *intercept nothing*: the engine honours it, and `up` refuses to start on it, because
 there would be nothing for `up` to achieve. A malformed profile aborts rather than falling back to
-a default — when `up` or the proxy reads it. `down`, `status` and `logs` never parse the profile,
+a default — when `up` or the proxy reads it. `down` and `status` never parse the profile,
 so a broken one cannot stop you restoring the network.
 
 The profile directory may itself be a symlink, or live in a repository you point `--profile` at:
@@ -106,7 +105,6 @@ is why it lives in `~/.config` and neither of the above does.
 ../bin/lyrebird --profile ~/lyrebird-profiles/my-app status  # intercepting? which scenario? PAC state?
 ../bin/lyrebird --profile ~/lyrebird-profiles/my-app use another-scenario   # switch, from here on
 ../bin/lyrebird --profile ~/lyrebird-profiles/my-app down    # stop and restore previous settings
-../bin/lyrebird logs                                          # last 60 lines; path on stderr
 ```
 
 `up` prints a **🔴 INTERCEPT ACTIVE** banner only when one final observation says so: this proxy

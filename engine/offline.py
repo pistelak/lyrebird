@@ -37,21 +37,14 @@ def _resolve_scenario(name: str) -> tuple[Path | None, list[str]]:
     rules in it need completely different fixes, and only one of them is worth a hint listing the
     names that *do* exist. Shared by both commands so a name is looked up, and refused, one way.
 
-    Resolved against the identities discovery found, not by asking whether a path `is_file()`: on a
-    case-insensitive filesystem `validate Orders-Outage` used to open `orders-outage.json` and bless
-    a name the running proxy would refuse, and a file that discovery *skipped* — one of a pair
-    differing only by case — used to validate cleanly under a name nothing serves. See
-    test_validate_by_name_refuses_a_colliding_or_miscased_identity.
+    Resolved against the identities discovery found, not by asking whether a path `is_file()`: a
+    file discovery *skipped* used to validate cleanly under a name nothing serves — see
+    test_validate_refuses_a_name_nested_too_deep.
     """
     try:
         store.scenario_parts(name)
         files, discovery = store.scenario_files()
     except store.UnsafeName as error:
-        return None, [str(error)]
-    except store.LegacyProfileLayout as error:
-        # A problem, not a bare sentence printed on the way out: both callers report through a
-        # `--json` envelope, and a profile whose scenarios are all under the old name must not read
-        # as one that simply lacks the name asked for — see test_validate_refuses_a_legacy_sessions_layout.
         return None, [str(error)]
     # The non-throwing form: `scenario_files` returns every file worth explaining, including ones
     # whose name could never be an identity (`.hidden.json`). Calling the throwing one here turned
@@ -123,25 +116,21 @@ def validate(name: str | None, as_json: bool) -> None:
         path, problems = _resolve_scenario(name)
         files = [path] if path is not None else []
     else:
-        try:
-            files, discovery = store.scenario_files()
-        except store.LegacyProfileLayout as error:
-            files, problems = [], [str(error)]
-        else:
-            # Discovery problems are the run's problems: a subtree that could not be read, or a pair
-            # of files colliding by case, means this command checked fewer scenarios than the profile
-            # holds. Dropping them would let `validate` report "ok" for a profile it could not see.
-            problems = [problem for _owner, problem in discovery]
-            if not files and not problems:
-                # Not a green "nothing wrong": a command named for checking scenarios that checked
-                # none has not validated anything, and the usual cause is the wrong --profile. Only
-                # when discovery itself had nothing to say — a profile whose every file was skipped
-                # has already been told why, and adding "no scenario files" would send the reader
-                # to --profile over files that are sitting right there.
-                problems = [
-                    f"no scenario files in {config.SCENARIOS_DIR} — check --profile, or create "
-                    f"a profile with `lyrebird init {config.PROFILE_DIR}`"
-                ]
+        files, discovery = store.scenario_files()
+        # Discovery problems are the run's problems: a subtree that could not be read means this
+        # command checked fewer scenarios than the profile holds. Dropping them would let
+        # `validate` report "ok" for a profile it could not see.
+        problems = [problem for _owner, problem in discovery]
+        if not files and not problems:
+            # Not a green "nothing wrong": a command named for checking scenarios that checked
+            # none has not validated anything, and the usual cause is the wrong --profile. Only
+            # when discovery itself had nothing to say — a profile whose every file was skipped
+            # has already been told why, and adding "no scenario files" would send the reader
+            # to --profile over files that are sitting right there.
+            problems = [
+                f"no scenario files in {config.SCENARIOS_DIR} — check --profile, or create "
+                f"a profile with `lyrebird init {config.PROFILE_DIR}`"
+            ]
 
     reports = [_validation_report(file) for file in files]
     ok = not problems and all(report["ok"] for report in reports)

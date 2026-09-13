@@ -233,17 +233,3 @@ def relaunch_cmd(bundle_id: str | None, simulator_selector: str | None) -> None:
     click.echo(f"{'✓' if launched else '✗'} relaunch {target}: {detail}")
     if not launched:
         raise SystemExit(1)
-
-
-@click.command(name="untrust-ca")
-def untrust_ca_cmd() -> None:
-    """Explain how to remove the Lyrebird CA from the simulator."""
-    click.echo(
-        "simctl exposes no remove-root-cert; to drop trust use either:\n"
-        "  xcrun simctl keychain <udid> reset        # clears added certs on that simulator\n"
-        "  Device ▸ Erase All Content and Settings   # full reset\n"
-        "  (`lyrebird status` names the simulator the last `up` used; `xcrun simctl list\n"
-        "   devices booted` lists the rest)\n"
-        f"\nLyrebird's CA lives in {config.mitmproxy_confdir()} — delete that directory to\n"
-        "rotate it; a new one is generated on the next `up`."
-    )
