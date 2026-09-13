@@ -116,27 +116,17 @@ def test_a_polling_read_refused_for_the_wrong_profile_is_not_reported_as_unreach
     assert FOREIGN_FINGERPRINT in result.output
 
 
-def test_up_refuses_to_adopt_a_proxy_running_another_profile(profile, runner, monkeypatch):
-    """`up` must not report INTERCEPT ACTIVE for a proxy serving somebody else's rules.
-
-    The journal names this session and its PAC is installed, so everything else about the run says
-    "idempotent" — the fingerprint the proxy reports is the one fact that says otherwise, and the
-    remedy is `lyrebird down`, never another control port: there is one session per user, so a
-    different port would only change what this run requests while the journal stays.
+def test_up_over_another_profiles_session_sends_the_operator_to_down(profile, runner, monkeypatch):
+    """There is one session per user, so a second `up` is refused whoever holds the journal — and
+    the remedy is `lyrebird down`, never another control port: a different port would only change
+    what this run requests while the journal stays exactly where it is.
     """
     table = FakePsutil()
     monkeypatch.setattr(procs, "psutil", table)
-    proxy = table.spawn_ref("proxy", config.CONTROL_PORT)
-    watchdog = table.spawn_ref("watchdog", config.CONTROL_PORT)
+    proxy = table.spawn_ref(config.CONTROL_PORT)
     network = FakeNetwork({"Wi-Fi": ("en0", ownership.Pac(ownership.our_url(config.CONTROL_PORT), True))})
-    up_after(
-        monkeypatch,
-        profile,
-        record(ownership.Active(proxy, watchdog)),
-        network,
-        table,
-        health=FakeHealth(table, payload={"profileFingerprint": FOREIGN_FINGERPRINT}),
-    )
+    stranger = ownership.Owner(control_port=8088, profile_fingerprint=FOREIGN_FINGERPRINT, state_root="/tmp/elsewhere")
+    up_after(monkeypatch, profile, record(proxy, owned_by=stranger), network, table)
 
     result = runner.invoke(cli.cli, ["up"])
 
@@ -262,25 +252,23 @@ def test_down_still_stops_a_proxy_that_belongs_to_another_profile(profile, runne
     """`down` is the recovery command: it must put the network back whatever profile is running, or
     the scoping added everywhere else would strand the Mac pointing at a proxy it may not name.
 
-    The journal is the authority and it names this session; the *fingerprint* the proxy reports is
-    deliberately not a fact `decide_down` consults, so a profile mismatch cannot keep an obligation
-    open.
+    The journal is the authority and it names this session; the *fingerprint* a proxy would report
+    is not a fact `down` consults at all, because it reads no health.
     """
     table = FakePsutil()
     monkeypatch.setattr(procs, "psutil", table)
-    proxy = table.spawn_ref("proxy", config.CONTROL_PORT)
-    watchdog = table.spawn_ref("watchdog", config.CONTROL_PORT)
+    proxy = table.spawn_ref(config.CONTROL_PORT)
     corporate = ownership.Pac("http://proxy.example.com/corp.pac", True)
     network = FakeNetwork({"Wi-Fi": ("en0", ownership.Pac(ownership.our_url(config.CONTROL_PORT), True))})
     network.install(monkeypatch)
-    write_journal(record(ownership.Active(proxy, watchdog), baseline=corporate))
-    FakeHealth(table, payload={"profileFingerprint": FOREIGN_FINGERPRINT}).install(monkeypatch)
+    stranger = ownership.Owner(control_port=8088, profile_fingerprint=FOREIGN_FINGERPRINT, state_root="/tmp/elsewhere")
+    write_journal(record(proxy, baseline=corporate, owned_by=stranger))
 
     result = runner.invoke(cli.cli, ["down"])
 
     assert result.exit_code == 0, result.output
     assert network.pac("Wi-Fi") == corporate, "the baseline is back"
-    assert not table.alive(proxy.pid) and not table.alive(watchdog.pid)
+    assert not table.alive(proxy.pid)
 
 
 def test_override_add_help_lists_every_override_field(profile, runner):

@@ -1303,7 +1303,7 @@ def test_reload_refusing_the_missing_active_scenario_is_a_409(profile):
 
 # MARK: - A reader on another port
 #
-# `down` and the watchdog ask the *journal's* port, which need not be this process's configured
+# A health reading may be taken on a port that is not this process's configured
 # one. The guard answers 421 to any Host but its own, so both halves of the request have to follow
 # that port — and only a real server proves it.
 

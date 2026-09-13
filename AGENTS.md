@@ -214,13 +214,7 @@ lyrebird --profile PATH status --json
   "service": "Wi-Fi",
   "pac": { "url": "http://127.0.0.1:8088/proxy.pac", "enabled": true, "ours": true },
   "journalError": null,
-  "session": {
-    "phase": "active",
-    "owner": { "controlPort": 8088, "profileFingerprint": "3f0a1c4d9b22" },
-    "service": { "name": "Wi-Fi", "device": "en0" },
-    "watchdog": "alive",
-    "archive": null
-  }
+  "simulator": { "udid": "…", "name": "iPhone 17 Pro" }
 }
 ```
 
@@ -229,19 +223,16 @@ Exit code is 0 only when the proxy is up **and** intercepting **for the profile 
 format and nothing else — both forms exit the same way, so `lyrebird status && …` is safe to
 write either way round.
 
-`session` is this Mac's one PAC-owning session, read from the journal rather than from the proxy,
-so it answers whether or not anything is running. `phase` is `absent` · `acquiring` · `active` ·
-`restored` · `archived` · `unreadable`; `watchdog` is `alive` · `dead` · `unknown`, or `none` for a
-phase that owns no watchdog; `owner`, `service` and `archive` are `null` where the journal names
-none. `journalError` is non-null when the journal could not be read at all — by this command or by
-the proxy, which reads it too — and that means `down` cannot restore from it.
+`service`, `simulator` and the `pac` reading describe this Mac's one PAC-owning session, taken
+from the journal rather than from the proxy, so they answer whether or not anything is running.
+`journalError` is non-null when the journal could not be read at all — by this command or by the
+proxy, which reads it too — and that means `down` cannot restore from it.
 
-Two of them mean the machine still needs something from you, and `status` exits 1 for both:
-`"watchdog": "dead"` is automatic restoration lost (`lyrebird down && lyrebird up`), and
-`"phase": "archived"` means the previous settings were never put back and are waiting in the file
-`archive` names — `lyrebird down` says so too, and exits 1.
+Exit 1 with the reason printed covers every way the postcondition is not met: no session, another
+session's, a proxy that is not the one recorded, a PAC that is not routing here, and a default
+route that has moved off the service the session took.
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md#the-proxy-is-gone-but-the-network-still-points-at-it) has
-what to do with either.
+what to do with each.
 
 The control port can be held by a proxy started for a *different* profile. That proxy is
 intercepting, but not for you, so `status` exits non-zero and says so: `profileMismatch` is `true`
@@ -262,14 +253,18 @@ Set `simBundleId` in the profile and `up` handles it — and name the scenario i
 
 **6. `down` is not optional.**
 
-It restores the proxy settings that were there before. Run it even on your failure paths. If your
-process is killed before it can, a watchdog restores them within a couple of seconds — but do not
-rely on that as the normal path.
+It restores the proxy settings that were there before. Run it even on your failure paths. Nothing
+else does it: a proxy that dies leaves the Mac routed at a dead port until `lyrebird down` runs.
 
 `down` is also the only recovery command, and it needs nothing to find the session: no `--profile`,
 no port, no directory. It reads this user's one session journal, which is what the run recorded the
 settings in. Exit 0 means they are back; exit 1 means they are not, and it says what is in the way —
-including a session it archived, whose baseline it prints the path to for you to put back by hand.
+including a PAC somebody set by hand since, which it never writes over: it prints the settings it
+recorded at `up` for you to put back yourself.
+
+There is one such session per user, so `up` refuses while one exists — even this profile's. To put
+a different scenario in front of the app on a running session: `lyrebird use NAME && lyrebird
+relaunch`.
 
 ## Making a scenario
 

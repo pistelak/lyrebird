@@ -35,12 +35,11 @@ these belong to is [AGENTS.md](AGENTS.md).
 
 ## The proxy is gone but the network still points at it
 
-`down` restores the proxy settings that were there before, and a watchdog process does it on your
-behalf if the proxy dies on its own — so killing the proxy alone is normally recovered from. What
-is not recovered is losing *both*: a power cut, a `kill -9` that takes the watchdog with it, or a
-`networksetup` that failed. Then the Mac is left routing at a port with nothing behind it, and the
-disruption is wider than one scenario misbehaving — anything honouring the system proxy can stall
-or fail, not only the hosts in your profile.
+`down` restores the proxy settings that were there before, and nothing else does. There is no
+watchdog: a proxy that dies — a crash, a `kill -9`, a machine that went to sleep badly — leaves the
+Mac routing at a port with nothing behind it until you run `lyrebird down`. The disruption is wider
+than one scenario misbehaving: anything honouring the system proxy can stall or fail, not only the
+hosts in your profile.
 
 The command is `lyrebird down`, and it needs nothing at all to find the session:
 
@@ -57,19 +56,18 @@ from the checkout as `bin/lyrebird down` if you have no `lyrebird` on `PATH`.
 Exit 0 means your settings are back. Exit 1 means they are not, and the reason is printed. The ones
 worth recognising:
 
-- **`this session was archived …; its previous settings were never put back`.** The PAC on the
-  service was no longer this session's — something else set one, or the network service is gone — so
-  `down` refused to overwrite it and preserved the baseline instead, under
-  `~/Library/Application Support/Lyrebird/session/archive/`. It prints the file's path; inside, the
-  `baseline` object holds the `url` and `enabled` you had. System Settings ▸ Network ▸ *service* ▸
-  Proxies is where they go back, and nothing is going to do it for you.
-- **`this session's processes could not be checked`**, or **`the watchdog (pid N) could not be
-  checked`.** The recorded proxy or watchdog cannot be confirmed to be the process the journal
-  means, and Lyrebird never signals a process it cannot prove is its own. Nothing was changed and
-  the journal is kept — see the clock step below for the usual cause.
-- **`a Lyrebird answers on port N and no session owns it — left alone`.** A proxy from a run whose
-  journal is gone. It is answering, so `down` leaves it: stop it yourself if it is yours, then
-  `lyrebird down` again.
+- **`the PAC on 'X' is not this session's any more … — not restored`.** Something else set the PAC
+  after `up` took it. Lyrebird never writes over a PAC it did not install, so it stops the proxy,
+  prints the settings it recorded at `up` and keeps the journal. Put those back in System Settings ▸
+  Network ▸ *service* ▸ Proxies and run `lyrebird down` again: it finds them in place, writes
+  nothing and releases the session. To keep the PAC you set instead, delete
+  `~/Library/Application Support/Lyrebird/session/session.json`.
+- **`session.json cannot be read (…) — nothing was changed`.** The journal is there and this
+  version will not guess at it. Move `~/Library/Application Support/Lyrebird/session/session.json`
+  away, switch the routing off by hand with the two commands below, then run `lyrebird down` again.
+- **`the proxy (pid N) could not be proved to be this session's`.** Lyrebird never signals a
+  process it cannot prove is its own. The settings are already back; stop it by hand
+  (`kill -9 N`) — see the clock step in the table below for the usual cause.
 
 If `down` cannot run at all, switch the routing off yourself and check that it took:
 
@@ -90,37 +88,35 @@ lines for you; later failures (CA, PAC, relaunch) report their own reason instea
 
 Run the *previous* version's `lyrebird down` before checking out a new one. It is the only version
 that understands what it wrote, and the new one will not adopt it: a pre-protocol `runtime-*.json`
-left under `~/Library/Application Support/Lyrebird/` is **printed** by `down` — the service and the
-previous PAC it names — and never imported. A record written before this protocol says nothing
-about whether its PAC is still installed, so restoring from it would put settings back across a
-boundary nobody can see. Put them back by hand if they are still wanted, then delete the file.
+left under `~/Library/Application Support/Lyrebird/` is never read. A record written before this
+protocol says nothing about whether its PAC is still installed, so restoring from it would put
+settings back across a boundary nobody can see. Read it yourself, put those settings back by hand if
+they are still wanted, then delete the file.
 
 For the same reason, do not run two versions at once: an older one does not take the session lock,
 so the two are not serialised against each other.
 
 ## What the session journal does not rule out
 
-One thing is now certain: the settings you had are written down durably *before* the PAC is
-touched, and one authority decides who may put them back. These states remain possible anyway, and
-knowing them saves guessing.
+One thing is certain: the settings you had are written down *before* the PAC is touched, and one
+authority — one session per user — decides who may put them back. These states remain possible
+anyway, and knowing them saves guessing. Every one of them ends at the same command.
 
-- An enabled PAC at a dead port after a `kill -9` that takes the proxy *and* the watchdog. Nothing
-  is left running to notice, so it persists until the next command; `lyrebird down` clears it.
-- A PAC set by hand mid-run supersedes the baseline. `down` archives the session and exits 1 rather
-  than overwrite what you set.
-- A baseline URL set by hand with the other enabled flag is restored to the flag that was recorded:
-  it is indistinguishable from a restore that was interrupted.
-- Another login account's session is outside the guarantee — the journal and its lock are per user.
-- A foreign write landing inside a single `networksetup` command is overwritten without trace. The
-  window is one command wide and nothing can see into it.
-- A network service deleted and recreated on the same device is treated as the same service.
-- An `up` killed in the instant it is spawning the proxy can leave a process no journal names. A
-  `down` at exactly that instant cannot see it and exits 1 saying so; the next `up` refuses over it,
-  and a `down` after that sweeps it up.
-- **A system clock step of a second or more** makes a live process unidentifiable. A process is
-  identified by its pid *and* its creation time, read in wall-clock seconds, and a clock step moves
-  that reading — so the value the journal recorded and the value read back afterwards disagree for
-  the very same process. That is doubt, not proof of death: a pid reused since would look exactly
-  the same, and doubt acts on nothing. `down` therefore refuses to signal that process, says so,
-  and keeps the journal. Stop it by hand — `session.json`'s `phase` names the pids — and run
-  `lyrebird down` again.
+| Limit | Remedy |
+|---|---|
+| A foreign write landing inside a single `networksetup` command is overwritten without trace | Check System Settings ▸ Network ▸ *service* ▸ Proxies afterwards |
+| A foreign write landing between two commands of one recipe | Same: the window is one command wide and nothing can see into it |
+| Another login account's session — the journal and its lock are per user | Run `lyrebird down` as that user |
+| A system clock step of a second or more makes a live process unidentifiable | `down` restores the settings and refuses to signal the proxy; `kill -9 <pid>`, then `lyrebird down` |
+| A second `up` while a session exists is refused, even for the same profile | `lyrebird use NAME && lyrebird relaunch`, or `lyrebird down` first |
+| The Mac's default route moves to another service mid-session (hot migration) | `lyrebird down && lyrebird up` |
+| A network service deleted and recreated on the same device is treated as the same service | Nothing to do; the PAC is restored to the device that carries it |
+| `kill -9` of the proxy, or a proxy that dies on its own — nothing restores the settings | `lyrebird down` |
+| Power loss inside the window between the journal write and the PAC write | `lyrebird down`; if the journal did not survive, the two `networksetup` lines above |
+| A crash between a restore's read-back and the journal's removal | `lyrebird down` again: it restores to the same recorded baseline and releases the journal |
+| A damaged `session.json` — `down` refuses rather than guess | Move it away, `networksetup -setautoproxystate <service> off`, then `lyrebird down` |
+| A pre-protocol `runtime-*.json` from an older Lyrebird | Run that version's `down` first; this one never imports it |
+| Two versions running at once — an older one does not take the session lock | Do not; run the old `down` before upgrading |
+| An `up` killed in the instant it is spawning the proxy leaves a process no journal names | Stop it by hand (`kill -9 <pid>`) |
+| A proxy still running that no journal records at all | Same: stop it by hand |
+| A second Lyrebird session during an acceptance run | The acceptance check refuses to start over one; `lyrebird down` first |

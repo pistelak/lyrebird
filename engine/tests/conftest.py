@@ -21,7 +21,6 @@ import netproxy
 import procs
 import session
 import store
-import supervisor
 
 # After the engine imports: `cli_doubles` imports them too, and `config` resolves its paths at
 # import from the environment set above.
@@ -63,33 +62,6 @@ def _restore_resolved_paths():
 
 
 @pytest.fixture(autouse=True)
-def _no_real_watchdog(monkeypatch):
-    """`up` starts the watchdog with `subprocess.Popen`, and a subprocess inherits no monkeypatch:
-    it is a fresh interpreter running the real `netproxy` against the real `networksetup`. The
-    environment above gives it a temporary profile and state directory but sets no control port,
-    so it resolves the default 8088 — and for as long as a real proxy answers health there, the
-    loop never reaches its only `return` and outlives pytest, repairing the PAC on the
-    contributor's own Wi-Fi.
-
-    It is *no real watchdog and no ready-pipe wait*: the fake registers a marked watchdog pid in
-    whatever `FakePsutil` is installed at the moment it is called, and returns its `Ref` — which is
-    exactly what the production spawn returns once the child has reported itself ready.
-
-    Doubled here rather than in each test that calls `up`: a test that forgets leaves a process
-    behind and passes anyway, which is not a failure anything would report. Pinned by
-    `test_up_spawns_no_real_watchdog_subprocess`. Yields the real function for the tests that check
-    what it would have spawned, against a `Popen` of their own."""
-    real = supervisor._spawn_watchdog
-
-    def spawn(port):
-        # Resolved at call time: a test that installs its own `FakePsutil` gets the watchdog in it.
-        return procs.psutil.spawn_ref("watchdog", port)
-
-    monkeypatch.setattr(supervisor, "_spawn_watchdog", spawn)
-    yield real
-
-
-@pytest.fixture(autouse=True)
 def _no_real_session_root(monkeypatch, tmp_path):
     """The session journal lives at one fixed per-user path — `~/Library/Application
     Support/Lyrebird/session` — which is a contributor's *own* session. Every construction of a
@@ -106,7 +78,7 @@ def _no_real_session_root(monkeypatch, tmp_path):
 def _no_real_control_transport(monkeypatch):
     """Every control-API request goes through `api._open`. Left real, a test would reach whatever
     answers on 8088 — a contributor's own running proxy — and the reading would look perfectly
-    plausible. Pinned by `test_an_unstubbed_health_observation_fails_before_any_network_access`;
+    plausible. Pinned by `test_an_unstubbed_health_reading_fails_before_any_network_access`;
     the two tests that start a real control server put this back explicitly, and the acceptance
     conftest overrides it by name."""
     real = api._open
@@ -157,6 +129,5 @@ def offline(monkeypatch):
 
     monkeypatch.setattr(api, "_control", refuse)
     monkeypatch.setattr(api, "_health", refuse)
-    monkeypatch.setattr(api, "observe_health", refuse)
     monkeypatch.setattr(netproxy, "active_service", refuse)
     monkeypatch.setattr(store.Store, "__init__", refuse)

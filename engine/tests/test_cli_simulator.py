@@ -242,10 +242,7 @@ def test_status_reports_the_simulator_the_last_up_used(profile, runner, monkeypa
     """Reported from the journal rather than by looking again: the question is which device this
     run trusted, and a fresh lookup would name whatever is booted now."""
     world = _status_network(monkeypatch)
-    journal = session.Session().read()
-    write_journal(
-        record(journal.phase, simulator=ownership.Simulator(udid=_PAD["udid"], name=_PAD["name"]), since=journal.since)
-    )
+    write_journal(record(world["proxy"], simulator=ownership.Simulator(udid=_PAD["udid"], name=_PAD["name"])))
     FakeHealth(sequence=[answering(world["proxy"].pid)]).install(monkeypatch)
 
     assert json.loads(runner.invoke(cli.cli, ["status", "--json"]).output)["simulator"] == {
@@ -342,7 +339,7 @@ def _journal_bound_to_the_pad(profile):
     config.reload_profile()
     write_journal(
         record(
-            ownership.Acquiring(None),
+            ownership.Ref(pid=4321, create_time=1000.5),
             simulator=ownership.Simulator(udid=_PAD["udid"], name=_PAD["name"]),
         )
     )

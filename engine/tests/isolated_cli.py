@@ -4,8 +4,8 @@
 
 The session journal lives at one fixed per-user path, and the production argv and environment name
 no root at all — deliberately, because there is one session per user. A test that needs a *real*
-process (the watchdog under a real lock; `status` against a dead control port) therefore cannot
-isolate itself with `monkeypatch`, which a fresh interpreter does not inherit: it needs an entry
+process (`status` against a dead control port) therefore cannot isolate itself with `monkeypatch`,
+which a fresh interpreter does not inherit: it needs an entry
 point that rebinds the root before the CLI is imported. Without this, those tests would read and
 write the contributor's own `~/Library/Application Support/Lyrebird/session`.
 

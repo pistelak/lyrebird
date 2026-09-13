@@ -1,393 +1,217 @@
-"""The journal on disk: what counts as absent, what counts as unreadable, and what is durable.
+"""The journal on disk: what `read()` claims, what `write()` publishes, and what the lock refuses.
 
-The failure paths are the subject. A journal that cannot be read is the only record of what to put
-back on somebody's network service, so "I could not read it" must never arrive as "there is
-nothing here", a write must be on disk before anything acts on it, and an archive must never
-replace an earlier one.
+`Absent` is a claim — *there is no record* — and `up` acts on it by taking the PAC. Everything that
+is there and cannot be turned into a record has to be `Unreadable` instead, because such a file may
+still be describing somebody's proxy settings.
 """
 
 import json
 import os
-import stat
 import subprocess
 import sys
-import threading
+import textwrap
 import time
 
 import pytest
 
-import ownership as own
-import session as sess
+import config
+import ownership
+import session
+from cli_doubles import WIFI, owner, record
+from ownership import Absent, Pac, Ref, SessionRecord, Unreadable
 
-SINCE = "20260912T101500Z"
-OWNER = own.Owner(control_port=8088, profile_fingerprint="ab12cd34ef56", state_root="/path/to/state")
-SERVICE = own.ServiceRef(name="Wi-Fi", device="en0")
-BASELINE = own.Pac(url="http://proxy.example.com/corp.pac", enabled=True)
-PROXY = own.Ref(pid=101, create_time=1000.5)
-WATCHDOG = own.Ref(pid=102, create_time=1001.5)
-RECORD = own.SessionRecord(
-    version=1,
-    since=SINCE,
-    simulator=None,
-    owner=OWNER,
-    service=SERVICE,
-    baseline=BASELINE,
-    phase=own.Active(PROXY, WATCHDOG),
+
+@pytest.fixture
+def store(tmp_path):
+    place = session.Session(tmp_path / "session")
+    place.ensure_root()
+    return place
+
+
+RECORD = record(Ref(pid=4321, create_time=1000.5), baseline=Pac("http://proxy.example.com/corp.pac", True))
+
+
+def test_the_real_per_user_root_is_never_the_one_a_test_sees(_no_real_session_root):
+    """The suite patches `default_root`; this is the one test that looks at what it patched, so a
+    rename of the real path cannot go unnoticed."""
+    real = _no_real_session_root()
+    assert real.parts[-3:] == ("Application Support", "Lyrebird", "session")
+    assert real != session.default_root()
+
+
+def test_read_reports_an_absent_root_as_absent(tmp_path):
+    """A first-ever `down` on a clean machine: no root, no record, nothing to stop."""
+    assert isinstance(session.Session(tmp_path / "nowhere").read(), Absent)
+
+
+def test_read_reports_an_absent_file_as_absent(store):
+    assert isinstance(store.read(), Absent)
+
+
+def test_read_reports_a_dangling_symlink_as_unreadable(store):
+    """A link whose target is gone raises the same `FileNotFoundError` as no entry at all, and is a
+    different thing: something put it there."""
+    store.journal_path.symlink_to(store.root / "gone.json")
+    journal = store.read()
+    assert isinstance(journal, Unreadable) and "symlink" in journal.reason
+
+
+def test_read_reports_a_symlink_to_a_valid_record_as_unreadable(store):
+    """A link that resolves is worse than one that dangles: followed, `down` restored from and then
+    unlinked a record `up` never published at the journal path."""
+    elsewhere = store.root / "elsewhere.json"
+    elsewhere.write_text(json.dumps(ownership.encode(RECORD)), encoding="utf-8")
+    store.journal_path.symlink_to(elsewhere)
+    journal = store.read()
+    assert isinstance(journal, Unreadable) and "symlink" in journal.reason
+    assert elsewhere.exists(), "and the target is not touched"
+
+
+def test_read_reports_a_directory_as_unreadable(store):
+    store.journal_path.mkdir()
+    journal = store.read()
+    assert isinstance(journal, Unreadable) and "regular file" in journal.reason
+
+
+def test_read_reports_an_empty_file_as_unreadable(store):
+    store.journal_path.write_text("", encoding="utf-8")
+    assert isinstance(store.read(), Unreadable)
+
+
+def test_read_reports_an_oversized_journal_as_unreadable(store):
+    """Refused on the `fstat`, before any of it is read: a hand-edited megabyte must not become a
+    megabyte-long error message."""
+    store.journal_path.write_text("x" * (session.JOURNAL_SIZE_CAP + 1), encoding="utf-8")
+    journal = store.read()
+    assert isinstance(journal, Unreadable) and "larger than" in journal.reason
+
+
+@pytest.mark.parametrize("text", ["[]", '"a record"', "null", "{", "{not json}"])
+def test_read_reports_a_payload_that_is_not_a_record_as_unreadable(store, text):
+    store.journal_path.write_text(text, encoding="utf-8")
+    assert isinstance(store.read(), Unreadable)
+
+
+def test_read_reports_a_record_the_decoder_refuses_as_unreadable(store):
+    payload = ownership.encode(RECORD)
+    payload["proxy"] = {"pid": 0, "createTime": 1.0}
+    store.journal_path.write_text(json.dumps(payload), encoding="utf-8")
+    journal = store.read()
+    assert isinstance(journal, Unreadable) and "pid" in journal.reason
+
+
+def test_read_reports_undecodable_bytes_as_unreadable(store):
+    store.journal_path.write_bytes(b"\xff\xfe not utf-8")
+    assert isinstance(store.read(), Unreadable)
+
+
+def test_write_then_read_round_trips(store):
+    store.write(RECORD)
+    assert store.read() == RECORD
+
+
+def test_write_leaves_the_journal_private(store):
+    store.write(RECORD)
+    assert oct(store.journal_path.stat().st_mode)[-3:] == "600"
+
+
+def test_write_is_readable_json(store):
+    store.write(RECORD)
+    payload = json.loads(store.journal_path.read_text(encoding="utf-8"))
+    assert payload["owner"]["controlPort"] == owner().control_port
+    assert payload["service"] == {"name": WIFI.name, "device": WIFI.device}
+
+
+def test_unlink_removes_the_journal_and_tolerates_its_absence(store):
+    store.write(RECORD)
+    store.unlink()
+    store.unlink()
+    assert isinstance(store.read(), Absent)
+
+
+def test_ensure_root_creates_the_root_privately(tmp_path):
+    place = session.Session(tmp_path / "a" / "b" / "session")
+    place.ensure_root()
+    assert place.root.is_dir()
+    assert oct(place.root.stat().st_mode)[-3:] == "700"
+
+
+def test_locked_raises_lock_busy_after_the_timeout(store):
+    """Another actor holds it and did not finish. Not "there is no session": a caller that read a
+    contended lock as an absent one would take the PAC from under a live `up`."""
+    started = time.monotonic()
+    with store.locked():
+        with pytest.raises(session.LockBusy):
+            with session.Session(store.root).locked(timeout=0.5):
+                pass
+    assert time.monotonic() - started < 30
+
+
+_HOLDER = textwrap.dedent(
+    """
+    import fcntl, os, sys, time
+    fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    sys.stdout.write("held\\n")
+    sys.stdout.flush()
+    time.sleep(30)
+    """
 )
 
 
-@pytest.fixture
-def subject(tmp_path):
-    return sess.Session(tmp_path / "root" / "session")
-
-
-# MARK: - the isolation the whole suite depends on
-
-
-def test_the_real_per_user_root_is_never_the_one_a_test_sees(tmp_path):
-    """The autouse `_no_real_session_root` is what keeps every test off
-    `~/Library/Application Support/Lyrebird/session`. Without this assertion, a fixture that
-    stopped working would be invisible until a contributor's own session was overwritten."""
-    root = sess.default_root()
-    assert str(root).startswith(str(tmp_path.parent)), root
-    assert "Application Support" not in str(root)
-
-
-# MARK: - read()
-
-
-def test_read_reports_an_absent_root_as_absent(subject):
-    """A first-ever `down` on a clean machine must reach the absent-journal row, not an ENOENT —
-    and reading must create nothing (the CI launcher smoke check runs `status` on a clean user)."""
-    assert isinstance(subject.read(), own.Absent)
-    assert not subject.root.exists()
-
-
-def test_read_reports_an_absent_file_as_absent(subject):
-    subject.ensure_root()
-    assert isinstance(subject.read(), own.Absent)
-
-
-def test_read_reports_a_dangling_symlink_as_unreadable(subject):
-    """The entry is there and what it pointed at may come back: read as absent, `up` would acquire
-    over a session that still holds the PAC."""
-    subject.ensure_root()
-    subject.journal_path.symlink_to(subject.root / "nothing.json")
-    journal = subject.read()
-    assert isinstance(journal, own.Unreadable) and "symlink" in journal.reason
-
-
-def test_read_reports_a_directory_as_unreadable(subject):
-    subject.ensure_root()
-    subject.journal_path.mkdir()
-    assert isinstance(subject.read(), own.Unreadable)
-
-
-def test_read_reports_an_empty_file_as_unreadable(subject):
-    subject.ensure_root()
-    subject.journal_path.write_text("", encoding="utf-8")
-    assert isinstance(subject.read(), own.Unreadable)
-
-
-def test_read_reports_malformed_json_as_unreadable(subject):
-    subject.ensure_root()
-    subject.journal_path.write_text("{not json", encoding="utf-8")
-    assert isinstance(subject.read(), own.Unreadable)
-
-
-def test_read_reports_a_non_object_as_unreadable(subject):
-    subject.ensure_root()
-    subject.journal_path.write_text("[1, 2]", encoding="utf-8")
-    assert isinstance(subject.read(), own.Unreadable)
-
-
-def test_read_reports_a_record_the_decoder_refuses_as_unreadable(subject):
-    subject.ensure_root()
-    data = own.encode(RECORD)
-    data["owner"]["controlPort"] = 0
-    subject.journal_path.write_text(json.dumps(data), encoding="utf-8")
-    journal = subject.read()
-    assert isinstance(journal, own.Unreadable) and "port" in journal.reason
-
-
-def test_read_reports_an_oversized_journal_as_unreadable(subject):
-    """Refused on the `fstat`, before the bytes are read: the cap exists to bound what a `down`
-    meeting a hand-edited file loads into memory."""
-    subject.ensure_root()
-    subject.journal_path.write_bytes(b"x" * (sess.JOURNAL_SIZE_CAP + 1))
-    journal = subject.read()
-    assert isinstance(journal, own.Unreadable) and "larger than" in journal.reason
-
-
-def test_read_returns_the_record_that_was_written(subject):
-    subject.ensure_root()
-    subject.write(RECORD)
-    assert subject.read() == RECORD
-
-
-# MARK: - write() and durability
-
-
-@pytest.fixture
-def fsynced(monkeypatch):
-    """Record what every `os.fsync` in the run was called on: a regular file or a directory, and
-    which inode."""
-    real = os.fsync
-    seen = []
-
-    def recording(descriptor):
-        info = os.fstat(descriptor)
-        seen.append((stat.S_ISDIR(info.st_mode), info.st_ino))
-        return real(descriptor)
-
-    monkeypatch.setattr(os, "fsync", recording)
-    return seen
-
-
-def test_write_fsyncs_the_file_and_the_directory(subject, fsynced):
-    """A record that is visible is not yet durable: a crash between the rename and the flush leaves
-    the journal naming a file that is not there, and the PAC pointing at a dead port with nothing
-    left that says what to restore."""
-    subject.ensure_root()
-    fsynced.clear()
-    subject.write(RECORD)
-    assert (False, subject.journal_path.stat().st_ino) in fsynced
-    assert (True, subject.root.stat().st_ino) in fsynced
-
-
-def test_ensure_root_syncs_parents_it_did_not_create(subject, fsynced):
-    """An actor that created `session/` and died before syncing its parent leaves a directory the
-    next actor finds already there; a journal written into it is only durable if the directory
-    entry naming it is too."""
-    subject.ensure_root()
-    # The *parent* of each component is what carries its name, so those are the entries that have
-    # to reach the disk; the root's own entry is synced by the write that puts the journal in it.
-    wanted = {subject.root.parent.stat().st_ino, subject.root.parent.parent.stat().st_ino}
-    assert wanted <= {inode for is_dir, inode in fsynced if is_dir}
-
-    fsynced.clear()
-    subject.ensure_root()  # everything exists this time, and is synced all the same
-    assert wanted <= {inode for is_dir, inode in fsynced if is_dir}
-
-
-def test_first_use_directories_are_synced(subject, fsynced):
-    """`archive/` is created the first time something is archived, and the entry that *names* it
-    lives in the root — so the root has to reach the disk too, not only the new directory.
-
-    An archive is the last copy of a baseline the session has given up on: published into a
-    directory whose own name was never synced, a crash takes the directory and the file with it,
-    and `down` has already reported the obligation discharged.
-    """
-    subject.ensure_root()
-    assert not subject.archive_dir.exists()
-    fsynced.clear()
-
-    path = subject.archive("20260912T101500Z", "unreadable", b"{}")
-
-    directories = {inode for is_dir, inode in fsynced if is_dir}
-    assert subject.root.stat().st_ino in directories, "the entry naming archive/ is durable"
-    assert subject.archive_dir.stat().st_ino in directories, "and so is the one naming the file"
-    assert path.is_file()
-
-
-def test_ensure_root_creates_the_root_privately(subject):
-    subject.ensure_root()
-    assert stat.S_IMODE(subject.root.stat().st_mode) == 0o700
-
-
-def test_barrier_fsyncs_the_published_record(subject, fsynced):
-    subject.ensure_root()
-    subject.write(RECORD)
-    fsynced.clear()
-    subject.barrier()
-    assert (False, subject.journal_path.stat().st_ino) in fsynced
-    assert (True, subject.root.stat().st_ino) in fsynced
-
-
-def test_barrier_raises_when_there_is_nothing_to_prove(subject):
-    """`down` discharges only at a durable checkpoint; a barrier over a missing file must not be
-    read as "the checkpoint is safe"."""
-    subject.ensure_root()
-    with pytest.raises(OSError):
-        subject.barrier()
-
-
-def test_write_refuses_what_read_would_reject(subject):
-    """The writer proves this module's own reader accepts the record *before* the atomic replace,
-    which is what lets `up` refuse an unjournallable PAC with nothing spawned and nothing
-    installed."""
-    subject.ensure_root()
-    unreadable = own.SessionRecord(
-        version=1,
-        since=SINCE,
-        simulator=None,
-        owner=own.Owner(8088, "a" * (own.MAX_STRING + 1), "/path/to/state"),
-        service=SERVICE,
-        baseline=BASELINE,
-        phase=own.Acquiring(None),
-    )
-    with pytest.raises(sess.Unrepresentable):
-        subject.write(unreadable)
-    assert isinstance(subject.read(), own.Absent)
-
-
-def test_write_measures_the_cap_in_bytes(subject):
-    """Characters are not bytes, and `read()` measures bytes with `fstat`: a record accepted by
-    character count would be written and then read back as `Unreadable` for ever."""
-    subject.ensure_root()
-    wide = "あ" * own.MAX_STRING
-    record = own.SessionRecord(
-        version=1,
-        since=SINCE,
-        simulator=own.Simulator(udid=wide, name=wide),
-        owner=own.Owner(8088, wide, wide),
-        service=own.ServiceRef(name=wide, device=wide),
-        baseline=own.Pac(url=wide, enabled=False),
-        phase=own.Acquiring(None),
-    )
-    text = json.dumps(own.encode(record), ensure_ascii=False)
-    assert len(text) < sess.JOURNAL_SIZE_CAP < len(text.encode("utf-8"))
-    with pytest.raises(sess.Unrepresentable, match="larger than"):
-        subject.write(record)
-    assert isinstance(subject.read(), own.Absent)
-
-
-def test_unlink_is_quiet_about_a_journal_that_is_not_there(subject):
-    subject.ensure_root()
-    subject.unlink()  # a clean absent-journal `down` releases nothing and still exits 0
-
-
-# MARK: - the archive
-
-
-def test_archive_creates_the_directory_and_writes_privately(subject):
-    subject.ensure_root()
-    path = subject.archive(SINCE, "unreadable", b"{ the bytes as they were")
-    assert path.parent == subject.archive_dir
-    assert stat.S_IMODE(subject.archive_dir.stat().st_mode) == 0o700
-    assert stat.S_IMODE(path.stat().st_mode) == 0o600
-    assert path.read_bytes() == b"{ the bytes as they were"
-    assert path.name.startswith(f"{SINCE}-unreadable-") and path.suffix == ".json"
-    assert not list(subject.archive_dir.glob("*.tmp"))
-
-
-def test_archive_record_writes_the_record_it_was_given(subject):
-    subject.ensure_root()
-    path = subject.archive_record(SINCE, "displaced", RECORD)
-    assert own.decode(json.loads(path.read_text(encoding="utf-8"))) == RECORD
-
-
-def test_archive_file_copies_the_whole_journal(subject):
-    """Streamed, never loaded: the journal this is called for may be the oversize one `read()`
-    refused, and `down` must not spend the memory the cap exists to bound."""
-    subject.ensure_root()
-    payload = b"x" * (sess.JOURNAL_SIZE_CAP + 1024)
-    subject.journal_path.write_bytes(payload)
-    path = subject.archive_file(SINCE, "unreadable")
-    assert path.read_bytes() == payload
-
-
-def test_archive_file_raises_when_the_bytes_cannot_be_read(subject):
-    """`down` must not replace a journal whose bytes it failed to keep: an archive holding an error
-    string instead of the file would be the loss it exists to prevent."""
-    subject.ensure_root()
-    with pytest.raises(OSError):
-        subject.archive_file(SINCE, "unreadable")
-
-
-def test_archive_never_replaces_an_earlier_archive(subject, monkeypatch):
-    """`mkstemp` can hand back a name an earlier publication freed; a `rename` would then replace
-    that archive silently. Publication is `link`, which fails on a name already taken."""
-    subject.ensure_root()
-    first = subject.archive(SINCE, "displaced", b"the first")
-
-    reused = subject.archive_dir / (first.name + ".tmp")
-    handed_out = []
-
-    real_mkstemp = sess.tempfile.mkstemp
-
-    def colliding(*args, **kwargs):
-        if not handed_out:
-            handed_out.append(reused)
-            return (os.open(reused, os.O_RDWR | os.O_CREAT, 0o600), str(reused))
-        return real_mkstemp(*args, **kwargs)
-
-    monkeypatch.setattr(sess.tempfile, "mkstemp", colliding)
-    second = subject.archive(SINCE, "displaced", b"the second")
-
-    assert second != first
-    assert first.read_bytes() == b"the first"
-    assert second.read_bytes() == b"the second"
-    assert not list(subject.archive_dir.glob("*.tmp"))
-
-
-@pytest.mark.parametrize("since", ["../../etc/passwd", "nope", "20260912T101500"])
-def test_archive_refuses_a_since_that_is_not_a_timestamp(subject, since):
-    subject.ensure_root()
-    with pytest.raises(ValueError):
-        subject.archive(since, "displaced", b"x")
-
-
-# MARK: - the lock
-
-
-def test_locked_requires_the_root_to_exist(subject):
-    """Every actor calls `ensure_root()` first; if one stops, this is what says so, rather than a
-    `down` that fails with ENOENT on a machine that simply has no session yet."""
-    with pytest.raises(OSError):
-        with subject.locked(timeout=0.1):
-            pass
-
-
-def test_locked_times_out_with_lock_busy(subject):
-    subject.ensure_root()
-    with subject.locked():
-        started = time.monotonic()
-        with pytest.raises(sess.LockBusy):
-            with subject.locked(timeout=0.2):
-                pass
-        assert time.monotonic() - started < 5
-
-
-def test_locked_without_a_timeout_waits_for_the_holder(subject):
-    """The watchdog's mode: an idempotent `up` can hold the lock for the length of a `simctl`
-    relaunch, and a watchdog that retired over contention would leave the session unwatched."""
-    subject.ensure_root()
-    released = threading.Event()
-    acquired = threading.Event()
-
-    def hold():
-        with subject.locked():
-            acquired.set()
-            time.sleep(0.3)
-        released.set()
-
-    holder = threading.Thread(target=hold, daemon=True)
-    holder.start()
-    assert acquired.wait(5)
-    with sess.Session(subject.root).locked(timeout=None):
-        assert released.is_set(), "the blocking lock returned while another holder still had it"
-    holder.join(5)
-
-
-def test_the_lock_is_held_by_a_child_that_outlives_its_parent(subject):
-    """flock is per open-file-description, so the descriptor a `networksetup` inherits through
-    `pass_fds` keeps the session locked even if the command that started it is killed. Required,
-    not optional: without it a half-applied PAC write races the next `up`.
-    """
-    subject.ensure_root()
-    descriptor = os.open(subject.lock_path, os.O_RDWR | os.O_CREAT, 0o600)
-    child = subprocess.Popen(
-        [sys.executable, "-c", "import time; time.sleep(30)"], pass_fds=(descriptor,), close_fds=True
-    )
+def test_a_real_process_holding_the_lock_makes_locked_raise(store):
+    """flock is per open-file description and across processes: the timeout has to be reached
+    against a real holder, not only against this interpreter."""
+    holder = subprocess.Popen([sys.executable, "-c", _HOLDER, str(store.lock_path)], stdout=subprocess.PIPE, text=True)
     try:
-        sess.fcntl.flock(descriptor, sess.fcntl.LOCK_EX)
-        os.close(descriptor)  # the parent is gone; only the child still holds the description
-        with pytest.raises(sess.LockBusy):
-            with subject.locked(timeout=0.3):
+        assert holder.stdout is not None
+        assert holder.stdout.readline().strip() == "held"
+        with pytest.raises(session.LockBusy):
+            with store.locked(timeout=0.5):
                 pass
     finally:
-        child.kill()
-        child.wait(10)
-    with subject.locked(timeout=5):
-        pass  # the child exited, the lock went with it
+        holder.kill()
+        holder.wait()
+
+
+def test_the_lock_is_not_inherited_by_children(store):
+    """`O_CLOEXEC`: a `networksetup` that inherited the descriptor would hold the session lock past
+    this command's own exit, and the next `lyrebird down` would wait a minute for nothing."""
+    with store.locked():
+        held = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import fcntl,sys; fcntl.flock(int(sys.argv[1]), fcntl.LOCK_EX | fcntl.LOCK_NB)",
+                "3",
+            ],
+            capture_output=True,
+            text=True,
+        )
+    # Descriptor 3 is not the lock in the child, so the call fails on a bad descriptor rather than
+    # succeeding on an inherited lock.
+    assert held.returncode != 0
+
+
+def test_write_raises_when_the_root_cannot_be_written(store, monkeypatch):
+    """A caller whose write failed has no session, and must not carry on as though it had."""
+
+    def refuse(*_args, **_kwargs):
+        raise OSError(13, "permission denied")
+
+    monkeypatch.setattr(config, "atomic_write", refuse)
+    with pytest.raises(OSError):
+        store.write(RECORD)
+
+
+def test_a_session_defaults_to_the_per_user_root(monkeypatch, tmp_path):
+    monkeypatch.setattr(session, "default_root", lambda: tmp_path / "elsewhere")
+    assert session.Session().root == tmp_path / "elsewhere"
+
+
+def test_read_is_a_session_record_for_what_write_published(store):
+    store.write(RECORD)
+    journal = store.read()
+    assert isinstance(journal, SessionRecord)
+    assert journal.proxy == Ref(pid=4321, create_time=1000.5)
+    assert os.fspath(store.journal_path).endswith("session.json")

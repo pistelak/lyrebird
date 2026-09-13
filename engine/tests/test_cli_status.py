@@ -1,10 +1,12 @@
 """`lyrebird status`: what it reports, and what it refuses to call success.
 
 It answers for the *requested* owner — this profile, this port — and reports the journal beside it.
-Exit 0 means the whole postcondition held at one observation: this session active, its proxy
-answering, its watchdog alive, its PAC routing here, on the service the route still carries. Every
-other combination is exit 1 with the reason printed, because `lyrebird status && …` is a thing
-people write.
+Exit 0 means the whole postcondition held at one observation: this session's journal, its proxy
+answering, its PAC routing here, on the service the route still carries. Every other combination is
+exit 1 with the reason printed, because `lyrebird status && …` is a thing people write.
+
+No process is inspected: the health reading's pid and the journal are the evidence, and psutil is
+not consulted at all.
 """
 
 import json
@@ -30,10 +32,11 @@ from cli_doubles import (
     answering,
     body,
     ours,
+    owner,
     record,
     write_journal,
 )
-from ownership import Active, Pac, Restored
+from ownership import Pac
 
 CORPORATE = Pac("http://proxy.example.com/corp.pac", True)
 
@@ -41,9 +44,17 @@ CORPORATE = Pac("http://proxy.example.com/corp.pac", True)
 def _healthy(monkeypatch, **payload):
     """A machine as a successful `up` leaves it, with a health reading to match."""
     world = _status_network(monkeypatch)
-    reader = FakeHealth(sequence=[answering(world["proxy"].pid, **payload)]).install(monkeypatch)
-    world["health"] = reader
+    world["health"] = FakeHealth(sequence=[answering(world["proxy"].pid, **payload)]).install(monkeypatch)
     return world
+
+
+def _quiet(monkeypatch, *, services=None, journal=None):
+    """A closed control port, and whatever journal the case is about."""
+    monkeypatch.setattr(procs, "psutil", FakePsutil())
+    network = FakeNetwork(services).install(monkeypatch)
+    FakeHealth(sequence=[SILENT]).install(monkeypatch)
+    write_journal(journal)
+    return network
 
 
 # MARK: - The happy path, and what it takes
@@ -59,22 +70,33 @@ def test_status_exits_0_only_when_the_whole_postcondition_holds(profile, runner,
     assert world["network"].pac("Wi-Fi") == ours()
 
 
-def test_status_json_reports_the_session_the_journal_describes(profile, runner, monkeypatch):
-    """The journal is additional information, not the exit code: a reader has to be able to see the
-    phase, whose it is, which service it took and whether the watchdog is still there."""
+def test_status_json_reports_the_service_and_pac_the_journal_describes(profile, runner, monkeypatch):
     world = _healthy(monkeypatch)
 
     payload = json.loads(runner.invoke(cli.cli, ["status", "--json"]).output)
 
-    assert payload["session"] == {
-        "phase": "active",
-        "owner": {"controlPort": config.CONTROL_PORT, "profileFingerprint": config.PROFILE_FINGERPRINT},
-        "service": {"name": "Wi-Fi", "device": "en0"},
-        "watchdog": "alive",
-        "archive": None,
-    }
+    assert payload["service"] == "Wi-Fi"
+    assert payload["pac"] == {"url": ours().url, "enabled": True, "ours": True}
     assert payload["intercepting"] is True and payload["journalError"] is None
     assert world["health"].asked == [config.CONTROL_PORT], "the requested owner's port, once"
+
+
+def test_status_json_has_no_session_block(profile, runner, monkeypatch):
+    _healthy(monkeypatch)
+
+    payload = json.loads(runner.invoke(cli.cli, ["status", "--json"]).output)
+
+    assert "session" not in payload
+
+
+def test_status_json_reports_the_simulator_the_session_trusted(profile, runner, monkeypatch):
+    world = _status_network(monkeypatch)
+    FakeHealth(sequence=[answering(world["proxy"].pid)]).install(monkeypatch)
+    write_journal(record(world["proxy"], simulator=ownership.Simulator(udid="PHONE-1", name="iPhone 17 Pro")))
+
+    payload = json.loads(runner.invoke(cli.cli, ["status", "--json"]).output)
+
+    assert payload["simulator"] == {"udid": "PHONE-1", "name": "iPhone 17 Pro"}
 
 
 def test_status_json_carries_answer_counts(profile, runner, monkeypatch):
@@ -124,21 +146,30 @@ def test_status_output_and_exit_code_come_from_one_reading(profile, runner, monk
     assert (result.exit_code == 0) == (payload["intercepting"] and not payload["profileMismatch"])
 
 
+def test_status_consults_no_process_table(profile, runner, monkeypatch):
+    """The health reading's pid and the journal are the evidence. A psutil lookup here would make
+    `status` refuse over a clock step that changed nothing about whether traffic is intercepted."""
+    world = _healthy(monkeypatch)
+
+    def refuse(_pid):
+        raise AssertionError("`status` must not inspect the process table")
+
+    monkeypatch.setattr(world["table"], "Process", refuse)
+
+    assert runner.invoke(cli.cli, ["status"]).exit_code == 0
+
+
 # MARK: - Every reason it is not 0
 
 
-def test_status_reports_a_dead_watchdog_as_lost_restoration(profile, runner, monkeypatch):
-    """The proxy answers and the PAC routes to it, so everything a person can see is fine — and
-    nothing will put the network back if the proxy dies. That is the whole point of saying so."""
-    world = _healthy(monkeypatch)
-    world["table"].processes[world["watchdog"].pid].gone = True
+def test_status_exits_1_when_the_recorded_proxy_is_not_what_answers(profile, runner, monkeypatch):
+    world = _status_network(monkeypatch)
+    FakeHealth(sequence=[answering(999_201)]).install(monkeypatch)
 
     result = runner.invoke(cli.cli, ["status"])
 
     assert result.exit_code == 1
-    assert "watchdog dead" in result.output and "lyrebird down && lyrebird up" in result.output
-    payload = json.loads(runner.invoke(cli.cli, ["status", "--json"]).output)
-    assert payload["session"]["watchdog"] == "dead"
+    assert f"the recorded proxy (pid {world['proxy'].pid})" in result.output
 
 
 def test_status_exits_1_when_the_route_moved_off_the_journalled_device(profile, runner, monkeypatch):
@@ -152,6 +183,33 @@ def test_status_exits_1_when_the_route_moved_off_the_journalled_device(profile, 
 
     assert result.exit_code == 1
     assert "route moved" in result.output
+    # Not ACTIVE beside exit 1: our PAC on a service the route left routes nothing, and the banner
+    # said otherwise while the exit code said this.
+    assert "INTERCEPT ACTIVE" not in result.output
+
+    as_json = runner.invoke(cli.cli, ["status", "--json"])
+    assert as_json.exit_code == 1
+    assert json.loads(as_json.output)["intercepting"] is False
+
+
+def test_status_exits_1_when_the_pac_is_not_this_sessions(profile, runner, monkeypatch):
+    world = _healthy(monkeypatch)
+    world["network"].set_pac("Wi-Fi", CORPORATE)
+
+    result = runner.invoke(cli.cli, ["status"])
+
+    assert result.exit_code == 1
+    assert "is not routing to this session" in result.output
+
+
+def test_status_exits_1_when_the_journalled_service_cannot_be_resolved(profile, runner, monkeypatch):
+    world = _healthy(monkeypatch)
+    world["network"].services["Wi-Fi"][0] = "en9"  # the recorded device is carried by nothing now
+
+    result = runner.invoke(cli.cli, ["status"])
+
+    assert result.exit_code == 1
+    assert "could not be read" in result.output or "is gone" in result.output
 
 
 def test_status_reports_the_proxys_own_journal_error_and_exits_1(profile, runner, monkeypatch):
@@ -179,43 +237,11 @@ def test_status_reports_a_journal_it_cannot_read_itself(profile, runner, monkeyp
     FakeHealth(sequence=[answering(world["proxy"].pid)]).install(monkeypatch)
     session.Session().journal_path.write_bytes(b"not json at all\xff")
 
-    payload = json.loads(runner.invoke(cli.cli, ["status", "--json"]).output)
-
-    assert payload["journalError"] is not None
-    assert payload["session"] == {
-        "phase": "unreadable",
-        "owner": None,
-        "service": None,
-        "watchdog": "unknown",
-        "archive": None,
-    }
-
-
-def test_status_reports_an_archived_session_with_its_path(profile, runner, monkeypatch):
-    """An archived session means the previous settings were never put back. `status` says so and
-    names the file, because that file is what a person needs to put them back by hand."""
-    table = FakePsutil()
-    monkeypatch.setattr(procs, "psutil", table)
-    FakeNetwork().install(monkeypatch)
-    FakeHealth(sequence=[SILENT]).install(monkeypatch)
-    write_journal(
-        ownership.Archived(
-            version=ownership.SESSION_VERSION,
-            since="20260912T101500Z",
-            reason="displaced",
-            path="/tmp/lyrebird-tests/archive/20260912T101500Z-displaced-ab12cd.json",
-            context=ownership.Known(
-                owner=ownership.Owner(config.CONTROL_PORT, config.PROFILE_FINGERPRINT, str(config.STATE_ROOT)),
-                service=ownership.ServiceRef("Wi-Fi", "en0"),
-                proxy=None,
-            ),
-        )
-    )
-
-    result = runner.invoke(cli.cli, ["status"])
+    result = runner.invoke(cli.cli, ["status", "--json"])
 
     assert result.exit_code == 1
-    assert "archived:" in result.output and "ab12cd.json" in result.output
+    payload = json.loads(result.output)
+    assert payload["journalError"] is not None
 
 
 def test_status_exits_1_when_another_session_owns_the_pac(profile, runner, monkeypatch):
@@ -223,12 +249,10 @@ def test_status_exits_1_when_another_session_owns_the_pac(profile, runner, monke
     port looks."""
     table = FakePsutil()
     monkeypatch.setattr(procs, "psutil", table)
-    proxy = table.spawn_ref("proxy", config.CONTROL_PORT)
-    watchdog = table.spawn_ref("watchdog", config.CONTROL_PORT)
+    proxy = table.spawn_ref(config.CONTROL_PORT)
     FakeNetwork({"Wi-Fi": ("en0", ours())}).install(monkeypatch)
     FakeHealth(sequence=[answering(proxy.pid)]).install(monkeypatch)
-    stranger = ownership.Owner(control_port=9099, profile_fingerprint="ffffffffffff", state_root="/tmp/elsewhere")
-    write_journal(record(Active(proxy, watchdog), owned_by=stranger))
+    write_journal(record(proxy, owned_by=owner(port=9099, fingerprint="ffffffffffff")))
 
     result = runner.invoke(cli.cli, ["status"])
 
@@ -240,33 +264,23 @@ def test_status_exits_1_when_another_session_owns_the_pac(profile, runner, monke
 def test_status_exits_1_with_no_session_at_all(profile, runner, monkeypatch):
     """The CI launcher check's case: a clean machine, a closed port, and no journal. Reading the
     absent root must create nothing."""
-    table = FakePsutil()
-    monkeypatch.setattr(procs, "psutil", table)
-    FakeNetwork().install(monkeypatch)
-    FakeHealth(sequence=[SILENT]).install(monkeypatch)
+    _quiet(monkeypatch)
 
     result = runner.invoke(cli.cli, ["status", "--json"])
 
     assert result.exit_code == 1
     payload = json.loads(result.output)
-    assert payload["proxyUp"] is False and payload["session"]["phase"] == "absent"
+    assert payload["proxyUp"] is False and payload["pac"] == {"url": "", "enabled": False, "ours": False}
     assert not session.Session().journal_path.exists()
 
 
-def test_status_reports_a_restored_session_as_not_intercepting(profile, runner, monkeypatch):
-    """A terminal checkpoint is not a running session, and `status` must not describe it as one."""
-    table = FakePsutil()
-    monkeypatch.setattr(procs, "psutil", table)
-    FakeNetwork({"Wi-Fi": ("en0", CORPORATE)}).install(monkeypatch)
-    FakeHealth(sequence=[SILENT]).install(monkeypatch)
-    write_journal(record(Restored(None), baseline=CORPORATE))
+def test_status_names_the_routes_service_when_no_journal_does(profile, runner, monkeypatch):
+    _quiet(monkeypatch, services={"Wi-Fi": ("en0", CORPORATE)})
 
-    result = runner.invoke(cli.cli, ["status", "--json"])
+    payload = json.loads(runner.invoke(cli.cli, ["status", "--json"]).output)
 
-    assert result.exit_code == 1
-    payload = json.loads(result.output)
-    assert payload["session"]["phase"] == "restored" and payload["session"]["watchdog"] == "none"
-    assert payload["intercepting"] is False
+    assert payload["service"] == "Wi-Fi"
+    assert payload["pac"] == {"url": CORPORATE.url, "enabled": True, "ours": False}
 
 
 def test_status_json_says_null_for_a_field_the_engine_cannot_report(profile, runner, monkeypatch):
@@ -325,5 +339,5 @@ def test_status_prints_json_and_exits_non_zero_against_a_dead_control_port(profi
     assert result.returncode == 1, result.stderr
     payload = json.loads(result.stdout)
     assert payload["proxyUp"] is False
-    assert payload["session"]["phase"] == "absent"
+    assert "no session holds the PAC" in result.stderr or payload["pac"] is not None
     assert not (root / "session.json").exists(), "a read must create nothing"

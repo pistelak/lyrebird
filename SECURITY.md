@@ -29,20 +29,19 @@ on this repository, rather than opening a public issue.
   [engine/README.md — Which simulator](engine/README.md#which-simulator) says what each one gets.
 - **Changes your active network service's proxy settings.** It installs a PAC pointing at the local
   proxy. Your previous PAC URL and enabled state go into a per-user session journal under
-  `~/Library/Application Support/Lyrebird/session/`, written and fsynced to disk *before* the PAC is
-  touched, and `lyrebird down` — or the watchdog, if the proxy dies — restores them from it. Two
-  things are guaranteed by that: the settings to put back survive a power cut, because they were
-  durable before anything changed; and there is one PAC-owning session per user, taken under a lock,
-  so two runs cannot both snapshot the PAC and both install — the failure that left a Mac
-  "restored" to a PAC that was already Lyrebird's. A PAC that is not this session's is never
-  overwritten — `down` preserves the recorded baseline in that directory's `archive/`, prints the
-  path and exits non-zero, and putting those settings back is then yours to do.
-  What is *not* guaranteed: a `kill -9` that takes the proxy and the watchdog together, a power cut,
-  or a `networksetup` that fails can still leave the PAC pointing at a dead port until the next
-  command; a PAC changed by hand mid-run supersedes the baseline; a foreign write inside a single
-  `networksetup` command is overwritten without trace; and another login account's session is
-  outside all of it. `lyrebird status` reports the true state, `lyrebird down` is the recovery
-  command, and System Settings ▸ Network ▸ *service* ▸ Proxies is the manual fix.
+  `~/Library/Application Support/Lyrebird/session/`, written *before* the PAC is touched, and
+  `lyrebird down` restores them from it. One thing is guaranteed by that: there is one PAC-owning
+  session per user, taken under a lock, so two runs cannot both snapshot the PAC and both install —
+  the failure that left a Mac "restored" to a PAC that was already Lyrebird's. A PAC that is not
+  this session's is never overwritten: `down` prints the settings it recorded, keeps the journal and
+  exits non-zero, and putting them back is then yours to do.
+  What is *not* guaranteed: **nothing restores the settings automatically.** A proxy that dies —
+  `kill -9`, a crash, a power cut — leaves the PAC pointing at a dead port until `lyrebird down`
+  runs. Nor is a `networksetup` that fails; nor a PAC changed by hand mid-run, which supersedes the
+  baseline; a foreign write inside a single `networksetup` command is overwritten without trace; and
+  another login account's session is outside all of it. `lyrebird status` reports the true state,
+  `lyrebird down` is the recovery command, and System Settings ▸ Network ▸ *service* ▸ Proxies is
+  the manual fix.
   [TROUBLESHOOTING.md](TROUBLESHOOTING.md#what-the-session-journal-does-not-rule-out) has the full
   list.
 - **Decrypts TLS only for the hosts you list** in `profile.json`, matched exactly. Subdomains are

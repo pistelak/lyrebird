@@ -252,7 +252,7 @@ the menu-bar app does not stop interception** — the engine runs detached from 
 what puts your proxy settings back.
 
 Operational state is separate, and optional to remove: the active-scenario pointer and the CA under
-`~/Library/Application Support/Lyrebird/`, the session journal, its lock and its archive under
+`~/Library/Application Support/Lyrebird/`, the session journal and its lock under
 `~/Library/Application Support/Lyrebird/session/`, logs under `~/Library/Logs/Lyrebird/`. Delete
 `session/` only after a `down` that exited 0 — while a session is live it is the only record of the
 settings to put back.
@@ -295,7 +295,8 @@ exactly what it does:
   and which override matched — never a request or response body.
 - The control API is unauthenticated on loopback, with Host and Origin checks so a web page
   you're visiting can't drive it. Other processes running as you still can.
-- `down` restores the proxy settings you had before.
+- `down` restores the proxy settings you had before — and nothing else does: a proxy that dies
+  leaves the PAC pointing at a dead port until you run it.
 
 Development machines only. [SECURITY.md](SECURITY.md) has the full threat model and how to remove
 the CA.

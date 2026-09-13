@@ -136,15 +136,17 @@ two booted simulators, or a Lyrebird PAC already enabled on the network service 
 machine could have run the check, and the answer would not have meant anything. Once the
 prerequisites pass nothing skips.
 
-**What it checks.** It is one test with six phases, not six tests: they share one proxy, one app
+**What it checks.** It is one test with five phases, not five tests: they share one proxy, one app
 and one container of evidence, and each depends on the state the last left, so separate test
 functions would only have looked independent. Each phase prints its name, so a failure says how far
-the procedure got. The phases: a locally replaced HTTPS response reaching the app's screen; the scenario
-being selected *before* the launch that meets it (a decoy answers the same request differently, so
-getting the right one cannot be luck); a two-step sequence moving on at the next launch, confirmed
-from both ends with `sequence wait`; `up --use <unknown>` refusing, launching nothing and leaving
-the proxy for `down`; `down` putting the previous proxy settings back from the session journal; and
-the watchdog putting them back from the same journal when the proxy is killed outright. They go
+the procedure got. The phases: the acceptance scenarios loading whole; `up --use <unknown>`
+refusing, launching nothing and putting the network back before any session exists (the unwind,
+on a real Mac); a locally replaced HTTPS response reaching the app's screen, answered by the
+scenario selected *before* the launch that meets it (a decoy answers the same request differently,
+so getting the right one cannot be luck); a two-step sequence moving on at the next launch,
+confirmed from both ends with `sequence wait`; and `down` putting the previous proxy settings back
+from the session journal. Switching scenario on the running session is `use` then `relaunch` —
+one session per user means a second `up` is refused. They go
 through the shipped commands wherever there is one — `up --simulator`, `lyrebird relaunch`,
 `assert-answered --run` — so the path a user takes is the path that is checked; `simctl` is called
 directly only for what Lyrebird has no command for (install, uninstall, boot, shutdown, reading the
@@ -163,13 +165,11 @@ profile into a temporary directory and the harness points its `simBundleId` at t
 Keep generated profiles outside the repository; only the synthetic examples in `engine/examples`
 belong in version control.
 
-**Cleanup.** It runs `down` however the run ended — the same executor the command runs, in-process
-and with an owner precondition, so a finalizer arriving after its own session was released cannot
-tear down somebody else's — for a failing check, a Ctrl-C, or a `kill`, all of which take the same
-path: SIGTERM and SIGHUP are turned into the `KeyboardInterrupt` pytest already unwinds, so every
-finalizer runs and the report is still printed. It then reads the PAC back from
-`networksetup` and fails if the settings are not the ones recorded before anything started, so a
-restore that did not happen cannot pass unnoticed. (With no PAC URL configured to begin with,
+**Cleanup.** It runs the shipped `lyrebird down` once, however the run ended — a failing check, a
+Ctrl-C, or a `kill`, all of which take the same path: SIGTERM and SIGHUP are turned into the
+`KeyboardInterrupt` pytest already unwinds, so every finalizer runs and the report is still printed.
+It then reads the PAC back from `networksetup` and fails if the settings are not the ones recorded
+before anything started, so a restore that did not happen cannot pass unnoticed. (With no PAC URL configured to begin with,
 "restored" means *disabled*: macOS rejects an empty PAC URL, so `down` can only switch ours off and
 the URL stays in the field — the same thing an ordinary `lyrebird down` leaves behind.)
 
@@ -179,27 +179,23 @@ if even that will not do it, the manual `networksetup` line in
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md#the-proxy-is-gone-but-the-network-still-points-at-it). A
 second implementation of the restore, living in the check, could only ever write over a PAC it had
 already decided was somebody else's, and the promise it was there for — cleanup even when the
-executor is broken — is one a *check* is allowed to refuse. What the harness still does on its own
-is verify (it reads macOS by device, not by service name) and stop the proxies *this run* started,
-which it finds by their marked argv and this run's own state directory, signals only through the
-identity captured when it found them, and skips entirely unless the journal is absent or carries
-this run's owner. A journal that is still there at the end is reported with `lyrebird down`,
-never quietly removed. The fixture app is uninstalled and a simulator this run booted is shut down
-again, both checked rather than assumed.
+command is broken — is one a *check* is allowed to refuse. What the harness still does on its own is
+verify: it reads macOS by device, not by service name. A journal that is still there at the end is
+reported with `lyrebird down`, never quietly removed. The fixture app is uninstalled and a simulator
+this run booted is shut down again, both checked rather than assumed.
 
 Only the *first* signal acts. Everything after it is teardown — restoring the network,
 uninstalling the app, shutting the simulator down — and a second signal in the middle of that
 leaves the machine worse than the first one found it: three SIGTERMs in quick succession used to
 leave the simulator booted and the app installed, with the finalizers dying in interpreter
 shutdown. So later signals are recorded and dropped, as is a first one that lands during the
-restore itself (by then `down` has stopped the watchdog, and a restore abandoned between two
-`networksetup` calls leaves the Mac routed at a port with no proxy behind it and nothing running
-that would notice) — it is re-raised the moment the network is back. What remains is bounded by its
-own timeouts, and `kill -9` is still `kill -9`.
+restore itself (a restore abandoned between two `networksetup` calls leaves the Mac routed at a port
+with no proxy behind it) — it is re-raised the moment the network is back. What remains is bounded
+by its own timeouts, and `kill -9` is still `kill -9`.
 
 **What a hard kill leaves.** `kill -9` on the pytest process runs nothing, and the proxy is started
-detached, so it and its watchdog survive with the PAC still installed. Nothing can promise
-otherwise.
+detached, so it survives with the PAC still installed. Nothing can promise otherwise — nothing here
+restores the settings automatically.
 
 The remedy is one command, and it is the same one users get, in
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md#the-proxy-is-gone-but-the-network-still-points-at-it):
@@ -218,8 +214,8 @@ and are ignored by git.
 
 **Why they are not in CI.** GitHub's macOS runners have no booted simulator and no business having
 their network settings rewritten, and the whole point of these checks is that both are real. They
-are the check to run by hand before a release, or after touching `up`, `down`, the watchdog, the
-PAC, or CA trust.
+are the check to run by hand before a release, or after touching `up`, `down`, the PAC, or CA
+trust.
 
 `acceptance/README.md` describes the fixture app and the profile it is driven with.
 
@@ -395,11 +391,11 @@ happens. This is the shape that made sequence cursors advance on requests they n
 **Test the failure path.** Every instance above was found by running the tool or reviewing it, not
 by the tests, because the tests covered the happy path. The CLI suite is almost entirely failure
 paths — an unreadable journal, a foreign PAC, nothing to stop — and that is the model to copy:
-`engine/tests/test_cli_up.py`, `test_cli_down.py`, `test_cli_watchdog.py`, `test_cli_status.py`,
+`engine/tests/test_cli_up.py`, `test_cli_down.py`, `test_cli_status.py`,
 `test_cli_evidence.py`, `test_cli_offline.py`, `test_cli_profile.py`, `test_cli_launch.py` and
-`test_cli_simulator.py`, over the doubles they share in `cli_doubles.py`. Underneath them, `test_ownership.py` exhausts the decisions those
-executors act on, `test_session.py` the journal they write, and `test_procs.py` the process
-identity they refuse to signal without.
+`test_cli_simulator.py`, over the doubles they share in `cli_doubles.py`. Underneath them,
+`test_ownership.py` pins the classifier those commands act on, `test_session.py` the journal they
+write, and `test_procs.py` the process identity they refuse to signal without.
 
 **A comment names the failure it prevents, and the test that pins it.** The comments in this
 codebase explain *why*, usually by citing the bug a line prevents, and that is worth keeping. What

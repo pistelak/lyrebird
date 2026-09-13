@@ -430,28 +430,3 @@ def test_atomic_write_aborts_if_the_descriptor_will_not_close(tmp_path, monkeypa
 
     assert len(attempts) == 1, f"closed {len(attempts)} times; the second may hit someone else's fd"
     assert target.read_text() == "previous", "the destination was replaced despite a failed write"
-
-
-def test_atomic_write_is_only_durable_when_it_is_asked_to_be(tmp_path, monkeypatch):
-    """A log or a state file that a power cut loses costs nothing; the session journal, which a
-    crash losing would strand somebody's PAC, is the one caller that pays for the flush. Both the
-    file and the directory entry that names it: a rename is a change to the directory."""
-    import os
-    import stat as stat_module
-
-    synced = []
-    real = os.fsync
-
-    def recording(descriptor):
-        info = os.fstat(descriptor)
-        synced.append(stat_module.S_ISDIR(info.st_mode))
-        return real(descriptor)
-
-    monkeypatch.setattr(os, "fsync", recording)
-
-    config.atomic_write(tmp_path / "loose.json", "{}")
-    assert synced == []
-
-    config.atomic_write(tmp_path / "durable.json", "{}", durable=True)
-    assert synced == [False, True]
-    assert (tmp_path / "durable.json").read_text(encoding="utf-8") == "{}"
