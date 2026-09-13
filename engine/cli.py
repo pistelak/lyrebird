@@ -4,8 +4,8 @@
     lyrebird up [--use <scenario>] [--no-relaunch] [--simulator <udid-or-name>]
                                           start proxy, trust CA, install PAC, select, relaunch
     lyrebird down                         stop proxy and restore the previous proxy settings
-    lyrebird use <scenario>               switch active scenario (reports what it displaced)
-    lyrebird recent [--json] [--matched]  what came through, and which overrides answered
+    lyrebird use <scenario>               switch active scenario
+    lyrebird recent [--json]              what came through, and which overrides answered
     lyrebird override add <json>          add a rule to the active scenario, no restart
     lyrebird validate [scenario]          check saved scenario files offline; non-zero if any is
                                           not loadable whole
@@ -13,16 +13,13 @@
                                           (--scenario NAME reads a file instead of the proxy)
     lyrebird assert-answered <id> [--run R]  exit non-zero unless that rule answered in that run
     lyrebird scenario list [--json]       list scenarios, by folder
-    lyrebird scenario new <name>          create a scratch scenario (--clone-from X)
-    lyrebird scenario mv <name> <to>      move a scenario, file and all (folders are names)
+    lyrebird scenario new <name>          create an empty scratch scenario
     lyrebird scenario reload [--use N]    re-read the scenario files after editing them by hand
     lyrebird reset [id] [--json]          start a fresh run: rewind sequences, clear answer counts
     lyrebird sequence wait <id> --step N  block until a sequence serves a given step
     lyrebird status [--json]              show intercept state (honest about PAC on/off)
-    lyrebird wait-ready [--match]         block until traffic arrives, or until a rule matches
     lyrebird relaunch [BUNDLEID]          relaunch the app on the simulator this run is bound to
-    lyrebird trust-ca [--simulator UDID]  trust the CA in a booted simulator (untrust-ca explains
-                                          how to drop it again)
+    lyrebird untrust-ca                   how to drop the CA from a simulator again
     lyrebird logs                         print the last 60 lines; path on stderr
 
 Routing uses a *host-scoped PAC* so only the hosts in your profile go through the proxy; everything
@@ -72,9 +69,7 @@ cli.add_command(evidence.reset)
 cli.add_command(evidence.assert_answered)
 cli.add_command(offline.validate)
 cli.add_command(offline.explain_match)
-cli.add_command(evidence.wait_ready)
 cli.add_command(sim.relaunch_cmd)
-cli.add_command(sim.trust_ca_cmd)
 cli.add_command(sim.untrust_ca_cmd)
 cli.add_command(supervisor.logs)
 

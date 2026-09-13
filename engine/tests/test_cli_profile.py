@@ -22,7 +22,6 @@ from cli_doubles import (
     FakeHealth,
     FakeNetwork,
     FakePsutil,
-    _answers_over,
     _answers_with_a_conflict,
     _health_payload,
     _polling,
@@ -102,18 +101,6 @@ def test_a_refused_call_does_not_print_the_bare_slug(profile, runner, monkeypatc
 
     assert result.exit_code == 1
     assert "profile_mismatch" not in result.output
-
-
-def test_a_polling_read_refused_for_the_wrong_profile_is_not_reported_as_unreachable(profile, runner, monkeypatch):
-    """`_get_json` answers None for "not reachable", and a 409 is the opposite of that: the proxy is
-    up and talking. Reporting it as silence sends the operator to look for a dead port."""
-    _answers_with_a_conflict(monkeypatch)
-
-    result = runner.invoke(cli.cli, ["wait-ready", "--timeout", "1"])
-
-    assert result.exit_code == 1
-    assert "no proxied requests" not in result.output
-    assert FOREIGN_FINGERPRINT in result.output
 
 
 def test_up_over_another_profiles_session_sends_the_operator_to_down(profile, runner, monkeypatch):
@@ -205,34 +192,6 @@ def test_a_bound_assertion_refuses_a_profile_that_changes_under_the_poll(profile
     result = runner.invoke(cli.cli, ["assert-answered", "ovr_a", "--run", "run1", "--timeout", "30"])
 
     assert result.exit_code == 3
-    assert FOREIGN_FINGERPRINT in result.output
-
-
-def test_a_bound_assertion_refuses_a_profile_that_takes_the_port_before_the_diagnostic_read(
-    profile, runner, monkeypatch
-):
-    """The last call a failing assertion makes is the `/recent` read behind its "what did arrive"
-    hint, and unlike `/health` that one is scoped, so the API refuses it with a 409. Exiting 1 there
-    prints a profile mismatch under the code that means "your run was checked and nothing answered",
-    which is the one reading of exit 1 that has to stay true."""
-    monkeypatch.setattr(api, "_health", _answers_over({"count": 0, "runId": "run1"}))
-    _answers_with_a_conflict(monkeypatch)
-
-    result = runner.invoke(cli.cli, ["assert-answered", "ovr_a", "--run", "run1"])
-
-    assert result.exit_code == 3
-    assert FOREIGN_FINGERPRINT in result.output
-
-
-def test_an_unbound_assertion_still_exits_one_when_the_diagnostic_read_is_refused(profile, runner, monkeypatch):
-    """The same moment without --run: no boundary was claimed, so nothing here may start returning
-    a code the older contract never had."""
-    monkeypatch.setattr(api, "_health", _answers_over({"count": 0, "runId": "run1"}))
-    _answers_with_a_conflict(monkeypatch)
-
-    result = runner.invoke(cli.cli, ["assert-answered", "ovr_a"])
-
-    assert result.exit_code == 1
     assert FOREIGN_FINGERPRINT in result.output
 
 

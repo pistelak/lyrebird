@@ -148,11 +148,11 @@ To review prepared scenarios visually, use the optional [macOS scenario browser]
 Much of Lyrebird's use is a coding agent putting an app into a backend state, checking
 something, and putting the machine back. The commands are built for that: exit codes mean the
 postcondition was met rather than "the command ran", `status --json` is machine-readable, and
-`wait-ready --match` blocks until a rule actually fires instead of sleeping and hoping.
+`assert-answered --timeout` blocks until a named rule answers instead of sleeping and hoping.
 
 ```bash
-lyrebird up --use orders-outage            # the scenario is live before the app is relaunched
-lyrebird wait-ready --match --timeout 30   # ✓ override ovr_9a99bd matched GET /api/v1/orders/42 → 500
+lyrebird up --use orders-outage                        # the scenario is live before the app is relaunched
+lyrebird assert-answered ovr_9a99bd --timeout 30       # non-zero unless that rule answered
 lyrebird down
 ```
 
@@ -192,8 +192,8 @@ Your hosts and scenarios live in a **profile** directory, outside this repo. The
 
 Because a profile is plain JSON, you can keep it in its own repository and review scenarios the way
 you review code. Saving a scenario writes to it — that is what it is for. Everything *operational*
-stays out, in the macOS directory that matches how long it should live: the active-scenario pointer
-and the CA under `~/Library/Application Support/Lyrebird/`, the record of who holds your proxy
+stays out, in the macOS directory that matches how long it should live: the CA under
+`~/Library/Application Support/Lyrebird/`, the record of who holds your proxy
 settings under `~/Library/Application Support/Lyrebird/session/`, the proxy log under
 `~/Library/Logs/Lyrebird/`. So a profile in git changes when you change a scenario, never merely
 because the proxy ran.
@@ -201,9 +201,9 @@ because the proxy ran.
 There is one such session per user, wherever the profile is and whichever port it took, which is
 why `lyrebird down` needs neither: it reads that record and restores from it.
 
-Where a profile sits has two consequences worth knowing before you move one: saving a scenario
-requires its file to resolve inside the profile, and the remembered active scenario is keyed by the
-profile's resolved path. [engine/README.md](engine/README.md#profiles) has both.
+Where a profile sits has a consequence worth knowing before you move one: saving a scenario
+requires its file to resolve inside the profile.
+[engine/README.md](engine/README.md#profiles) has the rest.
 
 ## Upgrading
 
@@ -251,7 +251,7 @@ Then delete the checkout, and the app from `/Applications` if you built and copi
 the menu-bar app does not stop interception** — the engine runs detached from it, and `down` is
 what puts your proxy settings back.
 
-Operational state is separate, and optional to remove: the active-scenario pointer and the CA under
+Operational state is separate, and optional to remove: the CA under
 `~/Library/Application Support/Lyrebird/`, the session journal and its lock under
 `~/Library/Application Support/Lyrebird/session/`, logs under `~/Library/Logs/Lyrebird/`. Delete
 `session/` only after a `down` that exited 0 — while a session is live it is the only record of the
@@ -304,8 +304,8 @@ the CA.
 ## More
 
 `bin/lyrebird` has `init`, `up`, `down`, `status`, `use`, `recent`, `validate`, `explain-match`,
-`reset`, `assert-answered`, `wait-ready`, `sequence`, `override`, `scenario`, `relaunch`,
-`trust-ca`, `untrust-ca` and `logs`. `bin/lb` is a shorter alias for it.
+`reset`, `assert-answered`, `sequence`, `override`, `scenario`, `relaunch`,
+`untrust-ca` and `logs`. `bin/lb` is a shorter alias for it.
 
 - [Engine guide](engine/README.md) — the full rule schema, matching order, control API, ports, tests
 - [macOS scenario browser](menubar/README.md) — inspect scenarios prepared by your agent; build and install the optional app

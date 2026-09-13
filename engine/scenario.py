@@ -31,14 +31,10 @@ def use(name: str) -> None:
 
 @click.command()
 @click.option("--json", "as_json", is_flag=True, help="Machine-readable output.")
-@click.option("--matched", "only_matched", is_flag=True, help="Only requests an override answered.")
 @click.option("--limit", default=20, help="How many to show.")
-def recent(as_json: bool, only_matched: bool, limit: int) -> None:
+def recent(as_json: bool, limit: int) -> None:
     """What has come through the proxy, and which overrides answered it."""
-    entries = api._control("/__mock__/recent") or []
-    if only_matched:
-        entries = [entry for entry in entries if entry.get("matched")]
-    entries = entries[:limit]
+    entries = (api._control("/__mock__/recent") or [])[:limit]
 
     if as_json:
         click.echo(json.dumps(entries, indent=2))
@@ -137,12 +133,11 @@ def scenario_group() -> None:
 
 @scenario_group.command(name="new")
 @click.argument("name")
-@click.option("--clone-from", default=None, help="Start from a copy of this scenario.")
 @click.option("--activate/--no-activate", default=True, help="Switch to it once created.")
-def scenario_new(name: str, clone_from: str | None, activate: bool) -> None:
+def scenario_new(name: str, activate: bool) -> None:
     """Create a scenario — use this for scratch work instead of editing a shared one."""
-    api._control("/__mock__/scenarios", "POST", {"name": name, "cloneFrom": clone_from})
-    click.echo(f"✓ created {name}" + (f" from {clone_from}" if clone_from else ""))
+    api._control("/__mock__/scenarios", "POST", {"name": name})
+    click.echo(f"✓ created {name}")
     if activate:
         api._control("/__mock__/scenarios/active", "PUT", {"name": name})
         click.echo(f"✓ active: {name}")
@@ -178,7 +173,7 @@ def scenario_list(as_json: bool) -> None:
         mark = "*" if scenario["name"] == active else " "
         verified = f" {ui.GREEN}✓{ui.R}" if scenario.get("verified") else ""
         count = f"  {ui.DIM}{scenario.get('overrideCount', 0)} rules{ui.R}"
-        # The full name, never the leaf: it is what `use`, `mv` and `rm` take, and a listing that
+        # The full name, never the leaf: it is what `use` and `rm` take, and a listing that
         # printed something else would be a listing nobody can copy from.
         click.echo(f" {mark} {indent}{scenario['name']}{verified}{count}")
 
@@ -191,15 +186,6 @@ def scenario_list(as_json: bool) -> None:
         click.echo(f"   {ui.DIM}{group}/{ui.R}")
         for scenario in groups[group]:
             row(scenario, indent="  ")
-
-
-@scenario_group.command(name="mv")
-@click.argument("name")
-@click.argument("to")
-def scenario_mv(name: str, to: str) -> None:
-    """Move a scenario to another name or folder, file and all."""
-    api._control("/__mock__/scenarios/move", "POST", {"name": name, "to": to})
-    click.echo(f"✓ moved {name} → {to}")
 
 
 @scenario_group.command(name="reload")

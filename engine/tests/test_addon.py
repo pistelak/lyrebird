@@ -396,22 +396,6 @@ def test_repeat_last_serves_the_final_step_but_is_still_marked_overrun(hosts, pr
     assert overrun.metadata["mock_sequence"]["overrun"] is True, "but it is not pretending to be step 2"
 
 
-def test_pass_through_is_distinguishable_from_no_rule_matching(hosts, profile):
-    """An exhausted passThrough answers nothing, so it has no `matched` — and `recent --matched`
-    filters on that. Without a separate sequence id the overrun would be invisible to exactly the
-    command used to check the scenario."""
-    subject = _retry_subject("passThrough")
-    for _ in range(2):
-        run_request(subject, _flow())
-
-    overrun = _flow()
-    run_request(subject, overrun)
-    assert overrun.response is None, "the real upstream must answer"
-    assert overrun.metadata.get("mock_matched") is None
-    assert overrun.metadata["mock_sequence"]["sequenceId"] == "ovr_retry"
-    assert overrun.metadata["mock_sequence"]["overrun"] is True
-
-
 # MARK: - The delay boundary
 #
 # `delayMs` is parent-level only, so the sleep happens BEFORE the step is chosen. That is what makes
@@ -497,25 +481,6 @@ def test_two_concurrent_delayed_flows_take_different_steps(hosts, profile):
 
 
 # MARK: - The error hook
-
-
-def test_a_failed_pass_through_overrun_still_reaches_recent(hosts, profile):
-    """The case this hook exists for: the sequence stood aside, the real upstream was down, and
-    without a record the overrun looks like a rule that simply never fired."""
-    subject = _retry_subject("passThrough")
-    for _ in range(2):
-        run_request(subject, _flow())
-
-    overrun = _flow()
-    run_request(subject, overrun)
-    assert overrun.response is None
-    subject.error(overrun)
-
-    entry = subject.store.recent_list()[0]
-    assert entry["sequenceId"] == "ovr_retry"
-    assert entry["overrun"] is True
-    assert entry["status"] == 0
-    assert entry["matched"] is None, "nothing answered it, and `matched` must keep meaning that"
 
 
 def test_a_mock_answered_flow_that_errors_keeps_its_matched_id(hosts, profile):
@@ -679,24 +644,6 @@ def test_a_skipped_patch_is_never_credited(hosts, profile):
     subject.response(flow)
     assert flow.metadata["mock_patch_skipped"] == "not_json"
     assert _answers(subject) == {"p": 0}
-
-
-def test_an_exhausted_pass_through_is_never_credited(hosts, profile):
-    """It stands aside on purpose: the real upstream answers, so the rule answered nothing."""
-    subject = addon.Lyrebird()
-    subject.store.add_override(
-        {
-            "id": "seq",
-            "mode": "replace",
-            "match": {"path": "/api/v1/orders/*"},
-            "sequence": {"onExhausted": "passThrough", "steps": [{"status": 200}]},
-        }
-    )
-    run_request(subject, _flow())
-    overrun = _flow()
-    run_request(subject, overrun)
-    assert overrun.response is None
-    assert _answers(subject) == {"seq": 1}, "the first request answered; the overrun did not"
 
 
 def test_an_exhausted_error_is_credited_because_it_did_answer(hosts, profile):

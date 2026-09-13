@@ -99,14 +99,6 @@ def test_bodyless_mutation_needs_no_content_type(profile):
     assert status == 200
 
 
-def test_security_headers_are_present(profile):
-    """Nothing served here is a page any more, so the policy allows no resource loads at all —
-    spelled out rather than read back from `control._CSP`, so loosening it fails this test."""
-    _, headers, _ = call(profile, "GET", "/__mock__/health")
-    assert headers["X-Content-Type-Options"] == "nosniff"
-    assert headers["Content-Security-Policy"] == "default-src 'none'; frame-ancestors 'none'"
-
-
 def test_the_control_server_serves_no_pages(profile):
     """The dashboard is gone; the root and its old assets must not come back as anything."""
     for path in ("/", "/app.js", "/styles.css"):
@@ -1176,74 +1168,6 @@ def test_deleting_by_query_without_a_name_is_a_400(profile):
 
     assert status == 400
     assert body["error"] == "name_required"
-
-
-def test_the_path_delete_route_still_removes_a_root_scenario(profile):
-    status, _, body = call(
-        profile, "DELETE", "/__mock__/scenarios/scratch", prepare=lambda s: s.create_scenario("scratch")
-    )
-
-    assert status == 200
-    assert body["deleted"] == "scratch"
-
-
-# MARK: - Move
-
-
-def test_moving_a_scenario_reports_both_names(profile):
-    status, _, body = call(
-        profile,
-        "POST",
-        "/__mock__/scenarios/move",
-        json_body={"name": "archive/old", "to": "checkout/old"},
-        prepare=_grouped,
-    )
-
-    assert status == 200
-    assert (body["moved"], body["to"]) == ("archive/old", "checkout/old")
-
-
-def test_moving_the_active_scenario_is_a_409_that_says_why(profile):
-    def prepare(subject):
-        subject.create_scenario("scratch")
-        subject.set_active("scratch")
-
-    status, _, body = call(
-        profile, "POST", "/__mock__/scenarios/move", json_body={"name": "scratch", "to": "a/b"}, prepare=prepare
-    )
-
-    assert status == 409
-    assert body["error"] == "cannot_move"
-    assert "active scenario" in body["detail"]
-
-
-def test_moving_onto_an_existing_scenario_is_a_conflict(profile):
-    status, _, body = call(
-        profile,
-        "POST",
-        "/__mock__/scenarios/move",
-        json_body={"name": "archive/old", "to": "checkout/orders-outage"},
-        prepare=_grouped,
-    )
-
-    assert status == 409
-    assert body["error"] == "scenario_exists"
-
-
-def test_moving_an_unknown_scenario_is_a_404(profile):
-    status, _, body = call(profile, "POST", "/__mock__/scenarios/move", json_body={"name": "nope", "to": "a/b"})
-
-    assert status == 404
-    assert body["error"] == "unknown_scenario"
-
-
-def test_moving_without_a_destination_is_a_400(profile):
-    status, _, body = call(
-        profile, "POST", "/__mock__/scenarios/move", json_body={"name": "archive/old"}, prepare=_grouped
-    )
-
-    assert status == 400
-    assert body["error"] == "to_required"
 
 
 # MARK: - Reload

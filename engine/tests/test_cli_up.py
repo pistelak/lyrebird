@@ -444,7 +444,7 @@ def test_up_use_selects_through_the_health_reading_it_decided_on(profile, runner
         "_control",
         lambda path, method="GET", payload=None, timeout=3.0: (
             selected.append(payload["name"]),
-            {"active": payload["name"], "previous": {"name": "default", "overrideCount": 0}},
+            {"active": payload["name"]},
         )[1],
     )
     place.health.payload = {"scenariosNotWhole": {}, "scenarios": ["default", "orders-outage"]}

@@ -682,7 +682,7 @@ def _start_fresh_log() -> None:
 
 
 def _activate_scenario(name: str) -> None:
-    """Make `name` the active scenario, and report what it displaced.
+    """Make `name` the active scenario, and print what is active now.
 
     Shared by `use` and `up --use` so the two cannot drift into describing the same switch
     differently. Activation is also what rewinds the scenario's sequences, so the scenario starts
@@ -690,14 +690,7 @@ def _activate_scenario(name: str) -> None:
     the scenario that is already active is not a no-op.
     """
     result = api._control("/__mock__/scenarios/active", "PUT", {"name": name})
-    previous = result.get("previous")
-    if previous and previous["name"] != result["active"]:
-        click.echo(
-            f"switched: {previous['name']} ({previous['overrideCount']} override(s)) → "
-            f"{ui.BOLD}{result['active']}{ui.R}"
-        )
-    else:
-        click.echo(f"active: {result['active']}")
+    click.echo(f"active: {result['active']}")
 
 
 def _load_problems_for(health: dict | None, name: str) -> list[str] | None:

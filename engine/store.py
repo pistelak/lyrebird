@@ -11,16 +11,14 @@ Write then publish: a mutator writes the file that records a change *before* the
 visible in memory, so a write that fails (full disk, read-only profile) leaves live state, runtime
 slots and the file exactly as they were and the OSError reaches the caller. Otherwise the proxy
 would answer with a rule no profile contains — a divergence nothing later reports. This covers
-scenario content and the active-scenario pointer. `delete_scenario` follows it too: the file is
+scenario content. `delete_scenario` follows it too: the file is
 unlinked first and the scenario leaves memory only once it is gone, so a failed unlink reports
 through `_problem` and False with memory and disk still agreeing.
 """
 
 from __future__ import annotations
 
-import copy
 import json
-import os
 import re
 import secrets
 import shlex
@@ -37,10 +35,6 @@ _SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 class UnsafeName(ValueError):
     pass
-
-
-class ScenarioRefused(RuntimeError):
-    """An operation this store will not perform on this scenario, with the sentence saying why."""
 
 
 class ReloadRefused(RuntimeError):
@@ -140,24 +134,11 @@ def scenario_group(name: object) -> str:
     return scenario_parts(name)[0]
 
 
-def _refuse_dir_symlink(directory: Path) -> None:
-    """Refuse a symlinked group directory, even one pointing inside the profile.
-
-    `_contained` resolves *through* a link and passes it when the target is inside, so containment
-    alone cannot see this: `scenarios/alias -> scenarios/checkout` would list one group's scenarios
-    under two identities, and a write through either name would land on the same file. See
-    test_a_directory_symlink_inside_scenarios_is_refused_even_when_it_points_inside.
-    """
-    if directory.is_symlink():
-        raise UnsafeName(f"{directory.name}/ is a symlink — directory symlinks under scenarios/ are not read")
-
-
 def scenario_path(name: str) -> Path:
     """Where the scenario called `name` lives. Resolves only — it creates nothing."""
     group, leaf = scenario_parts(name)
     if not group:
         return _contained(config.SCENARIOS_DIR, f"{leaf}.json")
-    _refuse_dir_symlink(config.SCENARIOS_DIR / group)
     return _contained(config.SCENARIOS_DIR, group, f"{leaf}.json")
 
 
@@ -275,9 +256,6 @@ def _owner(file: Path) -> str | None:
 def _group_files(directory: Path, colliding: list[str] | None, problems: list[tuple[str | None, str]]) -> list[Path]:
     """The scenario files one group holds, appending whatever stopped one from being read."""
     label = directory.name
-    if directory.is_symlink():
-        problems.append((None, f"skipped {label}/: directory symlinks under scenarios/ are not read"))
-        return []
     if colliding:
         problems.append((None, f"skipped {'/, '.join(sorted(colliding))}/: names differ only by case"))
         return []
@@ -358,7 +336,7 @@ def load_scenario_file(file: Path) -> tuple[dict | None, list[str]]:
 
     A module-level function rather than a `Store` method, so a command can ask "what would the proxy
     make of this file?" without constructing a store — which creates directories, synthesises a
-    `default` scenario and reads the active-scenario pointer, none of which an inspection may do.
+    `default` scenario, neither of which an inspection may do.
     `Store._load` is a loop around this function, so an offline answer cannot drift from startup's.
     """
     label = _relative_label(file)
@@ -387,13 +365,6 @@ def load_scenario_file(file: Path) -> tuple[dict | None, list[str]]:
     return scenario, [f"{label}: {problem}" for problem in scenario.pop("_problems", [])]
 
 
-def _clone(source: dict, name: str) -> dict:
-    scenario = copy.deepcopy(_persistable(source))
-    scenario["name"] = name
-    scenario["createdAt"] = _now_iso()
-    return scenario
-
-
 def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
@@ -417,7 +388,7 @@ def _persistable(scenario: dict) -> dict:
 #
 # Per-rule state that must never reach a profile: sequence cursors, and the count of requests each
 # rule has answered. It hangs off the scenario under a leading underscore, which `_persistable`
-# already strips — so it is never written to a profile, never survives a clone, and is
+# already strips — so it is never written to a profile, and is
 # scoped to its scenario without a second key, all from machinery that was already here for
 # `_problems`.
 
@@ -567,27 +538,6 @@ class Store:
             # proxy started, which is exactly what the profile/state split exists to prevent.
             self.scenarios["default"] = _empty_scenario("default")
 
-        if config.STATE_FILE.exists():
-            try:
-                state = json.loads(config.STATE_FILE.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
-                state = None
-            if isinstance(state, dict):
-                active = state.get("active")
-                if active in self.scenarios:
-                    # persist=False: reading the pointer must not rewrite it.
-                    self._activate(active, persist=False)
-                elif isinstance(active, str):
-                    # Reported, not silently swallowed: the pointer names a scenario this profile
-                    # does not have — usually a file moved into a group by hand — and starting on
-                    # `default` while saying nothing is "substituted a default for what the caller
-                    # asked for". The pointer itself is left alone, because startup does not write.
-                    # See test_a_stale_active_pointer_is_reported_at_startup.
-                    self._problem(
-                        f"active scenario {active!r} in {config.STATE_FILE} is not in this profile — "
-                        f"serving 'default'; `lyrebird use NAME` or `lyrebird scenario reload --use NAME` "
-                        f"selects the replacement"
-                    )
         # Scenarios are NOT rewritten on startup: a profile kept in git must stay clean until
         # something actually changes.
 
@@ -630,12 +580,7 @@ class Store:
         # test_reload_refuses_when_a_default_it_wrote_itself_is_deleted.
         self._disk_names.add(name)
 
-    def _persist_state(self, name: str) -> None:
-        """Record `name` as active. Takes the name for the same reason `_write_scenario` takes the
-        scenario: the pointer is written before `active_name` moves."""
-        config.atomic_write(config.STATE_FILE, json.dumps({"active": name}, indent=2))
-
-    def _activate(self, name: str, *, persist: bool = True) -> None:
+    def _activate(self, name: str) -> None:
         """The one place `active_name` changes.
 
         Switching scenarios clears the destination's cursors, so a scenario always begins at its
@@ -643,12 +588,7 @@ class Store:
         four of them — startup, the self-heal in `active_scenario`, `set_active` and
         `delete_scenario` — and the last two are easy to miss: deleting the active scenario falls back
         to `default` without going anywhere near `set_active`.
-
-        The pointer is written first: a switch that cannot be recorded must not happen at all, or
-        the destination's cursors are rewound for a scenario that reverts on the next restart.
         """
-        if persist:
-            self._persist_state(name)
         self.active_name = name
         scenario = self.scenarios.get(name)
         if scenario is not None:
@@ -659,7 +599,7 @@ class Store:
     def active_scenario(self) -> dict:
         if self.active_name not in self.scenarios:
             self.scenarios.setdefault("default", _empty_scenario("default"))
-            self._activate("default", persist=False)
+            self._activate("default")
         return self.scenarios[self.active_name]
 
     def active_overrides(self) -> list[dict]:
@@ -873,9 +813,7 @@ class Store:
             ],
         }
 
-    def create_scenario(self, name: str, clone_from: str | None = None) -> None:
-        """Raises KeyError if clone_from names a scenario that does not exist — silently handing
-        back an empty scenario instead is a false success the caller cannot see."""
+    def create_scenario(self, name: str) -> None:
         group, leaf = scenario_parts(name)
         name = f"{group}/{leaf}" if group else leaf
         if name in self.scenarios:
@@ -890,153 +828,46 @@ class Store:
             raise FileExistsError(f"{group}/{colliding}" if group else colliding)
         if group and (colliding := _case_sibling(config.SCENARIOS_DIR, group)):
             raise FileExistsError(f"{colliding}/{leaf}.json")
-        if clone_from:
-            clone_from = "/".join(part for part in scenario_parts(clone_from) if part)
-            if clone_from not in self.scenarios:
-                raise KeyError(clone_from)
-            base = _clone(self.scenarios[clone_from], name)
-        else:
-            base = _empty_scenario(name)
+        base = _empty_scenario(name)
         self._write_scenario(name, base)
         self.scenarios[name] = base
         self._forget_load_problems(name)
 
-    def set_active(self, name: str) -> dict | None:
+    def set_active(self, name: str) -> bool:
         # Validated before the membership test, so a name that could never be one is a refusal the
         # caller can act on rather than "not found" — see
         # test_activating_browsing_and_deleting_an_unsafe_qualified_name_is_a_400.
         scenario_parts(name)
         if name not in self.scenarios:
-            return None
-        previous = {"name": self.active_name, "overrideCount": len(self.active_overrides())}
+            return False
         self._activate(name)
-        return previous
+        return True
 
     def delete_scenario(self, name: str) -> bool:
         scenario_parts(name)
         if name == "default" or name not in self.scenarios:
             return False
         path = scenario_path(name)
-        # Switch away BEFORE the unlink: `_activate` writes the pointer first, and a pointer write
-        # that fails must leave the file alone — see
-        # test_a_switch_whose_pointer_write_fails_does_not_happen.
-        switched_away = self.active_name == name
-        if switched_away:
-            self._activate("default")
         try:
             path.unlink()
         except FileNotFoundError:
             pass
         except (OSError, RuntimeError) as error:
-            if switched_away:
-                # The delete did not happen, so neither did the switch away from it. Returning False
-                # while the proxy had quietly moved to `default` is the same "reported a failure,
-                # changed anyway" this ordering exists to prevent. The scenario's cursors were
-                # rewound by the switch and cannot be un-rewound; a restore that itself fails is
-                # recorded rather than swallowed. See
-                # test_a_failed_delete_of_the_active_scenario_puts_it_back.
-                try:
-                    self._activate(name)
-                except OSError as restore_error:
-                    self._problem(f"could not switch back to {name!r} after a failed delete: {restore_error}", name)
-            # Dropped from memory only once the file is actually gone. Removing it first made a
-            # failed unlink report False while the proxy had already stopped serving the scenario —
-            # a store describing a profile that still holds the file, and the next `create` under
-            # that name landing on it. See
+            # Nothing changes until the file is actually gone — neither the store nor the active
+            # scenario. Removing it from memory first made a failed unlink report False while the
+            # proxy had already stopped serving the scenario, and switching to `default` first left
+            # the active scenario changed under a `rm` that reported failure. See
             # test_a_failed_unlink_leaves_the_scenario_in_memory_and_on_disk.
             self._problem(f"could not delete {_relative_label(path)}: {error}", name)
             return False
+        if self.active_name == name:
+            self._activate("default")
         del self.scenarios[name]
         self._disk_names.discard(name)
         # After the unlink: an entry left behind would be inherited by the next scenario created
         # under this name.
         self._forget_load_problems(name)
         return True
-
-    def move_scenario(self, name: str, to: str) -> None:
-        """Move a scenario to another identity, file and all.
-
-        Refuses rather than repairs: the active scenario (the proxy is answering from it), `default`
-        (the one name the store synthesises), a symlinked source (the link, not the scenario, is what
-        would move), an occupied destination, and a source whose file no longer matches what was
-        loaded. Each raises, because a move that quietly did something else is a move the caller
-        cannot see — see the move tests in test_store.py.
-        """
-        name = "/".join(part for part in scenario_parts(name) if part)
-        to = "/".join(part for part in scenario_parts(to) if part)
-        if name not in self.scenarios:
-            raise KeyError(name)
-        if name == "default":
-            raise ScenarioRefused("'default' is the scenario every profile falls back to — it cannot be moved")
-        if name == self.active_name:
-            raise ScenarioRefused(f"{name!r} is the active scenario — `lyrebird use NAME` selects another one first")
-        source, dest = scenario_path(name), scenario_path(to)
-        if source.is_symlink():
-            raise ScenarioRefused(f"{name!r} is a symlink — moving it would move the link, not the scenario")
-        if to in self.scenarios or dest.exists() or dest.is_symlink():
-            raise FileExistsError(to)
-        group, leaf = scenario_parts(to)
-        directory = config.SCENARIOS_DIR / group if group else config.SCENARIOS_DIR
-        if colliding := _case_sibling(directory, f"{leaf}.json"):
-            raise FileExistsError(f"{group}/{colliding}" if group else colliding)
-        if group and (colliding := _case_sibling(config.SCENARIOS_DIR, group)):
-            raise FileExistsError(f"{colliding}/{leaf}.json")
-
-        # What is about to be moved must still be what this store loaded. Otherwise a file edited by
-        # hand since startup would be relocated under an identity describing the *old* contents, and
-        # the store would go on serving rules no file holds — see
-        # test_moving_a_scenario_edited_on_disk_since_loading_is_refused.
-        on_disk, on_disk_problems = load_scenario_file(source)
-        # The problems as well as the contents. A rule added by hand that does not validate is
-        # dropped by both loads, so the two normalised scenarios still match — and the move would
-        # carry the `scenariosNotWhole` entries recorded before the edit, describing a file that now
-        # drops a rule nobody has been told about.
-        if (
-            on_disk is None
-            or _persistable(on_disk) != _persistable(self.scenarios[name])
-            or on_disk_problems != self.scenarios_not_whole.get(name, [])
-        ):
-            raise ScenarioRefused(f"{name!r} changed on disk since it was loaded — `lyrebird scenario reload` first")
-
-        directory.mkdir(parents=True, exist_ok=True)
-        # `os.link` then unlink, not `Path.rename`: rename replaces the destination silently, and
-        # nothing in this store's single-loop guarantee covers a file another process wrote between
-        # the check above and this line. `link` fails with EEXIST instead — see
-        # test_a_destination_created_between_the_check_and_the_link_is_a_conflict_and_moves_nothing.
-        os.link(source, dest)
-        try:
-            source.unlink()
-        except OSError as error:
-            # Roll the new link back, and say plainly when that fails too. Claiming "the profile is
-            # unchanged" after a rollback that did not happen would leave one scenario in two files
-            # with nothing naming the second — see
-            # test_a_move_whose_rollback_also_fails_names_the_file_left_behind.
-            try:
-                dest.unlink()
-            except OSError as rollback_error:
-                raise OSError(
-                    f"could not move {name!r} to {to!r}: {source} survived the move ({error}), and "
-                    f"{dest} could not be removed either ({rollback_error}) — the scenario is now in "
-                    f"two files, and {source} is the one being served"
-                ) from error
-            raise OSError(
-                f"could not move {name!r} to {to!r}: {source} survived the move ({error}); the profile is unchanged"
-            ) from error
-        if not dest.is_file() or source.exists():
-            raise OSError(f"could not move {name!r} to {to!r}: the files did not end up where they should")
-
-        scenario = self.scenarios.pop(name)
-        scenario["name"] = to
-        # A run's evidence belongs to the identity that was serving it; the moved scenario is a new
-        # one to every client that polls by name.
-        _runtime(scenario).clear()
-        self.scenarios[to] = scenario
-        self._disk_names.discard(name)
-        self._disk_names.add(to)
-        # The rules dropped when this file loaded are still dropped: the move relocated the file, it
-        # did not fix it.
-        if problems := self.scenarios_not_whole.pop(name, None):
-            self.scenarios_not_whole[to] = problems
 
     def reload_scenarios(self, use: str | None = None) -> dict:
         """Re-read every scenario file, all or nothing.
@@ -1069,17 +900,11 @@ class Store:
         if "default" not in scenarios:
             scenarios["default"] = _empty_scenario("default")
 
-        # Write before publish, as every mutator here does. An explicit `use` is persisted even when
-        # it equals the current name, because that is how a stale pointer left by a hand-moved file
-        # gets repaired — see test_reload_use_of_the_current_name_still_repairs_a_stale_pointer.
-        if use is not None:
-            self._persist_state(target)
-
         self.scenarios = scenarios
         self._disk_names = on_disk
         self.load_problems = []
         self.scenarios_not_whole = {}
-        self._activate(target, persist=False)
+        self._activate(target)
         return {
             "active": self.active_name,
             "reloaded": len(self.scenarios),
