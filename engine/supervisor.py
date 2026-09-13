@@ -807,7 +807,10 @@ def status(as_json: bool) -> None:
     # default route has moved to another one, and a banner saying ACTIVE beside exit 1 sent people
     # the wrong way — see test_status_exits_1_when_the_route_moved_off_the_journalled_device.
     on_route = route is not None and (not isinstance(journal, SessionRecord) or route.device == journal.service.device)
-    intercepting = pac is not None and pac.enabled and ours and not foreign and on_route
+    # And the proxy answering must be the one the journal names: a stranger on the port behind our
+    # PAC printed INTERCEPT ACTIVE beside exit 1 — see test_status_exits_1_when_the_recorded_proxy_is_not_what_answers.
+    recorded = not isinstance(journal, SessionRecord) or (raw or {}).get("pid") == journal.proxy.pid
+    intercepting = pac is not None and pac.enabled and ours and not foreign and on_route and recorded
     reasons = _status_reasons(journal, raw, route, route_error, pac, ours, foreign, journal_error, pac_error)
     simulator = (
         {"udid": journal.simulator.udid, "name": journal.simulator.name}

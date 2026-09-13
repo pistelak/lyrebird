@@ -569,7 +569,6 @@ struct ScenarioOutlineTests {
         arguments: [
             ("error", "Further requests return 500"),
             ("repeatLast", "Further requests repeat step 2"),
-            ("passThrough", "Further requests pass through"),
             ("somethingNew", "Further requests: somethingNew"),
         ])
     func eachExhaustionPolicyDescribesWhatHappensAfterTheFinalResponse(policy: String, expected: String) {

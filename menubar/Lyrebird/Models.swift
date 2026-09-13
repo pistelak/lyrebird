@@ -99,8 +99,7 @@ struct RecentEntry: Codable, Sendable, Equatable {
     var method: String
     var path: String
     var status: Int
-    /// The rule that answered. Nil for a request no override answered, which includes an exhausted
-    /// `passThrough` — it stands aside, so it has no `matched` however much it moved.
+    /// The rule that answered. Nil for a request no override answered.
     var matched: String? = nil
     /// Why a patch could not be applied. A dropped patch and "no rule matched" look identical on
     /// the wire, which is why the engine records this at all.

@@ -101,7 +101,10 @@ def _contained(parent: Path, *parts: str) -> Path:
     for root in roots:
         if not resolved.is_relative_to(root):
             raise UnsafeName(f"path escapes {root}")
-    return candidate
+    # The resolved path, not the candidate: the loader reads what passed the check, so a link
+    # retargeted outside the profile between this check and the read is not what gets read — see
+    # test_the_loader_reads_the_path_that_passed_containment.
+    return resolved
 
 
 def scenario_parts(name: object) -> tuple[str, str]:
@@ -325,11 +328,11 @@ def load_scenario_file(file: Path) -> tuple[dict | None, list[str]]:
         # was the one that ran. Checking `file.parent` would only prove the file sits in its own
         # directory, which says nothing about where that directory is — see
         # test_the_loader_holds_a_file_to_the_containment_scenario_path_applies.
-        scenario_path(name)
+        target = scenario_path(name)
     except UnsafeName as error:
         return None, [f"skipped {label}: {error}"]
     try:
-        raw = json.loads(file.read_text(encoding="utf-8"))
+        raw = json.loads(target.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, UnicodeDecodeError, OSError) as error:
         # UnicodeDecodeError is a ValueError and not a JSONDecodeError — it is raised by the decode,
         # before json sees anything — so without it a file of binary junk escaped all three arms and

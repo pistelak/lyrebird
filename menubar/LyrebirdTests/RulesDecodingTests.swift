@@ -84,7 +84,7 @@ struct RulesDecodingTests {
               "rewrite": {"active": true, "mode": "replace", "status": null, "bodyKind": "none", "sequence": {
                 "advanceOn": {"method": "POST", "path": "/api/orders", "query": {"id": 7},
                               "bodyContains": "confirmed"},
-                "onExhausted": "passThrough",
+                "onExhausted": "repeatLast",
                 "steps": [{"status": 200, "headers": {}, "body": null,
                            "bodyKind": "none", "bodyBytes": null, "inherited": ["body", "headers"]}]
               }},

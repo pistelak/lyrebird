@@ -170,6 +170,10 @@ def test_status_exits_1_when_the_recorded_proxy_is_not_what_answers(profile, run
 
     assert result.exit_code == 1
     assert f"the recorded proxy (pid {world['proxy'].pid})" in result.output
+    # Not ACTIVE beside exit 1: whatever answers on the port is not the proxy this session started.
+    assert "INTERCEPT ACTIVE" not in result.output
+    as_json = runner.invoke(cli.cli, ["status", "--json"])
+    assert as_json.exit_code == 1 and json.loads(as_json.output)["intercepting"] is False
 
 
 def test_status_exits_1_when_the_route_moved_off_the_journalled_device(profile, runner, monkeypatch):

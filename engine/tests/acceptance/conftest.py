@@ -595,9 +595,15 @@ class Harness:
         result = _try_run(["networksetup", "-getautoproxyurl", name], timeout=60)
         if result is None or result.returncode != 0:
             return None
-        url = re.search(r"URL:\s*(\S+)", result.stdout)
-        found = url.group(1) if url else ""
-        return ownership.Pac("" if found.lower() == "(null)" else found, "Enabled: Yes" in result.stdout)
+        # Both lines, each whole: an answer with neither is "could not read", not "no PAC" — read as
+        # `("", False)` it matched an empty baseline and passed a restore nobody observed — see
+        # test_a_networksetup_answer_without_both_lines_is_not_a_pac.
+        url = re.search(r"^URL:[ \t]*(\S+)[ \t]*$", result.stdout, re.MULTILINE)
+        enabled = re.search(r"^Enabled:[ \t]*(Yes|No)[ \t]*$", result.stdout, re.MULTILINE)
+        if url is None or enabled is None:
+            return None
+        found = url.group(1)
+        return ownership.Pac("" if found.lower() == "(null)" else found, enabled.group(1) == "Yes")
 
     def pac(self) -> ownership.Pac:
         now = self._read_pac()
