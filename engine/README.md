@@ -429,7 +429,7 @@ since the reset; `--run RUNID`, the token `lyrebird reset ID --json` hands back,
 requires the count to belong to that run, so a boundary that moved under the test fails rather than
 passing on someone else's count.
 [Five things worth knowing before you start](../AGENTS.md#five-things-worth-knowing-before-you-start),
-item 3, has the exit-code table — 1 for an assertion made and failed, 3 for one that could not be
+item 2, has the exit-code table — 1 for an assertion made and failed, 3 for one that could not be
 made — and how a harness should act on each.
 
 Sequences are `replace`-only. A `patch` needs the upstream response, so it could not answer locally
