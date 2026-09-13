@@ -183,11 +183,13 @@ def down_restores_the_proxy_settings_that_were_there_before(harness):
     """Normal teardown. The comparison is against macOS, not against Lyrebird's own account of
     what it did."""
     harness.phase("`down` restores the proxy settings that were there before")
-    assert harness.pac_is_ours(), f"the run was not intercepting before `down`: {harness.pac().describe()}"
+    assert harness.pac_is_ours(), f"the run was not intercepting before `down`: {harness.describe(harness.pac())}"
 
     harness.run("down")
 
-    assert harness.restored(), f"before: {harness.baseline.describe()} · after: {harness.pac().describe()}"
+    assert harness.restored(), (
+        f"before: {harness.describe(harness.baseline)} · after: {harness.describe(harness.pac())}"
+    )
     state = harness.status()
     assert state["proxyUp"] is False, state
     assert state["intercepting"] is False, state
@@ -202,7 +204,7 @@ def the_watchdog_restores_the_settings_when_the_proxy_is_killed(harness):
     """
     harness.phase("the watchdog restores the settings when the proxy is killed")
     harness.up("--no-relaunch", "--use", "fixture-replaced")
-    assert harness.pac_is_ours(), f"the PAC was not installed: {harness.pac().describe()}"
+    assert harness.pac_is_ours(), f"the PAC was not installed: {harness.describe(harness.pac())}"
 
     journal = harness.journal()
     assert isinstance(journal, ownership.SessionRecord), f"no session record after `up`: {journal}"
@@ -217,5 +219,5 @@ def the_watchdog_restores_the_settings_when_the_proxy_is_killed(harness):
 
     assert harness.restored(), (
         f"the proxy was killed and the PAC was still pointing at it {WATCHDOG_WINDOW:g}s later.\n"
-        f"  before: {harness.baseline.describe()}\n  now:    {harness.pac().describe()}"
+        f"  before: {harness.describe(harness.baseline)}\n  now:    {harness.describe(harness.pac())}"
     )

@@ -7,6 +7,7 @@ discharging somebody else's is how a working session loses its watchdog.
 """
 
 import psutil
+import pytest
 
 import api
 import cli
@@ -376,6 +377,60 @@ def test_up_records_the_simulator_only_after_trusting_it(profile, runner, monkey
     assert place.journal() == Absent(), "the acquisition unwound"
 
 
+def _refuse_to_record_a_simulator(monkeypatch):
+    """Fail exactly the write that binds the journal to the trusted device, and no other."""
+    real = session.Session.write
+
+    def write(self, record_):
+        if getattr(record_, "simulator", None) is not None:
+            raise OSError("no space left on device")
+        real(self, record_)
+
+    monkeypatch.setattr(session.Session, "write", write)
+
+
+def test_up_fails_when_the_trusted_simulator_cannot_be_recorded(profile, runner, monkeypatch):
+    """The write that follows a successful trust is not allowed to fail quietly.
+
+    `relaunch` and `status` both read the device from the journal, so a suppressed failure leaves
+    them naming the wrong device — or none — while `up` prints INTERCEPT ACTIVE and exits 0. It is
+    a failure of the postcondition, so a fresh acquisition unwinds on it.
+    """
+    place = _fresh(monkeypatch, profile, services={"Wi-Fi": ("en0", CORPORATE)})
+    _refuse_to_record_a_simulator(monkeypatch)
+
+    result = runner.invoke(cli.cli, ["up"])
+
+    assert result.exit_code == 1
+    assert "trusted simulator could not be recorded" in result.output
+    assert place.journal() == Absent(), "the acquisition unwound"
+    assert place.pac() == CORPORATE, "and the previous settings came back"
+
+
+def test_idempotent_up_keeps_its_record_when_the_simulator_cannot_be_recorded(profile, runner, monkeypatch):
+    """The same write failing over a session this run did not take: it exits 1 saying so, and the
+    record an earlier `up` wrote — device and all — is left exactly as it was."""
+    table = FakePsutil()
+    proxy = table.spawn_ref("proxy", config.CONTROL_PORT)
+    watchdog = table.spawn_ref("watchdog", config.CONTROL_PORT)
+    device_a = ownership.Simulator(udid="PHONE-1", name="iPhone 17 Pro")
+    place = _fresh(
+        monkeypatch,
+        profile,
+        services={"Wi-Fi": ("en0", ours())},
+        journal=record(Active(proxy, watchdog), simulator=device_a),
+        table=table,
+    )
+    _refuse_to_record_a_simulator(monkeypatch)
+
+    result = runner.invoke(cli.cli, ["up"])
+
+    assert result.exit_code == 1
+    assert "trusted simulator could not be recorded" in result.output
+    assert place.journal().simulator == device_a, "an idempotent run discharges nothing"
+    assert place.table.alive(proxy.pid) and place.table.alive(watchdog.pid)
+
+
 def test_up_records_the_resolved_simulator_in_the_journal(profile, runner, monkeypatch):
     """`status` and `relaunch` both read it from there: the question they answer is which device
     *this run* trusted, which a fresh lookup cannot say."""
@@ -388,18 +443,58 @@ def test_up_records_the_resolved_simulator_in_the_journal(profile, runner, monke
 # MARK: - The unwind
 
 
-def test_up_unwinds_when_the_log_or_spawn_fails(profile, runner, monkeypatch):
-    """The first journal write arms the unwind. A `Popen` that raises leaves no process and no PAC
-    change — and the `Acquiring(None)` record it wrote is released rather than left for a `down`
-    that has nothing to do."""
+@pytest.mark.parametrize("fails", ["the log", "the spawn"])
+def test_up_unwinds_when_the_log_or_spawn_fails(profile, runner, monkeypatch, fails):
+    """The first journal write arms the unwind, and it is armed for *both* of the things that
+    happen next.
+
+    `_start_fresh_log` does filesystem IO and `Popen` talks to the kernel; either can raise before
+    anything exists to stop. Each leaves no process and no PAC change, and the `Acquiring(None)`
+    record already on disk is released rather than left for a `down` that has nothing to do.
+    """
     place = _fresh(monkeypatch, profile, services={"Wi-Fi": ("en0", CORPORATE)})
-    spawning_proxy(monkeypatch, place.table, raises=OSError("no such file: mitmdump"))
+    if fails == "the log":
+
+        def cannot_open_the_log():
+            raise OSError("read-only file system")
+
+        monkeypatch.setattr(supervisor, "_start_fresh_log", cannot_open_the_log)
+    else:
+        spawning_proxy(monkeypatch, place.table, raises=OSError("no such file: mitmdump"))
 
     result = runner.invoke(cli.cli, ["up"])
 
     assert result.exit_code == 1
     assert place.journal() == Absent()
     assert place.pac() == CORPORATE, "nothing was installed, so nothing is restored"
+    assert place.table.marked_pid("proxy", config.CONTROL_PORT) is None
+
+
+def test_up_unwinds_when_the_watchdog_cannot_be_spawned(profile, runner, monkeypatch, _no_real_watchdog):
+    """`os.pipe` and `Popen` raise a plain `OSError` — EMFILE, ENOMEM, an interpreter that is not
+    there. Uncaught, it escaped `up` with the PAC installed, a proxy running and no watchdog: the
+    exact state the watchdog exists to prevent, reached by the command that promises it."""
+    place = _fresh(monkeypatch, profile, services={"Wi-Fi": ("en0", CORPORATE)})
+    # The real spawn, so the `OSError` is raised where production raises it.
+    monkeypatch.setattr(supervisor, "_spawn_watchdog", _no_real_watchdog)
+    spawn_proxy = supervisor.subprocess.Popen
+
+    def popen(argv, **kwargs):
+        # Only the watchdog: the proxy has to start, so that what unwinds is a run that had
+        # installed the PAC and had a child to stop.
+        if "_watchdog" in argv:
+            raise OSError("too many open files")
+        return spawn_proxy(argv, **kwargs)
+
+    monkeypatch.setattr(supervisor.subprocess, "Popen", popen)
+
+    result = runner.invoke(cli.cli, ["up"])
+
+    assert result.exit_code == 1
+    assert "watchdog could not be started" in result.output
+    assert place.journal() == Absent(), "the acquisition unwound"
+    assert place.pac() == CORPORATE, "and the PAC it had installed came back off"
+    assert place.table.marked_pid("proxy", config.CONTROL_PORT) is None, "the proxy it started was stopped"
 
 
 def test_up_exits_without_effects_when_its_first_journal_write_fails_before_replace(profile, runner, monkeypatch):
@@ -772,6 +867,34 @@ def test_up_use_selects_through_the_health_reading_it_decided_on(profile, runner
     assert selected == ["orders-outage"]
     assert readings[0] is None and readings[1] is not None, "the first reading found nothing; the second, this run's"
     assert place.journal() is not None
+
+
+def test_up_use_selects_through_the_health_reading_it_decided_on_when_idempotent(profile, runner, monkeypatch):
+    """The idempotent path has only one reading that matters — the one taken before the decision,
+    from the proxy that is already running — and `--use` is answered from it.
+
+    Asserted by making a later reading disagree: a run that went back to the port after deciding
+    would find the scenario whole and relaunch the app against one that is not.
+    """
+    broken = {"orders-outage": ["overrides dropped: 2 failed validation"]}
+    table = FakePsutil()
+    readings = []
+
+    def health(port):
+        readings.append(len(readings))
+        # The first answer is the one `up` decides on; every later one says the scenario is fine.
+        return answering(table.marked_pid("proxy", port), scenariosNotWhole=broken if len(readings) == 1 else {})
+
+    place, _, _ = _idempotent(monkeypatch, profile, table=table, health=FakeHealth(sequence=[health]))
+    selected = []
+    monkeypatch.setattr(api, "_control", lambda *a, **k: selected.append(a) or {"active": "x", "previous": None})
+
+    result = runner.invoke(cli.cli, ["up", "--use", "orders-outage"])
+
+    assert result.exit_code == 1
+    assert "did not load whole" in result.output
+    assert selected == [], "the app was not put in front of a scenario nothing could vouch for"
+    assert isinstance(place.journal().phase, Active), "an idempotent run discharges nothing"
 
 
 def test_up_is_refused_while_the_releasing_watchdog_still_exists_then_succeeds(profile, runner, monkeypatch):

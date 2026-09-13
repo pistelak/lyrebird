@@ -818,16 +818,11 @@ def _account_and_release(
     if port is not None:
         _wait_for_quiet(port)
 
+    # One scan, one decision: an orphan that appeared after the accounting is what `decide_release`
+    # keeps the journal for, and the next `down` stops it. A second stop-and-scan pass here would
+    # be a race this command cannot win, and losing it would release the journal anyway.
     fresh = procs.scan_marked()
-    obs = _observe_release(journal, port, NotObserved(), fresh)
-    extra = _extras(fresh, _excluded_pids(journal, obs.proxy, obs.watchdog))
-    if extra:
-        # One extra pass, not a loop: a scan that finds an orphan stops it and looks once more, and
-        # anything still there after that is what `decide_release` keeps the journal for.
-        _report(_stop_marked(extra))
-        fresh = procs.scan_marked()
-        obs = _observe_release(journal, port, NotObserved(), fresh)
-    release = ownership.decide_release(obs)
+    release = ownership.decide_release(_observe_release(journal, port, NotObserved(), fresh))
     if isinstance(release, ReleaseNow):
         sess.unlink()
         return True, ""
@@ -868,12 +863,12 @@ def _down_portless(
     found_any = found_any or swept_any
     found_any = _report_legacy_records() or found_any
 
+    # One scan, one decision: a marked process that appeared after the sweep is an observation —
+    # it makes this a non-empty `down` — and `decide_release` keeps the record for the next one
+    # rather than this command chasing it.
     fresh = procs.scan_marked()
-    extra = _extras(fresh, set())
-    if extra:
+    if _extras(fresh, set()):
         found_any = True
-        _report(_stop_marked(extra))
-        fresh = procs.scan_marked()
 
     # Built after the last scan, so `found_any` carries every observation this run made — including
     # one that was gone again by the time anything could act on it.
@@ -949,31 +944,24 @@ def _sweep_services(lock_fd: int) -> tuple[ownership.SweepResult | None, list[in
 
 
 def _report_legacy_records() -> bool:
-    """Print what a pre-protocol `runtime-*.json` holds, and count it as a finding.
+    """Name a pre-protocol `runtime-*.json`, and count it as a finding.
 
-    Printed, never imported: a record written before this protocol says nothing about whether its
-    PAC is still installed, and acting on it would restore across a boundary nobody can see — see
-    test_down_absent_exits_1_over_a_legacy_runtime_record.
+    Named, never decoded: a record written before this protocol says nothing about whether its PAC
+    is still installed, so reading its fields out would only lend the old shape an authority this
+    command cannot act on — the upgrade note says to run the previous version's `down` first, and
+    the file is right there to read. See test_down_absent_exits_1_over_a_legacy_runtime_record.
     """
     try:
         legacy = sorted(config.STATE_ROOT.glob("runtime-*.json"))
     except OSError:
         return False
-    found = False
     for path in legacy:
-        found = True
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError, RecursionError):
-            data = {}
-        previous = data.get("previousPac") if isinstance(data, dict) else None
-        service = data.get("service") if isinstance(data, dict) else None
         click.echo(
             f"{ui.YELLOW}a record from an older Lyrebird is still here: {path}{ui.R}\n"
-            f"   service: {service or 'unknown'}   previous PAC: {previous or 'unknown'}\n"
-            f"   it was not imported — put those settings back by hand if they are still wanted, then delete it"
+            f"   it was not imported — read it, put those settings back by hand if they are still "
+            f"wanted, then delete it"
         )
-    return found
+    return bool(legacy)
 
 
 @click.command()
@@ -1314,6 +1302,11 @@ def _acquire(
 
     try:
         spawned.watchdog = _spawn_watchdog(port)
+    except OSError as error:
+        # `os.pipe` and `Popen` raise a plain `OSError` (EMFILE, ENOMEM, a missing interpreter).
+        # Uncaught it escaped `up` with the PAC installed and no watchdog — see
+        # test_up_unwinds_when_the_watchdog_cannot_be_spawned.
+        raise _Unwind(f"the watchdog could not be started ({error})") from None
     except procs.ProcessCheckError as error:
         raise _Unwind(f"the watchdog could not be inspected ({error})") from None
     except WatchdogSpawnFailed as error:
@@ -1369,8 +1362,15 @@ def _up_finish(
             # trust must not leave the session bound to a device without one — see
             # test_up_records_the_simulator_only_after_trusting_it.
             record = dataclasses.replace(journal, simulator=ownership.Simulator(simulator.udid, simulator.name))
-            with contextlib.suppress(OSError, session.Unrepresentable):
+            try:
                 sess.write(record)
+            except (OSError, session.Unrepresentable) as error:
+                # Not suppressed: `relaunch` and `status` read the device from here, so a write
+                # that failed leaves them naming the wrong device — or none — while `up` reports
+                # success. A fresh acquisition unwinds on it; an idempotent one keeps the record it
+                # found and exits 1. See test_up_records_the_simulator_only_after_trusting_it.
+                _red(f"the trusted simulator could not be recorded ({error})")
+                failures.append(f"the trusted simulator could not be recorded ({error})")
         else:
             failures.append(f"CA not trusted in the simulator: {message}")
 
@@ -1937,13 +1937,22 @@ def watchdog_loop(sess: session.Session, port: int, me: Ref) -> None:
     while True:
         with sess.locked(timeout=None) as lock_fd:
             journal = sess.read()
-            health = api.observe_health(port).health
-            watching = isinstance(journal, SessionRecord) and isinstance(journal.phase, Active)
+            # Nothing is observed for a journal this watchdog does not serve. `decide_watchdog`
+            # answers Exit on the record alone, so a tick that read a port, a service and a process
+            # table first would be asking questions about somebody else's session — and asking the
+            # port at all is what made the retirement test need a live control port.
+            watching = (
+                isinstance(journal, SessionRecord)
+                and isinstance(journal.phase, Active)
+                and journal.phase.watchdog == me
+            )
+            health: ownership.Health | NotObserved = NotObserved()
             service: ownership.Service | NotObserved = NotObserved()
             pac: PacClass | NotObserved = NotObserved()
             proxy: Liveness | NotObserved = NotObserved()
             if watching:
                 assert isinstance(journal, SessionRecord) and isinstance(journal.phase, Active)
+                health = api.observe_health(port).health
                 service = _observe_service(journal.service)
                 pac = _observe_pac(service, port, journal.baseline)
                 proxy = procs.liveness(journal.phase.proxy, "proxy", port)

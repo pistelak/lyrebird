@@ -7,6 +7,8 @@ decision.
 """
 
 import os
+import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -125,6 +127,31 @@ def test_decide_watchdog_exits_when_a_reused_pid_answers(profile, monkeypatch):
 
     _run_loop(monkeypatch, place, me, ticks=5)
 
+    assert place.network.setters() == []
+
+
+def test_watchdog_observes_nothing_for_a_record_that_names_another_watchdog(profile, monkeypatch):
+    """A record naming somebody else's watchdog is decided on the record alone.
+
+    Not merely "it does not act": it must not *look* either. Reading the control port, the network
+    service, the PAC and the process table for a session this process does not serve costs a
+    `networksetup` call per tick on a machine whose session belongs to another run — and it is what
+    made a retiring watchdog reach for a real control port with nothing stubbed behind it.
+    """
+    table = FakePsutil()
+    place, _, me = _watching(monkeypatch, table=table)
+    journal = place.journal()
+    # The same live session, watched by a process this one is not.
+    place.session.write(record(Active(journal.phase.proxy, Ref(pid=99_999, create_time=1.0)), baseline=EMPTY))
+    health = FakeHealth(sequence=[SILENT]).install(monkeypatch)
+    reads = len(place.network.calls)
+    constructions = len(table.constructed)
+
+    _run_loop(monkeypatch, place, me, ticks=5)
+
+    assert health.asked == [], "the port was never asked who holds it"
+    assert len(place.network.calls) == reads, "and `networksetup` was never run"
+    assert len(table.constructed) == constructions, "nor was any process inspected"
     assert place.network.setters() == []
 
 
@@ -465,29 +492,50 @@ def _isolated(root, *argv):
     return [sys.executable, str(Path(__file__).parent / "isolated_cli.py"), str(root), *argv]
 
 
+def _closed_port():
+    """A port nothing listens on, so a child that did ask for health would get a refusal rather
+    than a contributor's own proxy."""
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
 def test_the_watchdog_child_reports_its_own_ref_and_dies_to_sigterm(profile, tmp_path, _no_real_watchdog):
-    """The readiness line is parsed by the production parser from the production sender, and the
-    child holds nothing once it is asked to stop: it blocks on the lock this test holds, and a
-    SIGTERM there must leave the lock free."""
+    """The readiness line is parsed by the production parser from the production sender, and a
+    child blocked on the lock holds nothing once it is asked to stop.
+
+    The lock is held by this test for the whole of it — spawn, readiness, signal — so the child is
+    demonstrably *blocked on the lock* rather than having run a tick and exited on its own: a
+    child that had already returned would pass the "the lock is free" assertion for the wrong
+    reason. It is signalled where it waits, and the SIGTERM exit status is what says so. The port
+    it is given is closed and this is a real process with nothing stubbed in it, which is why the
+    loop must decide Exit on an absent journal before it asks any port anything.
+    """
     root = tmp_path / "real-session"
     root.mkdir()
     store = session.Session(root)
+    port = _closed_port()
     read_fd, write_fd = os.pipe()
-    child = subprocess.Popen(
-        _isolated(root, "_watchdog", "--control-port", "8099", "--ready-fd", str(write_fd)),
-        pass_fds=(write_fd,),
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    os.close(write_fd)
-    try:
-        reported = supervisor._read_ready_line(read_fd, timeout=20.0)
-        assert reported is not None and reported.pid == child.pid
-        assert isinstance(reported, Ref) and reported.create_time > 0
-    finally:
-        os.close(read_fd)
-        child.terminate()
-        child.wait(10)
+    with store.locked(timeout=5.0):
+        child = subprocess.Popen(
+            _isolated(root, "_watchdog", "--control-port", str(port), "--ready-fd", str(write_fd)),
+            pass_fds=(write_fd,),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        os.close(write_fd)
+        try:
+            reported = supervisor._read_ready_line(read_fd, timeout=20.0)
+            assert reported is not None and reported.pid == child.pid
+            assert isinstance(reported, Ref) and reported.create_time > 0
+            # Readiness is written before the first lock attempt, so by now it is waiting on the
+            # lock this test still holds — and it is still there to be signalled.
+            assert child.poll() is None
+        finally:
+            os.close(read_fd)
+            child.terminate()
+            child.wait(10)
 
+    assert child.returncode == -signal.SIGTERM, "it died where it waited, rather than exiting on its own"
     with store.locked(timeout=5.0):
         pass  # the lock is free: the child held nothing it did not release

@@ -171,16 +171,21 @@ finalizer runs and the report is still printed. It then reads the PAC back from
 `networksetup` and fails if the settings are not the ones recorded before anything started, so a
 restore that did not happen cannot pass unnoticed. (With no PAC URL configured to begin with,
 "restored" means *disabled*: macOS rejects an empty PAC URL, so `down` can only switch ours off and
-the URL stays in the field — the same thing an ordinary `lyrebird down` leaves behind.) If `down`
-did not restore them, the harness kills the proxy this run started — after `ps` confirms the pid is
-still that process — gives the watchdog its window, and failing that, restores them itself only over
-a journal carrying this run's own owner in an `Active` or `Acquiring` phase, and only after proving
-the watchdog stopped, re-reading the PAC and deciding on it with the same rules as `down`, then
-checkpointing `Restored`; over anything else — no journal, another owner's, an unreadable or
-owner-less one, a terminal checkpoint, or a PAC it may not touch — it writes nothing and prints what
-remains and `lyrebird down` for you to run knowingly; and it still fails, saying so, because a
-cleanup that depends on the command it is checking is not a cleanup. The fixture app is uninstalled
-and a simulator this run booted is shut down again, both checked rather than assumed.
+the URL stays in the field — the same thing an ordinary `lyrebird down` leaves behind.)
+
+**The harness never writes the PAC itself.** If `down` did not restore the settings, that is the
+finding: it fails, names what it read and what it wanted, and tells you to run `lyrebird down` — or,
+if even that will not do it, the manual `networksetup` line in
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md#the-proxy-is-gone-but-the-network-still-points-at-it). A
+second implementation of the restore, living in the check, could only ever write over a PAC it had
+already decided was somebody else's, and the promise it was there for — cleanup even when the
+executor is broken — is one a *check* is allowed to refuse. What the harness still does on its own
+is verify (it reads macOS by device, not by service name) and stop the proxies *this run* started,
+which it finds by their marked argv and this run's own state directory, signals only through the
+identity captured when it found them, and skips entirely unless the journal is absent or carries
+this run's owner. A journal that is still there at the end is reported with `lyrebird down`,
+never quietly removed. The fixture app is uninstalled and a simulator this run booted is shut down
+again, both checked rather than assumed.
 
 Only the *first* signal acts. Everything after it is teardown — restoring the network,
 uninstalling the app, shutting the simulator down — and a second signal in the middle of that

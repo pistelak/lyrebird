@@ -730,7 +730,9 @@ class WatchdogObs:
     me: Ref
     service: Service | NotObserved
     pac: PacClass | NotObserved
-    health: Health
+    # `NotObserved` for a journal this watchdog does not serve: that row decides on the record
+    # alone, and a tick that read the port first would be asking about somebody else's session.
+    health: Health | NotObserved
     proxy: Liveness | NotObserved
 
 
@@ -1057,6 +1059,10 @@ def decide_watchdog(obs: WatchdogObs) -> Decision:
         # an obligation somebody else holds — see test_decide_watchdog_is_total_and_safe.
         return Exit()
     health = obs.health
+    if isinstance(health, NotObserved):
+        # This row consults the port; an executor that skipped the reading cannot be allowed to
+        # pass as "silent" and restore — see test_decide_watchdog_preserves_when_health_is_not_observed.
+        return Preserve(f"port {journal.owner.control_port} was not asked who holds it")
     if isinstance(health, Answering):
         if health.pid != phase.proxy.pid:
             return Exit()

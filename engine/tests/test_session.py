@@ -170,6 +170,26 @@ def test_ensure_root_syncs_parents_it_did_not_create(subject, fsynced):
     assert wanted <= {inode for is_dir, inode in fsynced if is_dir}
 
 
+def test_first_use_directories_are_synced(subject, fsynced):
+    """`archive/` is created the first time something is archived, and the entry that *names* it
+    lives in the root — so the root has to reach the disk too, not only the new directory.
+
+    An archive is the last copy of a baseline the session has given up on: published into a
+    directory whose own name was never synced, a crash takes the directory and the file with it,
+    and `down` has already reported the obligation discharged.
+    """
+    subject.ensure_root()
+    assert not subject.archive_dir.exists()
+    fsynced.clear()
+
+    path = subject.archive("20260912T101500Z", "unreadable", b"{}")
+
+    directories = {inode for is_dir, inode in fsynced if is_dir}
+    assert subject.root.stat().st_ino in directories, "the entry naming archive/ is durable"
+    assert subject.archive_dir.stat().st_ino in directories, "and so is the one naming the file"
+    assert path.is_file()
+
+
 def test_ensure_root_creates_the_root_privately(subject):
     subject.ensure_root()
     assert stat.S_IMODE(subject.root.stat().st_mode) == 0o700

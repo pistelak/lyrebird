@@ -397,6 +397,186 @@ def holding(journal):
     return None
 
 
+# MARK: - The properties the exhaustive tests hold every cell to
+#
+# A product over the observation space that only checked "it answered *something*" passes with a
+# table full of the wrong answers: the bug this design exists to prevent is one cell acting where
+# another should have refused, and every cell answers. So each cell below is held to the set of
+# decisions its row is *allowed* to reach — usually one — derived from plan-v6's rows rather than
+# from the implementation, and injecting a wrong decision (a `Restore` where a foreign PAC must
+# only be left alone, say) fails the run rather than passing it.
+
+
+def unowned(pac):
+    return pac if isinstance(pac, own.UnownedClass) else None
+
+
+def owned(pac):
+    return pac if isinstance(pac, own.PacClass) else None
+
+
+def unproven(*values):
+    """A liveness this row consults that is not proof of anything."""
+    return any(value is own.Liveness.UNKNOWN or isinstance(value, own.NotObserved) for value in values)
+
+
+def answering_is(health, ref, liveness):
+    """The recorded process is what answered: the pid matches *and* the ref is provably alive. A
+    pid is a number the kernel hands out again; on its own it identifies nobody."""
+    return (
+        isinstance(health, own.Answering)
+        and ref is not None
+        and health.pid == ref.pid
+        and liveness is own.Liveness.ALIVE
+    )
+
+
+def allowed_up(journal, requested, route, pac, health, proxy, watchdog, scan):
+    """What `decide_up` may answer for this cell."""
+    if not isinstance(journal, own.Absent):
+        active_and_ours = (
+            isinstance(journal, own.SessionRecord)
+            and isinstance(journal.phase, own.Active)
+            and journal.owner == requested
+        )
+        if not active_and_ours:
+            # Every other journal — unreadable, archived, acquiring, restored, somebody else's
+            # active session — is refused on the record alone.
+            return {own.Refuse}
+        if isinstance(health, own.Answering) and health.journal_error is not None:
+            return {own.Preserve}
+        if unproven(proxy, watchdog):
+            return {own.Preserve}
+        if isinstance(route, own.NoRoute) or not isinstance(route, own.On):
+            return {own.Preserve}  # including RouteFailed, RouteAmbiguous and NotObserved
+        if route.service.device != journal.service.device:
+            return {own.Refuse}  # a moved route, whatever the PAC says
+        if not answering_is(health, journal.phase.proxy, proxy) or watchdog is not own.Liveness.ALIVE:
+            return {own.Refuse}
+        if isinstance(health, own.Answering) and health.fingerprint not in (
+            None,
+            journal.owner.profile_fingerprint,
+        ):
+            return {own.Refuse}
+        cls = owned(pac)
+        if cls is None or cls is own.PacClass.UNREADABLE:
+            return {own.Preserve}
+        return {
+            own.PacClass.OURS_ENABLED: {own.Idempotent},
+            own.PacClass.OURS_DISABLED: {own.RepairOwnPac},
+        }.get(cls, {own.Refuse})
+    # No journal: the acquisition row.
+    if isinstance(scan, own.Incomplete) or scan.found:
+        return {own.Refuse}
+    if isinstance(route, own.NoRoute):
+        return {own.Refuse}
+    if not isinstance(route, own.On):
+        return {own.Preserve}
+    cls = unowned(pac)
+    if cls is None or cls is own.UnownedClass.UNREADABLE:
+        return {own.Preserve}
+    if cls is own.UnownedClass.LYREBIRD_ENABLED:
+        return {own.Refuse}
+    return {own.Proceed}
+
+
+def allowed_down(journal, service, pac, health, proxy, watchdog, scan):
+    """What `decide_down` may answer for this cell."""
+    if isinstance(journal, own.Unreadable):
+        return {own.Archive}
+    portless = isinstance(journal, own.Absent) or (
+        isinstance(journal, own.Archived) and isinstance(journal.context, own.Unknown)
+    )
+    if portless:
+        return {own.Preserve} if isinstance(scan, own.Incomplete) else {own.Sweep}
+    terminal = isinstance(journal, own.Archived) or (
+        isinstance(journal, own.SessionRecord) and isinstance(journal.phase, own.Restored)
+    )
+    if terminal:
+        return {own.AlreadyRestored}  # accounting only: no PAC is read and none is written
+    if isinstance(journal.phase, own.Acquiring) and journal.phase.proxy is None:
+        return {own.Preserve} if isinstance(scan, own.Incomplete) else {own.Proceed}
+    # Active / Acquiring(ref): the rows that hold an obligation.
+    named = journal.phase.proxy
+    other = watchdog if isinstance(journal.phase, own.Active) else own.Liveness.PROVEN_DEAD
+    if unproven(proxy, other):
+        return {own.Preserve}
+    if not isinstance(service, own.Present):
+        return {own.Archive} if isinstance(service, own.Gone) else {own.Preserve}
+    cls = owned(pac)
+    if cls is None or cls is own.PacClass.UNREADABLE:
+        return {own.Preserve}
+    if cls is own.PacClass.FOREIGN:
+        return {own.Archive}  # displaced, and before any refusal about who answers
+    if isinstance(health, own.NotObserved):
+        return {own.Preserve}
+    if isinstance(health, own.Answering) and not answering_is(health, named, proxy):
+        return {own.Refuse}
+    target = own.restore_target(journal.baseline)
+    if cls in (own.PacClass.OURS_ENABLED, own.PacClass.RESUMABLE):
+        return {own.Restore}
+    if cls is own.PacClass.OURS_DISABLED and isinstance(target, own.Configured):
+        return {own.Restore}
+    return {own.AlreadyRestored} if own.satisfies(cls, target) else {own.Preserve}
+
+
+def allowed_watchdog(journal, me, service, pac, health, proxy):
+    """What `decide_watchdog` may answer for this cell."""
+    if not isinstance(journal, own.SessionRecord) or not isinstance(journal.phase, own.Active):
+        return {own.Exit}
+    if journal.phase.watchdog != me:
+        return {own.Exit}
+    if isinstance(health, own.NotObserved):
+        return {own.Preserve}
+    if isinstance(health, own.Answering):
+        if health.pid != journal.phase.proxy.pid:
+            return {own.Exit}
+        if unproven(proxy):
+            return {own.Preserve}
+        if proxy is own.Liveness.PROVEN_DEAD:
+            return {own.Exit}  # the number was reused by whatever answers now
+        if not isinstance(service, own.Present):
+            return {own.Preserve}
+        cls = owned(pac)
+        if cls is None or cls is own.PacClass.UNREADABLE:
+            return {own.Preserve}
+        return {own.RepairOwnPac} if cls is own.PacClass.OURS_DISABLED else {own.Proceed}
+    # Silent. This row does not consult the proxy's liveness at all: whatever it says, the Mac must
+    # not stay routed at a port nothing answers on.
+    if not isinstance(service, own.Present):
+        return {own.Preserve}
+    cls = owned(pac)
+    if cls is None or cls is own.PacClass.UNREADABLE:
+        return {own.Preserve}
+    return {own.Proceed} if cls is own.PacClass.FOREIGN else {own.Restore}
+
+
+def allowed_release(journal, proxy, watchdog, health, sweep, scan):
+    """What `decide_release` may answer for this cell. `ReleaseNow` only from a journal after which
+    no PAC obligation is open, with every ref it names proven dead and the port fact that row owns
+    holding."""
+    keep = {own.KeepJournal}
+    if isinstance(journal, own.Unreadable):
+        return keep
+    if isinstance(scan, own.Incomplete) or scan.found:
+        return keep
+    if isinstance(journal, own.SessionRecord):
+        phase = journal.phase
+        if isinstance(phase, own.Active):
+            return keep
+        if isinstance(phase, own.Acquiring) and phase.proxy is not None:
+            return keep
+        named = phase.proxy if isinstance(phase, own.Restored) else None
+    elif isinstance(journal, own.Archived) and isinstance(journal.context, own.Known):
+        named = journal.context.proxy
+    else:
+        # Absent, or an archive that names nobody: no port to ask, so the sweep is the fact.
+        return {own.ReleaseNow} if sweep in (own.SweepClean(False), own.SweepClean(True)) else keep
+    if named is not None and proxy is not own.Liveness.PROVEN_DEAD:
+        return keep
+    return {own.ReleaseNow} if isinstance(health, own.Silent) else keep
+
+
 def test_decide_up_is_total_and_safe():
     """Every cell answers, and no cell acts on the PAC while something it consults is unknown."""
     cells = 0
@@ -416,6 +596,8 @@ def test_decide_up_is_total_and_safe():
         decision = own.decide_up(obs)
         cells += 1
         assert isinstance(decision, _DECISIONS)
+        expected = allowed_up(journal, requested, route, pac, health, proxy, watchdog, scan)
+        assert type(decision) in expected, (obs, decision, expected)
         assert decision == own.decide_up(obs), "the same observation must always decide the same way"
         if isinstance(decision, (own.Refuse, own.Preserve)):
             assert decision.reason
@@ -515,6 +697,8 @@ def test_decide_down_is_total_and_safe():
         decision = own.decide_down(obs)
         cells += 1
         assert isinstance(decision, _DECISIONS)
+        expected = allowed_down(journal, service, pac, health, proxy, watchdog, scan)
+        assert type(decision) in expected, (obs, decision, expected)
         assert decision == own.decide_down(obs)
         if isinstance(journal, own.Unreadable):
             # Whatever else was observed: the bytes are preserved and the record replaced.
@@ -615,7 +799,7 @@ def test_decide_watchdog_is_total_and_safe():
         JOURNALS,
         SERVICES,
         [*own.PacClass, own.NotObserved()],
-        HEALTHS,
+        HEALTHS + [own.NotObserved()],
         LIVENESSES,
         (WATCHDOG, STRANGER),
     ):
@@ -623,6 +807,8 @@ def test_decide_watchdog_is_total_and_safe():
         decision = own.decide_watchdog(obs)
         cells += 1
         assert isinstance(decision, _DECISIONS)
+        expected = allowed_watchdog(journal, me, service, pac, health, proxy)
+        assert type(decision) in expected, (obs, decision, expected)
         assert decision == own.decide_watchdog(obs)
         active = isinstance(journal, own.SessionRecord) and isinstance(journal.phase, own.Active)
         if not active or journal.phase.watchdog != me:
@@ -674,6 +860,28 @@ def test_decide_watchdog_exits_when_a_reused_pid_answers():
     assert isinstance(decision, own.Exit)
 
 
+def test_decide_watchdog_preserves_when_health_is_not_observed():
+    """The `Active`-naming-me rows consult the port, and an executor that skipped the reading must
+    not have its omission read as silence.
+
+    The loop observes nothing at all for a record it does not serve — that row decides on the
+    journal alone — so `NotObserved` reaching here means the reading was forgotten, and the silent
+    row would otherwise *restore* on it.
+    """
+    decision = own.decide_watchdog(
+        own.WatchdogObs(
+            journal=record(own.Active(PROXY, WATCHDOG)),
+            me=WATCHDOG,
+            service=own.Present("Wi-Fi"),
+            pac=own.PacClass.OURS_ENABLED,
+            health=own.NotObserved(),
+            proxy=own.Liveness.ALIVE,
+        )
+    )
+    assert isinstance(decision, own.Preserve)
+    assert str(PORT) in decision.reason
+
+
 def test_decide_watchdog_keeps_ticking_when_the_service_is_gone():
     """A service that is gone is a temporary condition to a watchdog; only `down` archives."""
     decision = own.decide_watchdog(
@@ -705,6 +913,8 @@ def test_decide_release_is_total_and_only_releases_a_closed_session():
         decision = own.decide_release(obs)
         cells += 1
         assert isinstance(decision, (own.ReleaseNow, own.KeepJournal))
+        expected = allowed_release(journal, proxy, watchdog, health, sweep, scan)
+        assert type(decision) in expected, (obs, decision, expected)
         assert decision == own.decide_release(obs)
         if isinstance(decision, own.KeepJournal):
             assert decision.reason

@@ -121,22 +121,75 @@ def test_inspect_reads_a_marked_process_with_another_create_time_as_unknown(monk
     assert procs.liveness(REF, "proxy", PORT) is Liveness.UNKNOWN
 
 
-@pytest.mark.parametrize(
-    "call", ["construct", "status", "create_time", "cmdline"], ids=["Process()", "status", "create_time", "cmdline"]
-)
-@pytest.mark.parametrize(
+_UNMAPPED = pytest.mark.parametrize(
     "error",
     [psutil.AccessDenied(101), OSError(errno.ENOMEM, "Cannot allocate memory")],
     ids=["access denied", "a plain OSError"],
 )
+
+
+@pytest.mark.parametrize(
+    "call", ["construct", "status", "create_time", "cmdline"], ids=["Process()", "status", "create_time", "cmdline"]
+)
+@_UNMAPPED
 def test_procs_normalises_plain_oserror_at_every_entry(monkeypatch, call, error):
     """psutil's macOS layer raises a bare `OSError` for syscall failures its wrapper does not
-    translate. Anything escaping this module kills the watchdog tick that met it, and the Mac stays
-    routed at a proxy nobody is watching."""
+    translate, from *any* call. Anything escaping this module kills the watchdog tick that met it,
+    and the Mac stays routed at a proxy nobody is watching.
+
+    Every entry point, over every inspection call: a reading is `UNKNOWN`, and everything that
+    would signal raises `ProcessCheckError` — never `NOT_RUNNING`, which is what `down` prints
+    "stopped" on.
+    """
     table(monkeypatch, {REF.pid: proxy(errors={call: error})})
     assert procs.liveness(REF, "proxy", PORT) is Liveness.UNKNOWN
+    for act in (procs.terminate, procs.kill_now):
+        with pytest.raises(ProcessCheckError):
+            act(REF, "proxy", PORT)
+    if call != "cmdline":  # `ref_of` needs the status and the create time, and reads no argv
+        with pytest.raises(ProcessCheckError):
+            procs.ref_of(REF.pid)
+
+
+@_UNMAPPED
+def test_self_ref_raises_rather_than_inventing_this_processs_identity(monkeypatch, error):
+    """The watchdog's `me` is what every later "is this record mine?" is decided against. A `Ref`
+    minted when the read failed would name a pid and a create time nothing established, and a
+    watchdog comparing itself against it would retire — or fail to."""
+    table(monkeypatch, {os.getpid(): proxy(errors={"create_time": error})})
     with pytest.raises(ProcessCheckError):
-        procs.terminate(REF, "proxy", PORT)
+        procs.self_ref()
+
+
+@_UNMAPPED
+@pytest.mark.parametrize("stage", ["SIGTERM", "the wait after SIGTERM", "SIGKILL", "the wait after SIGKILL"])
+def test_terminate_raises_at_every_signal_and_wait_stage_it_cannot_complete(monkeypatch, error, stage):
+    """The signal stages too, not just the inspection. `terminate()`, `kill()` and both `wait()`s
+    are syscalls that fail the same way, and each of the four is reached only by getting past the
+    one before it. A refusal read as "it is gone" would let `down` release the journal of a proxy
+    that is still holding the port.
+    """
+    timed_out = psutil.TimeoutExpired(1)
+    spec = {
+        # Each entry is the first thing that fails on the way through `terminate`.
+        "SIGTERM": proxy(errors={"terminate": error}),
+        "the wait after SIGTERM": proxy(waits=[error]),
+        "SIGKILL": proxy(errors={"kill": error}, waits=[timed_out]),
+        "the wait after SIGKILL": proxy(waits=[timed_out, error]),
+    }[stage]
+    table(monkeypatch, {REF.pid: spec})
+    with pytest.raises(ProcessCheckError):
+        procs.terminate(REF, "proxy", PORT, term_wait=0.01, kill_wait=0.01)
+
+
+@_UNMAPPED
+def test_scan_is_incomplete_when_a_same_uid_pid_cannot_be_read(monkeypatch, error):
+    """A gap in the scan is a claim about the scan. Read as "nothing found", an unreadable pid of
+    this user would let `up` acquire over a session that is still running."""
+    fake = table(monkeypatch, {REF.pid: proxy(errors={"uids": error})})
+    assert isinstance(procs.scan_marked(), Incomplete)
+    fake.pids_error = error
+    assert isinstance(procs.scan_marked(), Incomplete), "and so is an enumeration that never began"
 
 
 def test_ref_of_reads_a_live_process(monkeypatch):

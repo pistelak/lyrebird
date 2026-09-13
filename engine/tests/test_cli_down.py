@@ -11,6 +11,7 @@ import json
 import os
 import pathlib
 import socket
+import threading
 
 import psutil
 import pytest
@@ -647,18 +648,24 @@ def test_down_absent_exits_1_when_an_observed_pac_was_disabled_before_it_could_s
     assert place.network.setters() == [], "there was nothing left to switch off"
 
 
-def test_down_absent_exits_1_when_the_release_scan_finds_a_late_orphan(profile, runner, monkeypatch):
-    """A marked process that appears between the first scan and the release scan is still
-    something that was found."""
+def test_down_absent_reports_a_late_orphan_and_leaves_it_to_the_next_down(profile, runner, monkeypatch):
+    """A marked process that appears between the first scan and the release scan is something that
+    was found — so exit 1 — and it is *reported*, not chased.
+
+    There is no second stop-and-scan pass: a process that appeared after the accounting can appear
+    again after the pass that stopped it, and a command that kept trying would either loop or
+    release the record anyway. `decide_release` keeps what it saw for the next `down`.
+    """
     table = FakePsutil()
     world(monkeypatch, None, table=table)
     real_scan = procs.scan_marked
     calls = {"n": 0}
+    late = {"pid": None}
 
     def scan(*, exclude=None):
         calls["n"] += 1
         if calls["n"] == 2:
-            table.spawn("proxy", 9099)
+            late["pid"] = table.spawn("proxy", 9099)
         return real_scan(exclude=exclude)
 
     monkeypatch.setattr(procs, "scan_marked", scan)
@@ -666,12 +673,16 @@ def test_down_absent_exits_1_when_the_release_scan_finds_a_late_orphan(profile, 
     result = runner.invoke(cli.cli, ["down"])
 
     assert result.exit_code == 1
+    assert table.alive(late["pid"]), "the orphan this run only observed is left for the next `down`"
+    assert table.signalled == []
+    assert "still running" in result.output
 
 
 def test_down_absent_exits_1_over_a_legacy_runtime_record(profile, runner, monkeypatch):
     """A `runtime-*.json` from before this protocol is unresolved recovery evidence: it says a PAC
-    may still be installed and names what was there before. It is printed for the human and never
-    imported — acting on it would restore across a boundary nobody can see."""
+    may still be installed. The path is named and counted as a finding; its contents are not
+    decoded, because a record written before this protocol can be neither trusted nor acted on and
+    the file is right there for a person to read."""
     place = world(monkeypatch, None)
     config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
     (config.STATE_ROOT / "runtime-8088.json").write_text(
@@ -681,10 +692,9 @@ def test_down_absent_exits_1_over_a_legacy_runtime_record(profile, runner, monke
 
     result = runner.invoke(cli.cli, ["down"])
 
-    assert result.exit_code == 1
+    assert result.exit_code == 1, "an unresolved pre-protocol record is a finding, not a clean machine"
     assert "runtime-8088.json" in result.output
-    assert CORPORATE.url in result.output
-    assert place.network.setters() == [], "a record from an older Lyrebird is read to the operator, not acted on"
+    assert place.network.setters() == [], "a record from an older Lyrebird is named to the operator, not acted on"
 
 
 def test_down_sweep_keeps_the_archive_when_a_service_cannot_be_read(profile, runner, monkeypatch):
@@ -763,35 +773,100 @@ def _free_port():
         return probe.getsockname()[1]
 
 
+class _RealControlServer:
+    """A real control server on one port, in a thread, so a synchronous `down` can talk to it.
+
+    The server binds `config.CONTROL_PORT` as it is when the thread starts; the test then points
+    that global at the *other* port, which is what an invocation carrying another
+    `LYREBIRD_CONTROL_PORT` looks like. `CONTROL_HOST_HEADER` stays this server's, because in
+    production the guard runs inside the proxy process and that process's own header is the one it
+    allows — see `control._allowed_hosts`.
+    """
+
+    def __init__(self, port):
+        self.port = port
+        self.ready = threading.Event()
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+
+    def _serve(self):
+        async def main():
+            runner_ = await control.start(store.Store(), _meta_for(self.port))
+            self.ready.set()
+            while not self._stop.is_set():
+                await asyncio.sleep(0.05)
+            await runner_.cleanup()
+
+        asyncio.run(main())
+
+    def __enter__(self):
+        self._thread.start()
+        assert self.ready.wait(10), "the control server did not start"
+        return self
+
+    def __exit__(self, *_):
+        self._stop.set()
+        self._thread.join(10)
+
+
 def test_down_from_another_control_port_reaches_the_journals_proxy(
     profile, runner, monkeypatch, _no_real_control_transport
 ):
-    """`down` needs no port of its own: it asks the journal's. Read through the configured origin
-    instead — and through the configured `Host`, which the control guard answers 421 to — a `down`
-    invoked with another `LYREBIRD_CONTROL_PORT` reported the live proxy as gone and swept its PAC.
+    """`down` needs no port of its own: it asks the journal's.
+
+    Read through the configured origin instead — or through the configured `Host`, which the
+    control guard answers 421 to — a `down` invoked with another `LYREBIRD_CONTROL_PORT` reported
+    a live proxy as gone and swept its PAC. So this drives the whole command over the real
+    transport against a real control server on the journal's port, with the configured port a
+    closed one, and asserts both the request that was sent and the answer it produced: a stranger
+    answering on the journal's port is a refusal that names it, where a `down` that had asked the
+    configured port would have found silence and restored.
     """
-    monkeypatch.setattr(api, "_open", _no_real_control_transport)
-    journal_port = _free_port()
-    monkeypatch.setattr(config, "CONTROL_PORT", _free_port())
-    monkeypatch.setattr(config, "CONTROL_HOST_HEADER", f"127.0.0.1:{config.CONTROL_PORT}")
+    journal_port, configured = _free_port(), _free_port()
     (profile / "profile.json").write_text('{"hosts": ["api.example.com"]}', encoding="utf-8")
     config.reload_profile()
-    monkeypatch.setattr(control, "PORT", journal_port, raising=False)
-
-    async def main():
-        subject = store.Store()
-        runner_ = await control.start(subject, _meta_for(journal_port))
-        try:
-            return await asyncio.get_running_loop().run_in_executor(None, lambda: api.observe_health(journal_port))
-        finally:
-            await runner_.cleanup()
-
     monkeypatch.setattr(config, "CONTROL_PORT", journal_port)
     monkeypatch.setattr(config, "CONTROL_HOST_HEADER", f"127.0.0.1:{journal_port}")
-    reading = asyncio.run(main())
 
-    assert isinstance(reading.health, ownership.Answering)
-    assert reading.health.pid == os.getpid(), "the journal's port answered, with its own pid"
+    table = FakePsutil()
+    # A recorded proxy that is provably gone, so what answers on that port is a stranger.
+    proxy = table.spawn_ref("proxy", journal_port)
+    watchdog = table.spawn_ref("watchdog", journal_port)
+    table.processes[proxy.pid].gone = True
+    journal = record(
+        Active(proxy, watchdog),
+        baseline=CORPORATE,
+        owned_by=ownership.Owner(
+            control_port=journal_port,
+            profile_fingerprint=config.PROFILE_FINGERPRINT,
+            state_root=str(config.STATE_ROOT),
+        ),
+    )
+    real_fetch = api._fetch
+    place = world(monkeypatch, journal, services={"Wi-Fi": ("en0", ours(journal_port))}, table=table)
+    monkeypatch.setattr(api, "_fetch", real_fetch)  # the real transport, not the suite's double
+
+    asked = []
+
+    def recording(request, timeout):
+        asked.append((request.full_url, request.get_header("Host")))
+        return _no_real_control_transport(request, timeout)
+
+    monkeypatch.setattr(api, "_open", recording)
+
+    with _RealControlServer(journal_port):
+        # Only now: the server is bound, and this is the port the invocation was given.
+        monkeypatch.setattr(config, "CONTROL_PORT", configured)
+        result = runner.invoke(cli.cli, ["down"])
+
+    assert result.exit_code == 1
+    assert str(journal_port) in result.output and str(os.getpid()) in result.output
+    assert place.pac() == ours(journal_port), "a port that answers keeps its PAC"
+    assert isinstance(place.journal().phase, Active), "and its journal"
+    assert asked, "the transport was used"
+    for url, host in asked:
+        assert f":{journal_port}/" in url and host == f"127.0.0.1:{journal_port}", (url, host)
+        assert str(configured) not in url
 
 
 async def _meta(  # noqa: D401 - the shape `control.start` expects
