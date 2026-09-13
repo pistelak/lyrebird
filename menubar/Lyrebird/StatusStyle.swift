@@ -6,7 +6,7 @@ extension AppModel.Status {
     /// there, and the dot says it is not usable.
     var symbolName: String {
         switch self {
-        case .intercepting, .pacDisabled, .foreignProfile, .unreadable: return "bird.fill"
+        case .intercepting, .pacDisabled, .pacUnobserved, .foreignProfile, .unreadable: return "bird.fill"
         case .down, .profileUnknown: return "bird"
         }
     }
@@ -16,6 +16,7 @@ extension AppModel.Status {
         switch self {
         case .intercepting: return "intercepting"
         case .pacDisabled: return "not intercepting"
+        case .pacUnobserved: return "PAC unread"
         case .down: return "stopped"
         case .foreignProfile: return "another profile"
         case .unreadable: return "unreadable"
@@ -29,7 +30,7 @@ extension AppModel.Status {
         case .intercepting: return .systemGreen
         // Up, and not intercepting for this profile — the same thing to the user as a disabled
         // PAC, whatever the reason behind it.
-        case .pacDisabled, .foreignProfile, .unreadable: return .systemOrange
+        case .pacDisabled, .pacUnobserved, .foreignProfile, .unreadable: return .systemOrange
         case .down, .profileUnknown: return nil
         }
     }

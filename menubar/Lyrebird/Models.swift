@@ -6,9 +6,10 @@ struct Health: Codable, Sendable, Equatable {
     var overrideCount: Int?
     var proxyUp: Bool?
     var intercepting: Bool?
-    /// The control port the proxy is listening on, named in the window's "another profile holds it"
-    /// line so the reader knows which port to run `lyrebird down` against.
-    var proxyPort: Int?
+    /// Why `intercepting` is false without the PAC having been seen disabled: `networksetup` failed
+    /// or timed out, or the default route moved. Present, it makes `intercepting` an unknown, not a
+    /// fact — see `ProfileScopingTests`.
+    var pacError: String?
     /// Comes from the active profile, so the app never carries a default app identifier of its own.
     var simBundleId: String?
     /// Which profile the answering proxy is running. The app never computes this — it is

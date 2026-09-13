@@ -12,23 +12,28 @@ extension AppTests {
                 let controller = RulesWindowController(model: model, restore: false)
                 let toolbar = try #require(controller.window?.toolbar)
                 let item = try #require(toolbar.items.first { $0.itemIdentifier.rawValue == "interception" })
-                let menu = NSMenuItem(
-                    title: "", action: #selector(RulesWindowController.toggleInterception(_:)), keyEquivalent: "")
                 for intercepting in [false, true, false] {
                     model.healthRead = .up(
                         Health(proxyUp: true, intercepting: intercepting, profileFingerprint: "toolbar"))
                     controller.render()
                     #expect(item.label == (intercepting ? "Stop interception" : "Start interception"))
                     #expect(item.isEnabled)
-                    #expect(controller.validateMenuItem(menu))
-                    #expect(menu.title == (intercepting ? "Stop Interception" : "Start Interception"))
                     model.busy = true
                     controller.render()
                     #expect(!item.isEnabled)
-                    #expect(!controller.validateMenuItem(menu))
                     model.busy = false
                 }
             }
+        }
+
+        @Test func theFileMenuCarriesNoInterceptionItem() throws {
+            // Its only responder was the browser's controller, so with no browser window key the
+            // item sat greyed out under a stale "Start Interception" title. The status menu and the
+            // toolbar carry the command; the selection-bound Activate stays where the browser answers.
+            let file = try #require(AppDelegate().makeMainMenu().item(withTitle: "File")?.submenu)
+
+            #expect(!file.items.contains { $0.title.contains("Interception") })
+            #expect(file.items.contains { $0.title == "Activate Scenario" })
         }
 
         @Test func reloadToolbarItemDisablesWhileItsRequestIsOutstanding() async throws {
@@ -145,7 +150,7 @@ extension AppTests {
                     ("default", ["default"], ""),
                     ("missing/pending", ["default"], "missing/pending is not in this profile"),
                 ] {
-                    model.scenarios = ScenarioList(active: active, scenarios: scenarios)
+                    model.scenariosRead = .ok(ScenarioList(active: active, scenarios: scenarios))
                     for busy in [false, true] {
                         model.busy = busy
                         controller.menu.removeAllItems()
@@ -170,7 +175,7 @@ extension AppTests {
                         }
                     }
                 }
-                model.scenarios = nil
+                model.scenariosRead = nil
                 controller.menu.removeAllItems()
                 delegate.menuWillOpen?(controller.menu)
                 #expect(controller.menu.items.contains { $0.title == model.scenariosPlaceholder && !$0.isEnabled })
@@ -183,13 +188,14 @@ extension AppTests {
             try await withAppTestEnvironment {
                 let model = model()
                 await model.refresh()
-                model.scenarios = ScenarioList(
-                    active: "checkout/ready",
-                    scenarios: [
-                        .init(name: "orders/pending", overrideCount: 1, verified: false),
-                        .init(name: "checkout/pending", overrideCount: 1, verified: false),
-                        .init(name: "checkout/ready", overrideCount: 0, verified: false),
-                    ])
+                model.scenariosRead = .ok(
+                    ScenarioList(
+                        active: "checkout/ready",
+                        scenarios: [
+                            .init(name: "orders/pending", overrideCount: 1, verified: false),
+                            .init(name: "checkout/pending", overrideCount: 1, verified: false),
+                            .init(name: "checkout/ready", overrideCount: 0, verified: false),
+                        ]))
                 let controller = StatusItemController(model: model)
                 let delegate = try #require(controller.menu.delegate)
                 controller.menu.removeAllItems()
@@ -364,7 +370,7 @@ extension AppTests {
                 controller.state.select(.scenario("missing"))
                 #expect(!controller.validateMenuItem(item))
                 controller.state.select(.scenario("checkout"))
-                model.scenarios = nil
+                model.scenariosRead = nil
                 #expect(!controller.validateMenuItem(item))
                 controller.state.select(.recent)
                 #expect(!controller.validateMenuItem(item))

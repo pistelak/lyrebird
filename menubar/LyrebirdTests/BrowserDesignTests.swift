@@ -36,8 +36,8 @@ extension AppTests {
 
         @Test func menuBarBirdRemainsATemplateInEveryStatus() throws {
             let states: [AppModel.Status] = [
-                .intercepting, .pacDisabled, .down, .foreignProfile(running: "example"),
-                .unreadable("Unavailable"), .profileUnknown("Choose a profile"),
+                .intercepting, .pacDisabled, .pacUnobserved("networksetup failed"), .down,
+                .foreignProfile(running: "example"), .unreadable("Unavailable"), .profileUnknown("Choose a profile"),
             ]
             for status in states {
                 let image = try #require(StatusItemController.templateImage(for: status, description: status.word))
@@ -210,14 +210,15 @@ extension AppTests {
                 model.healthRead = .up(Health(proxyUp: true, intercepting: true, profileFingerprint: "design"))
                 let snapshot = BrowserPreview.snapshot("remove-an-item")
                 model.rulesRead = .ok(snapshot)
-                model.scenarios = ScenarioList(
-                    active: snapshot.scenario,
-                    scenarios: [
-                        ScenarioSummary(
-                            name: snapshot.scenario, overrideCount: 2, verified: false,
-                            notes: String(
-                                repeating: "Read the list, delete an item, then read the list again. ", count: 12))
-                    ])
+                model.scenariosRead = .ok(
+                    ScenarioList(
+                        active: snapshot.scenario,
+                        scenarios: [
+                            ScenarioSummary(
+                                name: snapshot.scenario, overrideCount: 2, verified: false,
+                                notes: String(
+                                    repeating: "Read the list, delete an item, then read the list again. ", count: 12))
+                        ]))
                 let state = BrowserState()
                 state.select(.scenario(snapshot.scenario))
                 state.reconcile(snapshot, activeScenario: snapshot.scenario)

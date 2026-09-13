@@ -4,7 +4,7 @@ extension BrowserContent {
     @MainActor
     init(model: AppModel) {
         self.init(
-            status: model.status, controlPort: model.ownHealth?.proxyPort, rulesRead: model.rulesRead,
+            status: model.status, rulesRead: model.rulesRead,
             recentRead: model.recentRead, recentPlaceholder: model.recentPlaceholder,
             scenarios: model.scenarios, busy: model.busy, lastError: model.lastError)
     }

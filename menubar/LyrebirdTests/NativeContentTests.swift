@@ -12,7 +12,7 @@ extension AppTests {
             let snapshot = BrowserPreview.snapshot("orders-pending")
             let entry = RecentEntry(id: "recorded", method: "GET", path: "/api/items", status: 200)
             var content = BrowserContent(
-                status: .intercepting, controlPort: 8088, rulesRead: .ok(snapshot), recentRead: .ok([entry]),
+                status: .intercepting, rulesRead: .ok(snapshot), recentRead: .ok([entry]),
                 recentPlaceholder: "no traffic yet", scenarios: nil, busy: false, lastError: nil)
             let state = BrowserState()
             state.select(.scenario("empty"))
@@ -45,6 +45,8 @@ extension AppTests {
 
         /// Menu commands must still reach their owners after model access moves to the binding,
         /// and opening the menu must read the current folder and busy state before rendering.
+        /// A recent row is not a command: it used to be an enabled item that opened the browser
+        /// wherever it already was, with the request it named not selected.
         @Test func statusMenuUsesInjectedActionsAndFreshContentWithoutAModel() throws {
             var content = StatusItemController.Content(
                 status: .intercepting, statusLine: "Intercepting", stopsRatherThanStarts: true,
@@ -73,6 +75,8 @@ extension AppTests {
                 #expect(NSApp.sendAction(action, to: item.target, from: item))
             }
             #expect(commands == ["toggle", "relaunch", "orders/ready", "clear", "browse", "settings"])
+            let row = try #require(controller.menu.items.first { $0.title.hasSuffix("/api/items") })
+            #expect(row.action == nil && !row.isEnabled, "a recent row is information, not a command")
 
             content.busy = true
             content.scenarios?.active = "checkout/ready"

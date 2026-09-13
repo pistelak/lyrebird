@@ -300,10 +300,6 @@ extension RulesWindowController: NSToolbarDelegate {
 
 extension RulesWindowController: NSMenuItemValidation {
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-        if menuItem.action == #selector(toggleInterception) {
-            menuItem.title = model.stopsRatherThanStarts ? "Stop Interception" : "Start Interception"
-            return !model.busy
-        }
         if menuItem.action == #selector(activateSelectedScenario) { return canActivateSelection }
         if menuItem.action == #selector(toggleSidebar) {
             menuItem.title = split.splitViewItems.first?.isCollapsed == true ? "Show Sidebar" : "Hide Sidebar"

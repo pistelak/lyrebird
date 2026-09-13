@@ -11,6 +11,10 @@ final class AppModel {
     enum Status: Equatable {
         case intercepting
         case pacDisabled
+        /// Our proxy is up and could not read whether the PAC points at it — `networksetup` failed
+        /// or timed out, or the default route moved. Not `pacDisabled`: that is an observation,
+        /// this is the absence of one, and the menu used to present the two as the same fact.
+        case pacUnobserved(String)
         case down
         /// A proxy holds the port, and it is running the profile named here — not ours.
         case foreignProfile(running: String)
@@ -23,7 +27,14 @@ final class AppModel {
     }
 
     var healthRead: MockClient.HealthRead?
-    var scenarios: ScenarioList?
+    /// The last scenario-list read, or why there is none. A read that failed is not "no proxy" —
+    /// see `MockClient.ScenariosRead`.
+    var scenariosRead: MockClient.ScenariosRead?
+    /// The list itself, for the readers that only need one.
+    var scenarios: ScenarioList? {
+        if case .ok(let list) = scenariosRead { return list }
+        return nil
+    }
     /// The last recent-traffic read, or why there is none. A read that failed is not an empty list
     /// — see `MockClient.RecentRead`.
     var recentRead: MockClient.RecentRead?
@@ -229,7 +240,7 @@ final class AppModel {
 
     private func clearReadings() {
         healthRead = nil
-        scenarios = nil
+        scenariosRead = nil
         recentRead = nil
         rulesRead = nil
     }
@@ -262,14 +273,14 @@ final class AppModel {
         guard let expected = expectedFingerprint, fingerprintSettings == settings else { return }
 
         let read = await client.health()
-        var scenarios: ScenarioList?
+        var scenariosRead: MockClient.ScenariosRead?
         var recentRead: MockClient.RecentRead?
         var rulesRead: MockClient.RulesRead?
         // The scenario list, the recent traffic and the rules belong to whichever profile answered,
         // so they are read only when that is ours. Showing another profile's scenarios under this
         // profile's name is the same mistake as showing its health.
         if case .up(let health) = read, Self.isOurs(health, expected: expected) {
-            scenarios = await client.scenarios()
+            scenariosRead = await client.scenarios()
             recentRead = await client.recent()
             if rulesWindowOpen { rulesRead = await client.rules(scenario: browsing) }
         }
@@ -278,11 +289,11 @@ final class AppModel {
             settings == Self.currentSettings
         else { return }
         self.healthRead = read
-        self.scenarios = scenarios
+        self.scenariosRead = scenariosRead
         self.recentRead = recentRead
         // Every list that arrives, not only one that renamed the active scenario — see
         // `RulesReadTests`.
-        if let scenarios { remembered = RememberedScenarios(fingerprint: expected, list: scenarios) }
+        if case .ok(let list) = scenariosRead { remembered = RememberedScenarios(fingerprint: expected, list: list) }
 
         guard rulesRun == rulesGeneration else { return }  // see `rulesGeneration`
         // Nil, not the previous snapshot: the gate above failing means this proxy is not ours to
@@ -351,6 +362,9 @@ final class AppModel {
             if running != expected {
                 return .foreignProfile(running: running)
             }
+            // Before the flag: the engine sends `intercepting: false` beside a `pacError`, and the
+            // flag then reports what it could not see — see `ProfileScopingTests`.
+            if let reason = health.pacError { return .pacUnobserved(reason) }
             return health.intercepting == true ? .intercepting : .pacDisabled
         case .unreadable(let reason):
             return .unreadable(reason)
@@ -365,6 +379,8 @@ final class AppModel {
             return "Intercepting · \(health?.activeScenario ?? "?") · \(health?.overrideCount ?? 0) override(s)"
         case .pacDisabled:
             return "Proxy up, not intercepting — press Start"
+        case .pacUnobserved(let reason):
+            return "Proxy up, PAC could not be read: \(reason)"
         case .down:
             return "Stopped"
         case .foreignProfile(let running):
@@ -390,13 +406,16 @@ final class AppModel {
     }
 
     /// What the SCENARIOS section says when there is no list to show — the reason differs, and
-    /// "proxy not running" is untrue for three of these.
+    /// "proxy not running" is true for exactly one of them. See `RulesReadTests`.
     var scenariosPlaceholder: String {
         switch status {
         case .foreignProfile: return "another profile's proxy"
         case .unreadable: return "the proxy could not be read"
         case .profileUnknown: return "profile unknown"
-        case .intercepting, .pacDisabled, .down: return "proxy not running"
+        case .down: return "proxy not running"
+        case .intercepting, .pacDisabled, .pacUnobserved:
+            if case .unavailable(let reason) = scenariosRead { return "scenarios could not be read: \(reason)" }
+            return "scenarios not read yet"
         }
     }
 
@@ -407,7 +426,8 @@ final class AppModel {
     var stopsRatherThanStarts: Bool {
         switch status {
         case .intercepting, .foreignProfile, .unreadable: return true
-        case .pacDisabled, .down, .profileUnknown: return false
+        // Unobserved starts too: `up` is what re-observes, and it says what it found.
+        case .pacDisabled, .pacUnobserved, .down, .profileUnknown: return false
         }
     }
 
@@ -416,7 +436,7 @@ final class AppModel {
     /// against a proxy this menu is not reading.
     var simBundleId: String? {
         switch status {
-        case .intercepting, .pacDisabled: return health?.simBundleId
+        case .intercepting, .pacDisabled, .pacUnobserved: return health?.simBundleId
         case .down, .foreignProfile, .unreadable, .profileUnknown: return nil
         }
     }
@@ -518,7 +538,7 @@ final class AppModel {
         defer { busy = false }
         guard let bundleId = simBundleId, !bundleId.isEmpty else {
             switch status {
-            case .intercepting, .pacDisabled, .down:
+            case .intercepting, .pacDisabled, .pacUnobserved, .down:
                 lastError = "No simBundleId in the active profile — set it in profile.json."
             case .foreignProfile, .unreadable, .profileUnknown:
                 lastError = "Relaunch needs this profile's own proxy: \(statusLine)"

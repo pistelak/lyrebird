@@ -42,6 +42,14 @@ struct MockClient: Sendable {
         case unavailable(String)
     }
 
+    /// What a scenario-list read found, on the same rule. A list this app could not decode used to
+    /// collapse to nil, and the menu's SCENARIOS section then said "proxy not running" beside a
+    /// proxy that was intercepting — see `RulesReadTests`.
+    enum ScenariosRead: Sendable, Equatable {
+        case ok(ScenarioList)
+        case unavailable(String)
+    }
+
     /// Why a write did not happen. Reads stay best-effort (see below), but a write that returns
     /// normally after a 404 tells the menu the scenario was activated when it was not.
     enum ClientError: LocalizedError {
@@ -107,9 +115,17 @@ struct MockClient: Sendable {
         return .up(health)
     }
 
-    func scenarios() async -> ScenarioList? {
-        guard case .success(let list) = await read("/__mock__/scenarios", as: ScenarioList.self) else { return nil }
-        return list
+    func scenarios() async -> ScenariosRead {
+        switch await read("/__mock__/scenarios", as: ScenarioList.self) {
+        case .success(let list):
+            return .ok(list)
+        case .failure(.transport(let reason)):
+            return .unavailable(reason)
+        case .failure(.http(let status, let body)):
+            return .unavailable(Self.message(status: status, body: body))
+        case .failure(.undecodable(let reason)):
+            return .unavailable("the control API's scenario list could not be read: \(reason)")
+        }
     }
 
     /// What a read ran into instead of a value. It reports and does not decide: a 404 means an

@@ -239,10 +239,11 @@ extension AppTests {
         }
 
         @Test
-        func aPACThatCouldNotBeReadStillRendersAsProxyUpNotIntercepting() async throws {
+        func aPACThatCouldNotBeReadIsNotShownAsNotIntercepting() async throws {
             try await withAppTestEnvironment {
-                // The engine reports `intercepting: false` with a `pacError` beside it. That is the state
-                // Start repairs, and it must not be confused with either of the new ones.
+                // The engine reports `intercepting: false` *with* a `pacError`: it could not observe the
+                // PAC, which is not the same as observing it disabled. The menu used to say "not
+                // intercepting — press Start" for both, presenting an unknown as a fact.
                 StubURLProtocol.install { request in
                     request.url?.path == "/__mock__/health"
                         ? (
@@ -257,8 +258,10 @@ extension AppTests {
 
                 await model.refresh()
 
-                #expect(model.status == .pacDisabled)
-                #expect(model.statusLine == "Proxy up, not intercepting — press Start")
+                #expect(model.status == .pacUnobserved("networksetup failed"))
+                #expect(model.statusLine == "Proxy up, PAC could not be read: networksetup failed")
+                #expect(!model.stopsRatherThanStarts, "Start still runs `up`, which re-observes and says what it found")
+                #expect(model.ownHealth != nil, "the proxy is ours; its scenarios and traffic still show")
             }
         }
 

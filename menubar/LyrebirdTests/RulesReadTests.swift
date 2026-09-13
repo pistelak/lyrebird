@@ -241,7 +241,6 @@ extension AppTests {
 
                 await model.refresh()
 
-                #expect(model.ownHealth?.proxyPort == 8080)
                 #expect(model.ownHealth?.activeScenario == "orders-outage")
                 #expect(model.ownHealth?.scenariosNotWhole?["orders-outage"]?.count == 1)
             }
@@ -441,6 +440,33 @@ extension AppTests {
                 #expect(model.recent.isEmpty)
                 #expect(
                     model.recentPlaceholder.contains("could not be read"), Comment(rawValue: model.recentPlaceholder))
+            }
+        }
+
+        // MARK: - A list that could not be read
+
+        @Test
+        func aScenarioListTheAppCannotDecodeIsReportedNotShownAsAStoppedProxy() async throws {
+            try await withAppTestEnvironment {
+                // `"verified": null` in one scenario file loaded in an older engine and was served as
+                // is; this app's decoder refused the whole list, the failure collapsed to nil, and the
+                // SCENARIOS section said "proxy not running" under a status line saying Intercepting.
+                StubURLProtocol.install { request in
+                    guard request.url?.path == "/__mock__/scenarios" else { return RulesFixture.serve(request) }
+                    let broken = RulesFixture.scenarios.replacingOccurrences(
+                        of: #""verified": true"#, with: #""verified": null"#)
+                    return (Stub.response(request, 200), Data(broken.utf8))
+                }
+                let model = makeModel(expecting: RulesFixture.ours)
+
+                await model.refresh()
+
+                #expect(model.status == .intercepting)
+                #expect(model.scenarios == nil)
+                #expect(
+                    model.scenariosPlaceholder.hasPrefix("scenarios could not be read: "),
+                    Comment(rawValue: model.scenariosPlaceholder))
+                #expect(model.scenariosPlaceholder.contains("verified"), Comment(rawValue: model.scenariosPlaceholder))
             }
         }
 

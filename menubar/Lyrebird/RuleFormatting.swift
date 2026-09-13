@@ -307,14 +307,15 @@ enum RuleFormatting {
 
     /// Why there is no proxy of ours to read, or nil when there is one.
     /// See `RuleFormattingTests`.
-    static func proxyVacancy(status: AppModel.Status, controlPort: Int?) -> Vacancy? {
+    static func proxyVacancy(status: AppModel.Status) -> Vacancy? {
         switch status {
         case .down:
             return Vacancy(message: "Proxy is not running.", hint: "Start it from the menu.")
         case .foreignProfile(let running):
-            let port = controlPort.map { "Port \($0)" } ?? "The control port"
+            // No port number: the only one on hand was the traffic port mislabelled as the control
+            // port, and a foreign proxy's health is not read under this profile anyway.
             return Vacancy(
-                message: "\(port) is held by profile \(running), not this one.",
+                message: "The control port is held by profile \(running), not this one.",
                 hint: "Stop it with lyrebird down, or switch profiles.")
         case .unreadable(let reason):
             return Vacancy(message: "The proxy could not be read.", hint: reason)
@@ -322,16 +323,14 @@ enum RuleFormatting {
             return Vacancy(
                 message: "Lyrebird does not know which profile this is.",
                 hint: "\(reason) — check Settings.")
-        case .intercepting, .pacDisabled:
+        case .intercepting, .pacDisabled, .pacUnobserved:
             return nil
         }
     }
 
     /// Why there is no rules list, or nil when there is a snapshot with rules in it.
-    static func rulesVacancy(
-        status: AppModel.Status, read: MockClient.RulesRead?, controlPort: Int?
-    ) -> Vacancy? {
-        if let vacancy = proxyVacancy(status: status, controlPort: controlPort) { return vacancy }
+    static func rulesVacancy(status: AppModel.Status, read: MockClient.RulesRead?) -> Vacancy? {
+        if let vacancy = proxyVacancy(status: status) { return vacancy }
         switch read {
         case .ok(let snapshot):
             guard snapshot.rules.isEmpty else { return nil }
@@ -355,14 +354,12 @@ enum RuleFormatting {
         case list(RulesSnapshot, note: Vacancy?)
     }
 
-    static func rulesColumn(
-        status: AppModel.Status, read: MockClient.RulesRead?, controlPort: Int?
-    ) -> RulesColumn {
-        if let vacancy = proxyVacancy(status: status, controlPort: controlPort) { return .vacancy(vacancy) }
+    static func rulesColumn(status: AppModel.Status, read: MockClient.RulesRead?) -> RulesColumn {
+        if let vacancy = proxyVacancy(status: status) { return .vacancy(vacancy) }
         guard case .ok(let snapshot) = read else {
-            return .vacancy(rulesVacancy(status: status, read: read, controlPort: controlPort)!)
+            return .vacancy(rulesVacancy(status: status, read: read)!)
         }
-        return .list(snapshot, note: rulesVacancy(status: status, read: read, controlPort: controlPort))
+        return .list(snapshot, note: rulesVacancy(status: status, read: read))
     }
 
     /// What a failed action left behind, or nil when there is nothing to say.

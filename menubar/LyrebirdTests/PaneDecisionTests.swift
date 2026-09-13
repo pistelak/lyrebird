@@ -21,7 +21,7 @@ extension AppTests {
                 RecentEntry(id: "older", method: "GET", path: "/api/orders", status: 200),
             ]
             let content = BrowserContent(
-                status: .intercepting, controlPort: 8088, rulesRead: .ok(snapshot), recentRead: .ok(entries),
+                status: .intercepting, rulesRead: .ok(snapshot), recentRead: .ok(entries),
                 recentPlaceholder: "No recorded requests", scenarios: nil, busy: false, lastError: nil)
             let state = BrowserState()
             let list = RequestListController()
@@ -40,7 +40,7 @@ extension AppTests {
         @Test func aRuleThatLosesThePaneLeavesNoActionsBehind() throws {
             let snapshot = BrowserPreview.snapshot("orders-pending")
             let original = BrowserContent(
-                status: .intercepting, controlPort: 8088, rulesRead: .ok(snapshot), recentRead: .ok([]),
+                status: .intercepting, rulesRead: .ok(snapshot), recentRead: .ok([]),
                 recentPlaceholder: "No recorded requests", scenarios: nil, busy: false, lastError: nil)
             let ending = try #require(
                 RuleFormatting.flowSections(snapshot).flatMap(\.rows).first { $0.endingTransition != nil })
@@ -119,7 +119,7 @@ extension AppTests {
                 RuleFormatting.flowSections(snapshot).flatMap(\.rows).first { $0.transition != nil && $0.ruleId == nil }
             )
             let content = BrowserContent(
-                status: .intercepting, controlPort: 8088, rulesRead: .ok(snapshot), recentRead: .ok([]),
+                status: .intercepting, rulesRead: .ok(snapshot), recentRead: .ok([]),
                 recentPlaceholder: "No recorded requests", scenarios: nil, busy: false, lastError: nil)
             let state = BrowserState()
             state.select(.scenario(snapshot.scenario))
@@ -156,7 +156,7 @@ extension AppTests {
         @Test func trafficVacanciesKeepErrorOrderingAndSuppressSelectionCallbacks() {
             let entry = RecentEntry(id: "recorded", method: "GET", path: "/api/items", status: 200)
             var content = BrowserContent(
-                status: .intercepting, controlPort: 8088, rulesRead: nil, recentRead: .ok([entry]),
+                status: .intercepting, rulesRead: nil, recentRead: .ok([entry]),
                 recentPlaceholder: "No recorded requests", scenarios: nil, busy: false, lastError: "Synthetic failure")
             let state = BrowserState()
             state.select(.recent)
