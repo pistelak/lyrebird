@@ -306,6 +306,11 @@ saying why it exists. When a file is read, an override that carries an unknown f
 skipped, naming the field; the rest of its scenario still loads at startup, and a reload refuses
 whole.
 
+Every number in a rule, wherever it sits — a body, a patch, a query — is a finite double or a signed
+64-bit integer, and a rule carrying anything else is refused naming the field. The menu-bar app
+decodes into those types; an identifier above 2^63−1 would be shown, and copied, rounded, so write it
+as a string.
+
 `match` supports these fields and no others — an unknown one is rejected rather than ignored,
 because a typo'd field is not a stricter matcher but a missing constraint:
 
@@ -434,7 +439,9 @@ triggers.
 
 A scenario file carries `schemaVersion: 1`. It may be omitted, but any other value is refused whole:
 a file written for a format this engine does not read would otherwise load with the wrong rules,
-silently and only in the ways the format changed.
+silently and only in the ways the format changed. Its optional `notes` must be a string and
+`verified` true or false; the menu-bar app requires those types and refuses the whole scenario list
+over one wrong field, so the engine refuses the file first and names it.
 
 ## Checking a scenario file without starting anything
 

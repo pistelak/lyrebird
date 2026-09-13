@@ -694,6 +694,24 @@ def _validate_sequence(sequence: Any, mode: str) -> None:
         raise ValidationError(f"sequence.onExhausted must be one of {VALID_EXHAUSTION_POLICIES} if present")
 
 
+def _validate_numbers(value: Any, where: str) -> None:
+    """Every number in a rule is a finite double or a signed 64-bit integer, wherever it sits: the
+    menu-bar app decodes into those and showed — and copied — anything larger rounded, see
+    test_an_integer_the_app_cannot_hold_is_refused_where_it_sits."""
+    if isinstance(value, bool):
+        return
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValidationError(f"{where or 'value'} must be a finite number")
+    if isinstance(value, int) and not -(2**63) <= value <= 2**63 - 1:
+        raise ValidationError(f"{where or 'value'} must fit a signed 64-bit integer, got {value}")
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            _validate_numbers(item, f"{where}.{key}" if where else str(key))
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            _validate_numbers(item, f"{where}[{index}]")
+
+
 def validate_override(override: Any) -> dict:
     if not is_plain_object(override):
         raise ValidationError("override must be a JSON object")
@@ -705,6 +723,9 @@ def validate_override(override: Any) -> dict:
     for key in result:
         if key not in OVERRIDE_FIELDS:
             raise ValidationError(f"unknown field {key!r} — an override may only carry {', '.join(OVERRIDE_FIELDS)}")
+    # After the vocabulary check, so `{"statsu": 1e309}` is reported as the typo it is — see
+    # test_a_bad_number_in_an_unknown_field_is_reported_as_the_typo.
+    _validate_numbers(result, "")
 
     # `notes` is text or nothing. Other optional fields read `None` as absence; here an explicit
     # `null` is a mistake worth naming, since the only reason to write the key is to put words in it.
@@ -730,14 +751,8 @@ def validate_override(override: Any) -> dict:
     if delay is not None:
         if isinstance(delay, bool) or not isinstance(delay, (int, float)):
             raise ValidationError("delayMs must be a number")
-        # Before the comparison and the conversion, both of which a non-finite float gets past or
-        # through: `json.loads` turns `1e309`, `Infinity` and `NaN` into floats, `NaN < 0` is False,
-        # and `int()` then raises OverflowError (not even a ValueError) from inside validation.
-        # That is not a rule this file refuses, it is validation itself falling over — the caller
-        # gets a traceback instead of the field name, and the loader's `except ValidationError`
-        # never sees it, so one such rule took a whole scenario's diagnostics with it.
-        if isinstance(delay, float) and not math.isfinite(delay):
-            raise ValidationError("delayMs must be a finite number")
+        # A non-finite delay never reaches the comparison or `int()`: `_validate_numbers` refused it
+        # above — see test_a_non_finite_delay_is_refused_as_a_rule_not_as_a_crash.
         if delay < 0:
             raise ValidationError("delayMs must not be negative")
         result["delayMs"] = int(delay)
@@ -795,6 +810,14 @@ def normalise_scenario(scenario: Any, name: str) -> dict:
         raise ValidationError(
             f"schemaVersion: unsupported version {version!r} — this engine reads version {SCHEMA_VERSION}"
         )
+    # `verified` is typed because the app's decoder requires a Bool and refused the whole scenario
+    # list over one `null`, which the menu then showed as "proxy not running"; `notes` follows the
+    # same rule as an override's — text or nothing, an explicit `null` named as the mistake it is.
+    # See test_normalise_scenario_refuses_metadata_the_app_could_not_decode.
+    if "notes" in result and not isinstance(result["notes"], str):
+        raise ValidationError("notes must be a string")
+    if "verified" in result and not isinstance(result["verified"], bool):
+        raise ValidationError("verified must be true or false")
     result.setdefault("notes", "")
     result.setdefault("verified", False)
 

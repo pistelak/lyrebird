@@ -245,6 +245,25 @@ def test_normalise_scenario_drops_a_rule_with_an_unknown_field_and_names_it():
     assert "override[0]: unknown field 'statsu'" in scenario["_problems"][0]
 
 
+@pytest.mark.parametrize(
+    "metadata",
+    [{"verified": None}, {"verified": "yes"}, {"verified": 1}, {"notes": None}, {"notes": 42}, {"notes": ["x"]}],
+)
+def test_normalise_scenario_refuses_metadata_the_app_could_not_decode(metadata):
+    """`"verified": null` or `"notes": 42` loaded and were served verbatim; the menu-bar app requires
+    a Bool and an optional String, refused the whole scenario list over the one field, and its
+    SCENARIOS section then said "proxy not running" beside a proxy that was intercepting."""
+    with pytest.raises(rules.ValidationError, match="notes must be a string|verified must be true or false"):
+        rules.normalise_scenario({"overrides": []} | metadata, "s")
+
+
+def test_normalise_scenario_keeps_well_typed_metadata_and_defaults_the_rest():
+    loaded = rules.normalise_scenario({"overrides": [], "verified": True, "notes": "why"}, "s")
+    assert (loaded["verified"], loaded["notes"]) == (True, "why")
+    defaulted = rules.normalise_scenario({"overrides": []}, "s")
+    assert (defaulted["verified"], defaulted["notes"]) == (False, "")
+
+
 def test_normalise_scenario_drops_invalid_overrides_and_reports_them():
     scenario = rules.normalise_scenario(
         {"overrides": [{"mode": "replace", "id": "ok"}, {"mode": "bogus", "id": "bad"}]}, "s"
@@ -683,6 +702,49 @@ def test_a_valid_rule_survives_a_refused_schema_version_nowhere():
 def test_a_non_finite_delay_is_refused_as_a_rule_not_as_a_crash(delay):
     with pytest.raises(rules.ValidationError, match="finite"):
         rules.validate_override({"mode": "replace", "status": 200, "delayMs": delay})
+
+
+@pytest.mark.parametrize(
+    "place",
+    [
+        lambda v: {"body": {"price": v}},
+        lambda v: {"body": [1, {"nested": [v]}]},
+        lambda v: {"mode": "patch", "patch": {"items": [{"total": v}]}},
+        lambda v: {"match": {"path": "/a", "query": {"page": v}}},
+        lambda v: {"sequence": {"steps": [{"body": {"n": v}}]}},
+    ],
+)
+@pytest.mark.parametrize("number", [float("inf"), -float("inf"), float("nan")])
+def test_a_non_finite_number_is_refused_wherever_it_sits(place, number):
+    """`1e309` used to load as `inf` and be served as the non-standard token `Infinity`, which the
+    menu-bar app's JSON decoder rejects — one value in one rule blanked the whole rules pane."""
+    rule = {"mode": "replace", "status": 200, "match": {"path": "/a"}} | place(number)
+    with pytest.raises(rules.ValidationError, match="must be a finite number"):
+        rules.validate_override(rule)
+
+
+def test_a_bad_number_in_an_unknown_field_is_reported_as_the_typo():
+    """The walk runs after the vocabulary check: `statsu: 1e309` is a misspelt field first, and
+    "statsu must be a finite number" would send the reader to fix a value in a field that does not
+    exist."""
+    with pytest.raises(rules.ValidationError, match="unknown field 'statsu'"):
+        rules.validate_override({"mode": "replace", "match": {"path": "/a"}, "statsu": float("inf")})
+
+
+@pytest.mark.parametrize("number", [2**63, -(2**63) - 1])
+def test_an_integer_the_app_cannot_hold_is_refused_where_it_sits(number):
+    """Python serves an integer above 2^63-1 exactly as written; the app decodes it into a lossy
+    double and then shows, and *copies*, a different number, with nothing on screen to say so.
+    Refused at load, naming the field, so the author encodes the identifier as a string."""
+    rule = {"mode": "replace", "status": 200, "body": {"order": {"id": number}}}
+    with pytest.raises(rules.ValidationError, match=r"body\.order\.id must fit a signed 64-bit integer"):
+        rules.validate_override(rule)
+
+
+@pytest.mark.parametrize("number", [2**63 - 1, -(2**63), 0, 1.5, True])
+def test_a_number_the_app_can_hold_is_kept_exactly(number):
+    rule = {"mode": "replace", "status": 200, "body": {"id": number}}
+    assert rules.validate_override(rule)["body"]["id"] == number
 
 
 @pytest.mark.parametrize("status", [float("inf"), float("nan"), 10**400])
