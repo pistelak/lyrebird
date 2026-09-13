@@ -23,6 +23,24 @@ import rules
 import session
 
 
+def scenario_file(profile, name, overrides):
+    """Write a scenario file, which is the only way a rule reaches the proxy.
+
+    Nothing in the engine writes into a profile, so a test that needs rules in play puts them
+    where an agent would and lets the loader read them — at construction, or through
+    `reload_scenarios` for a change the proxy has to pick up while it runs.
+    """
+    path = profile / "scenarios" / f"{name}.json"
+    path.write_text(json.dumps({"name": name, "overrides": [dict(o) for o in overrides]}), encoding="utf-8")
+    return path
+
+
+def subject_with(profile, *overrides):
+    """An addon whose store loaded these rules from the profile's `default` scenario."""
+    scenario_file(profile, "default", overrides)
+    return addon.Lyrebird()
+
+
 def test_proxy_options_are_accepted_by_mitmproxy(hosts):
     """Regression: stream_large_bodies is Optional[str] ("understands k/m/g"), not an int.
     Passing an int raised TypeError inside `running` and the proxy exited on startup."""
@@ -60,15 +78,15 @@ def test_the_wire_answer_for_a_json_rule_is_unchanged(hosts, profile):
     """Pins the produced response field by field, because `_answer` now composes it from
     `rules.wire_response` instead of deciding the status, the body and the header itself. A refactor
     that changed any of the three would still look like a rule that matched."""
-    subject = addon.Lyrebird()
-    subject.store.add_override(
+    subject = subject_with(
+        profile,
         {
             "id": "o",
             "mode": "replace",
             "status": 503,
             "match": {"path": "/api/v1/orders/*"},
             "body": {"error": "mocked"},
-        }
+        },
     )
     flow = _flow()
     run_request(subject, flow)
@@ -143,8 +161,7 @@ def test_the_wire_answer_for_a_json_rule_is_unchanged(hosts, profile):
     ],
 )
 def test_the_wire_answer_matches_what_is_described(hosts, profile, rule, status, headers, body):
-    subject = addon.Lyrebird()
-    subject.store.add_override({"id": "o", "mode": "replace", "match": {"path": "/api/v1/orders/*"}, **rule})
+    subject = subject_with(profile, {"id": "o", "mode": "replace", "match": {"path": "/api/v1/orders/*"}, **rule})
     flow = _flow()
     run_request(subject, flow)
     assert flow.response.status_code == status
@@ -155,9 +172,9 @@ def test_the_wire_answer_matches_what_is_described(hosts, profile, rule, status,
 def test_the_wire_answer_for_a_bodyless_rule_is_unchanged(hosts, profile):
     """The other half of the same pin. A 204 that acquired a body or a Content-Length in the
     refactor is a malformed response, and clients do notice."""
-    subject = addon.Lyrebird()
-    subject.store.add_override(
-        {"id": "d", "mode": "replace", "status": 204, "match": {"path": "/api/v1/orders/*"}, "body": {"ignored": True}}
+    subject = subject_with(
+        profile,
+        {"id": "d", "mode": "replace", "status": 204, "match": {"path": "/api/v1/orders/*"}, "body": {"ignored": True}},
     )
     flow = _flow()
     run_request(subject, flow)
@@ -186,8 +203,7 @@ def test_a_content_encoding_is_applied_after_the_described_size(hosts, profile):
         "headers": {"Content-Encoding": "gzip"},
         "body": "hello",
     }
-    subject = addon.Lyrebird()
-    subject.store.add_override(override)
+    subject = subject_with(profile, override)
     flow = _flow()
     run_request(subject, flow)
     assert gzip.decompress(flow.response.raw_content) == b"hello"
@@ -212,15 +228,15 @@ def run_request(subject, flow):
 
 
 def test_replace_short_circuits_without_an_upstream(hosts, profile):
-    subject = addon.Lyrebird()
-    subject.store.add_override(
+    subject = subject_with(
+        profile,
         {
             "id": "o",
             "mode": "replace",
             "status": 503,
             "match": {"method": "GET", "path": "/api/v1/orders/*"},
             "body": {"error": "mocked"},
-        }
+        },
     )
     flow = _flow()
     run_request(subject, flow)
@@ -232,9 +248,9 @@ def test_replace_short_circuits_without_an_upstream(hosts, profile):
 
 def test_bodyless_status_carries_no_body_or_length(hosts, profile):
     """204 with a Content-Length is malformed, and clients do notice."""
-    subject = addon.Lyrebird()
-    subject.store.add_override(
-        {"id": "d", "mode": "replace", "status": 204, "match": {"method": "DELETE", "path": "/api/v1/orders/*"}}
+    subject = subject_with(
+        profile,
+        {"id": "d", "mode": "replace", "status": 204, "match": {"method": "DELETE", "path": "/api/v1/orders/*"}},
     )
     flow = _flow(method="DELETE")
     run_request(subject, flow)
@@ -244,17 +260,17 @@ def test_bodyless_status_carries_no_body_or_length(hosts, profile):
 
 
 def test_a_non_intercepted_host_is_left_alone(hosts, profile):
-    subject = addon.Lyrebird()
-    subject.store.add_override({"id": "o", "mode": "replace", "status": 503, "match": {"path": "/api/v1/orders/*"}})
+    subject = subject_with(
+        profile, {"id": "o", "mode": "replace", "status": 503, "match": {"path": "/api/v1/orders/*"}}
+    )
     flow = _flow(host="elsewhere.example.com")
     run_request(subject, flow)
     assert flow.response is None, "only hosts listed in the profile may be touched"
 
 
 def test_patch_defers_to_the_response_hook(hosts, profile):
-    subject = addon.Lyrebird()
-    subject.store.add_override(
-        {"id": "p", "mode": "patch", "match": {"path": "/api/v1/orders/*"}, "patch": {"extra": True}}
+    subject = subject_with(
+        profile, {"id": "p", "mode": "patch", "match": {"path": "/api/v1/orders/*"}, "patch": {"extra": True}}
     )
     flow = _flow()
     run_request(subject, flow)
@@ -310,9 +326,7 @@ LIST_RULES = [
 def test_repeated_fetches_do_not_advance_but_a_delete_does(hosts, profile):
     """The delete-then-refresh scenario end to end. The screen may fetch the list twice on appear —
     a prefetch, a re-render — and that must not move the sequence; only the DELETE may."""
-    subject = addon.Lyrebird()
-    for rule in LIST_RULES:
-        subject.store.add_override(dict(rule))
+    subject = subject_with(profile, *LIST_RULES)
 
     first, second = _flow(path="/api/v1/items"), _flow(path="/api/v1/items")
     run_request(subject, first)
@@ -332,8 +346,7 @@ def test_repeated_fetches_do_not_advance_but_a_delete_does(hosts, profile):
 def test_a_request_no_override_answers_still_advances_a_sequence(hosts, profile):
     """The advance scan sits outside the 'an override matched' branch on purpose: a DELETE going
     straight to the real backend must still move a rule that is watching for it."""
-    subject = addon.Lyrebird()
-    subject.store.add_override(dict(LIST_RULES[0]))  # the list rule only — nothing answers DELETE
+    subject = subject_with(profile, LIST_RULES[0])  # the list rule only — nothing answers DELETE
 
     deletion = _flow(method="DELETE", path="/api/v1/items/b")
     run_request(subject, deletion)
@@ -345,24 +358,23 @@ def test_a_request_no_override_answers_still_advances_a_sequence(hosts, profile)
     assert _body(after) == {"items": ["a", "c"]}
 
 
-def _retry_subject(policy=None):
+def _retry_subject(profile, policy=None):
     sequence = {"steps": [{"status": 503}, {"status": 201}]}
     if policy:
         sequence["onExhausted"] = policy
-    subject = addon.Lyrebird()
-    subject.store.add_override(
+    return subject_with(
+        profile,
         {
             "id": "ovr_retry",
             "mode": "replace",
             "match": {"method": "GET", "path": "/api/v1/orders/*"},
             "sequence": sequence,
-        }
+        },
     )
-    return subject
 
 
 def test_a_self_triggered_sequence_answers_each_call_differently(hosts, profile):
-    subject = _retry_subject()
+    subject = _retry_subject(profile)
     statuses = []
     for _ in range(2):
         flow = _flow()
@@ -373,7 +385,7 @@ def test_a_self_triggered_sequence_answers_each_call_differently(hosts, profile)
 
 def test_exhaustion_defaults_to_a_loud_error(hosts, profile):
     """Repeating the last step would let an unplanned extra request pass for a successful one."""
-    subject = _retry_subject()
+    subject = _retry_subject(profile)
     for _ in range(2):
         run_request(subject, _flow())
 
@@ -386,7 +398,7 @@ def test_exhaustion_defaults_to_a_loud_error(hosts, profile):
 
 
 def test_repeat_last_serves_the_final_step_but_is_still_marked_overrun(hosts, profile):
-    subject = _retry_subject("repeatLast")
+    subject = _retry_subject(profile, "repeatLast")
     for _ in range(2):
         run_request(subject, _flow())
 
@@ -403,18 +415,17 @@ def test_repeat_last_serves_the_final_step_but_is_still_marked_overrun(hosts, pr
 # generation counter or staleness tracking. Both tests below fail if the order is reversed.
 
 
-def _delayed_subject():
-    subject = addon.Lyrebird()
-    subject.store.add_override(
+def _delayed_subject(profile):
+    return subject_with(
+        profile,
         {
             "id": "ovr_slow",
             "mode": "replace",
             "delayMs": 60,
             "match": {"method": "GET", "path": "/api/v1/orders/*"},
             "sequence": {"steps": [{"status": 201}, {"status": 202}]},
-        }
+        },
     )
-    return subject
 
 
 @pytest.mark.parametrize(
@@ -437,9 +448,9 @@ def test_the_proxy_waits_for_the_capped_delay(hosts, profile, monkeypatch, confi
         slept.append(seconds)
 
     monkeypatch.setattr(asyncio, "sleep", record)
-    subject = addon.Lyrebird()
-    subject.store.add_override(
-        {"id": "o", "mode": "replace", "status": 200, "match": {"path": "/api/v1/orders/*"}, "delayMs": configured}
+    subject = subject_with(
+        profile,
+        {"id": "o", "mode": "replace", "status": 200, "match": {"path": "/api/v1/orders/*"}, "delayMs": configured},
     )
     flow = _flow()
     run_request(subject, flow)
@@ -450,7 +461,7 @@ def test_the_proxy_waits_for_the_capped_delay(hosts, profile, monkeypatch, confi
 def test_a_reset_during_the_delay_is_honoured(hosts, profile):
     """An operator who rewinds while a delayed flow is in the air gets the rewind they asked for,
     not the step that was current when the request arrived."""
-    subject = _delayed_subject()
+    subject = _delayed_subject(profile)
     subject.store.bump_selected(subject.store.find_override("GET", "/api/v1/orders/1", {}, ""))
     assert subject.store.sequence_states()[0]["nextStep"] == 2
 
@@ -469,7 +480,7 @@ def test_a_reset_during_the_delay_is_honoured(hosts, profile):
 def test_two_concurrent_delayed_flows_take_different_steps(hosts, profile):
     """Each continuation selects and advances synchronously on waking, so they cannot both read the
     same cursor."""
-    subject = _delayed_subject()
+    subject = _delayed_subject(profile)
 
     async def both():
         first, second = _flow(), _flow()
@@ -487,9 +498,9 @@ def test_a_mock_answered_flow_that_errors_keeps_its_matched_id(hosts, profile):
     """A client that hangs up mid-write reaches `error` with the override's response already made.
     Recording `matched: null` there would say nothing answered — the same signal as a rule that
     never fired, which is the collision this codebase keeps having to fix."""
-    subject = addon.Lyrebird()
-    subject.store.add_override(
-        {"id": "s", "mode": "replace", "match": {"path": "/api/v1/orders/*"}, "sequence": {"steps": [{"status": 201}]}}
+    subject = subject_with(
+        profile,
+        {"id": "s", "mode": "replace", "match": {"path": "/api/v1/orders/*"}, "sequence": {"steps": [{"status": 201}]}},
     )
     flow = _flow()
     run_request(subject, flow)
@@ -526,6 +537,13 @@ def _replaceable(statuses):
     }
 
 
+def _reload_with(subject, profile, *overrides):
+    """Rewrite the active scenario's file and make the proxy read it — the only way a live rule
+    changes now that nothing writes into a profile."""
+    scenario_file(profile, "default", overrides)
+    subject.store.reload_scenarios()
+
+
 def _mid_flight(subject, disturb):
     async def scenario():
         flow = _flow()
@@ -541,10 +559,9 @@ def _mid_flight(subject, disturb):
 def test_replacing_a_rule_during_its_delay_serves_the_replacement(hosts, profile):
     """Held across the sleep, the old rule answered 201 and then advanced the new rule's cursor, so
     the replacement's first step was never served at all."""
-    subject = addon.Lyrebird()
-    subject.store.add_override(_replaceable([201, 202]))
+    subject = subject_with(profile, _replaceable([201, 202]))
 
-    flow = _mid_flight(subject, lambda: subject.store.add_override(_replaceable([501, 502])))
+    flow = _mid_flight(subject, lambda: _reload_with(subject, profile, _replaceable([501, 502])))
     assert flow.response.status_code == 501, "the live rule's first step"
 
     after = _flow()
@@ -553,16 +570,14 @@ def test_replacing_a_rule_during_its_delay_serves_the_replacement(hosts, profile
 
 
 def test_removing_a_rule_during_its_delay_stops_it_answering(hosts, profile):
-    subject = addon.Lyrebird()
-    subject.store.add_override(_replaceable([201, 202]))
-    flow = _mid_flight(subject, lambda: subject.store.clear_overrides())
+    subject = subject_with(profile, _replaceable([201, 202]))
+    flow = _mid_flight(subject, lambda: _reload_with(subject, profile))
     assert flow.response is None, "a rule that no longer exists must not answer"
 
 
 def test_switching_scenarios_during_a_delay_uses_the_new_scenario(hosts, profile):
-    subject = addon.Lyrebird()
-    subject.store.add_override(_replaceable([201, 202]))
-    subject.store.create_scenario("empty")
+    scenario_file(profile, "empty", [])
+    subject = subject_with(profile, _replaceable([201, 202]))
     flow = _mid_flight(subject, lambda: subject.store.set_active("empty"))
     assert flow.response is None
 
@@ -570,8 +585,7 @@ def test_switching_scenarios_during_a_delay_uses_the_new_scenario(hosts, profile
 def test_a_failed_advance_only_request_still_reaches_recent(hosts, profile):
     """A request no override answered can still move a sequence. If its upstream then fails, the
     cursor has changed with nothing in /recent to explain why."""
-    subject = addon.Lyrebird()
-    subject.store.add_override(dict(LIST_RULES[0]))  # nothing answers the DELETE
+    subject = subject_with(profile, LIST_RULES[0])  # nothing answers the DELETE
 
     deletion = _flow(method="DELETE", path="/api/v1/items/b")
     run_request(subject, deletion)
@@ -595,8 +609,9 @@ def _answers(subject):
 
 
 def test_a_replace_is_credited_once(hosts, profile):
-    subject = addon.Lyrebird()
-    subject.store.add_override({"id": "o", "mode": "replace", "status": 200, "match": {"path": "/api/v1/orders/*"}})
+    subject = subject_with(
+        profile, {"id": "o", "mode": "replace", "status": 200, "match": {"path": "/api/v1/orders/*"}}
+    )
     run_request(subject, _flow())
     assert _answers(subject) == {"o": 1}
 
@@ -604,10 +619,10 @@ def test_a_replace_is_credited_once(hosts, profile):
 def test_a_rule_that_matched_but_lost_is_never_credited(hosts, profile):
     """`find_override` returns only the most specific match, so a rule whose matcher fits the
     request may not be the rule that answered it."""
-    subject = addon.Lyrebird()
-    subject.store.add_override({"id": "broad", "mode": "replace", "status": 200, "match": {"path": "/api/v1/*"}})
-    subject.store.add_override(
-        {"id": "narrow", "mode": "replace", "status": 201, "match": {"path": "/api/v1/orders/1"}}
+    subject = subject_with(
+        profile,
+        {"id": "broad", "mode": "replace", "status": 200, "match": {"path": "/api/v1/*"}},
+        {"id": "narrow", "mode": "replace", "status": 201, "match": {"path": "/api/v1/orders/1"}},
     )
     run_request(subject, _flow())
     assert _answers(subject) == {"broad": 0, "narrow": 1}
@@ -616,9 +631,8 @@ def test_a_rule_that_matched_but_lost_is_never_credited(hosts, profile):
 def test_a_patch_is_not_credited_until_it_has_actually_merged(hosts, profile):
     """A patch that is selected has answered nothing yet — the upstream may turn out to be a
     stream, or not JSON, in which case the request is served by the real backend."""
-    subject = addon.Lyrebird()
-    subject.store.add_override(
-        {"id": "p", "mode": "patch", "match": {"path": "/api/v1/orders/*"}, "patch": {"extra": True}}
+    subject = subject_with(
+        profile, {"id": "p", "mode": "patch", "match": {"path": "/api/v1/orders/*"}, "patch": {"extra": True}}
     )
     flow = _flow()
     run_request(subject, flow)
@@ -633,9 +647,8 @@ def test_a_patch_is_not_credited_until_it_has_actually_merged(hosts, profile):
 def test_a_skipped_patch_is_never_credited(hosts, profile):
     """`patchSkipped` means the real backend answered. Crediting it would report a mock in play for
     a screen that was served live — the precise thing an assertion exists to rule out."""
-    subject = addon.Lyrebird()
-    subject.store.add_override(
-        {"id": "p", "mode": "patch", "match": {"path": "/api/v1/orders/*"}, "patch": {"extra": True}}
+    subject = subject_with(
+        profile, {"id": "p", "mode": "patch", "match": {"path": "/api/v1/orders/*"}, "patch": {"extra": True}}
     )
     flow = _flow()
     run_request(subject, flow)
@@ -649,14 +662,14 @@ def test_a_skipped_patch_is_never_credited(hosts, profile):
 def test_an_exhausted_error_is_credited_because_it_did_answer(hosts, profile):
     """Lyrebird's own 500 is still an answer from that rule, and the test that gets it should be
     told the mock was in play — it explains the 500."""
-    subject = addon.Lyrebird()
-    subject.store.add_override(
+    subject = subject_with(
+        profile,
         {
             "id": "seq",
             "mode": "replace",
             "match": {"path": "/api/v1/orders/*"},
             "sequence": {"steps": [{"status": 200}]},
-        }
+        },
     )
     run_request(subject, _flow())
     overrun = _flow()
@@ -668,8 +681,9 @@ def test_an_exhausted_error_is_credited_because_it_did_answer(hosts, profile):
 def test_a_replace_whose_flow_dies_is_credited_and_recorded(hosts, profile):
     """The override produced the response; the client hanging up does not un-answer it. It must
     also reach /recent, or a rule shows answers with no traffic to account for them."""
-    subject = addon.Lyrebird()
-    subject.store.add_override({"id": "o", "mode": "replace", "status": 200, "match": {"path": "/api/v1/orders/*"}})
+    subject = subject_with(
+        profile, {"id": "o", "mode": "replace", "status": 200, "match": {"path": "/api/v1/orders/*"}}
+    )
     flow = _flow()
     run_request(subject, flow)
     subject.error(flow)
@@ -680,9 +694,8 @@ def test_a_replace_whose_flow_dies_is_credited_and_recorded(hosts, profile):
 def test_a_replacement_installed_during_a_delay_is_the_rule_credited(hosts, profile):
     """The delayed path re-selects after the sleep. Crediting a slot captured before it would
     report an answer for the rule that was displaced and never served."""
-    subject = addon.Lyrebird()
-    subject.store.add_override(_replaceable([201, 202]))
-    flow = _mid_flight(subject, lambda: subject.store.add_override(_replaceable([501, 502])))
+    subject = subject_with(profile, _replaceable([201, 202]))
+    flow = _mid_flight(subject, lambda: _reload_with(subject, profile, _replaceable([501, 502])))
     assert flow.response.status_code == 501
     assert _answers(subject) == {"s": 1}, "credited once, to the definition that actually answered"
 
@@ -690,18 +703,13 @@ def test_a_replacement_installed_during_a_delay_is_the_rule_credited(hosts, prof
 def test_a_patch_landing_after_a_scenario_switch_credits_nobody(hosts, profile):
     """The whole reason the slot is captured rather than looked up by id: scenario B has its own
     rule under the same id, and it never saw this request."""
-    subject = addon.Lyrebird()
-    subject.store.add_override(
-        {"id": "shared", "mode": "patch", "match": {"path": "/api/v1/orders/*"}, "patch": {"a": 1}}
-    )
+    shared = {"id": "shared", "mode": "patch", "match": {"path": "/api/v1/orders/*"}, "patch": {"a": 1}}
+    scenario_file(profile, "other", [shared])
+    subject = subject_with(profile, shared)
     flow = _flow()
     run_request(subject, flow)
 
-    subject.store.create_scenario("other")
     subject.store.set_active("other")
-    subject.store.add_override(
-        {"id": "shared", "mode": "patch", "match": {"path": "/api/v1/orders/*"}, "patch": {"a": 1}}
-    )
 
     flow.response = tutils.tresp(headers=((b"content-type", b"application/json"),), content=b'{"b": 2}')
     subject.response(flow)
@@ -709,11 +717,14 @@ def test_a_patch_landing_after_a_scenario_switch_credits_nobody(hosts, profile):
 
 
 def test_a_patch_landing_after_its_rule_is_replaced_credits_nobody(hosts, profile):
-    subject = addon.Lyrebird()
-    subject.store.add_override({"id": "r", "mode": "patch", "match": {"path": "/api/v1/orders/*"}, "patch": {"a": 1}})
+    subject = subject_with(
+        profile, {"id": "r", "mode": "patch", "match": {"path": "/api/v1/orders/*"}, "patch": {"a": 1}}
+    )
     flow = _flow()
     run_request(subject, flow)
-    subject.store.add_override({"id": "r", "mode": "patch", "match": {"path": "/api/v1/orders/*"}, "patch": {"a": 2}})
+    _reload_with(
+        subject, profile, {"id": "r", "mode": "patch", "match": {"path": "/api/v1/orders/*"}, "patch": {"a": 2}}
+    )
     flow.response = tutils.tresp(headers=((b"content-type", b"application/json"),), content=b'{"b": 2}')
     subject.response(flow)
     assert _answers(subject) == {"r": 0}
@@ -722,7 +733,7 @@ def test_a_patch_landing_after_its_rule_is_replaced_credits_nobody(hosts, profil
 def test_a_repeated_last_step_is_credited_like_any_other_answer(hosts, profile):
     """`repeatLast` answers from the rule, so each repeat is an answer — a test asserting the mock
     was in play must not stop counting the moment the sequence runs out of planned steps."""
-    subject = _retry_subject("repeatLast")
+    subject = _retry_subject(profile, "repeatLast")
     for _ in range(4):  # two planned steps, then two repeats of the last
         run_request(subject, _flow())
     assert _answers(subject) == {"ovr_retry": 4}

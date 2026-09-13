@@ -78,8 +78,8 @@ control API and drive the proxy. If that matters in your environment, do not run
 - **Your profile is private data.** Scenarios can contain real payloads captured from a real
   backend, and `/proxy.pac` contains every hostname you intercept. Before attaching
   `/recent`, `/overrides`, `/scenarios` output or a PAC file to a public issue, check what is in
-  them. Scenario files written by Lyrebird are `0600`; the examples `lyrebird init` copies keep the
-  mode they ship with (`0644`) until something rewrites them.
+  them. Lyrebird writes no scenario file, so their modes are whoever wrote them's; the examples
+  `lyrebird init` copies keep the mode they ship with (`0644`).
 
 ## Scope
 

@@ -83,12 +83,6 @@ async def _guard(request: web.Request, handler: Handler) -> web.StreamResponse:
         return web.json_response({"error": "invalid_name", "detail": str(error)}, status=400)
     except ValueError as error:  # rules.ValidationError and friends
         return web.json_response({"error": "invalid_payload", "detail": str(error)}, status=400)
-    except OSError as error:
-        # The store could not write the profile — a full disk, a read-only profile. It publishes
-        # nothing it could not write, so the caller's change simply did not happen and a retry is
-        # safe. Named and detailed because aiohttp's own 500 is a bare text/plain body that sends
-        # the operator to the proxy log instead of to the disk that is full.
-        return web.json_response({"error": "persist_failed", "detail": str(error)}, status=500)
 
     return response
 
@@ -272,23 +266,11 @@ def make_app(store: Store, meta_provider: MetaProvider) -> web.Application:
         store.clear_recent()
         return web.json_response({"ok": True})
 
-    # MARK: - Overrides (act on the active scenario)
+    # MARK: - Overrides (read the active scenario)
 
     @routes.get("/__mock__/overrides")
     async def overrides_list(_request: web.Request) -> web.StreamResponse:
         return web.json_response(store.active_overrides())
-
-    @routes.post("/__mock__/overrides")
-    async def overrides_add(request: web.Request) -> web.StreamResponse:
-        override = store.add_override(await _safe_json(request))
-        return web.json_response({"id": override["id"], "active": override["active"]})
-
-    @routes.delete("/__mock__/overrides")
-    async def overrides_clear(_request: web.Request) -> web.StreamResponse:
-        """Deletes every override in the active scenario and rewrites its file."""
-        cleared = len(store.active_overrides())
-        store.clear_overrides()
-        return web.json_response({"cleared": cleared, "scenario": store.active_name})
 
     # MARK: - Run state
 
@@ -316,17 +298,6 @@ def make_app(store: Store, meta_provider: MetaProvider) -> web.Application:
     async def scenarios_list(_request: web.Request) -> web.StreamResponse:
         return web.json_response(store.list_scenarios())
 
-    @routes.post("/__mock__/scenarios")
-    async def scenarios_create(request: web.Request) -> web.StreamResponse:
-        body = await _safe_json(request)
-        if not body.get("name"):
-            return web.json_response({"error": "name_required"}, status=400)
-        try:
-            store.create_scenario(body["name"])
-        except FileExistsError:
-            return web.json_response({"error": "scenario_exists", "name": body["name"]}, status=409)
-        return web.json_response({"created": body["name"]})
-
     @routes.put("/__mock__/scenarios/active")
     async def scenarios_activate(request: web.Request) -> web.StreamResponse:
         body = await _safe_json(request)
@@ -341,18 +312,6 @@ def make_app(store: Store, meta_provider: MetaProvider) -> web.Application:
                 status=404,
             )
         return web.json_response({"active": store.active_name})
-
-    @routes.delete("/__mock__/scenarios")
-    async def scenarios_delete_by_query(request: web.Request) -> web.StreamResponse:
-        # A grouped name contains `/`, which no path parameter can carry: `.../scenarios/checkout/x`
-        # matches no route at all, so the CLI would report "not found" for a scenario that is right
-        # there. The query carries it percent-encoded instead.
-        name = request.query.get("name")
-        if not name:
-            return web.json_response({"error": "name_required"}, status=400)
-        if not store.delete_scenario(name):
-            return web.json_response({"error": "cannot_delete", "name": name}, status=400)
-        return web.json_response({"deleted": name})
 
     @routes.post("/__mock__/scenarios/reload")
     async def scenarios_reload(request: web.Request) -> web.StreamResponse:

@@ -57,16 +57,13 @@ The profile directory may itself be a symlink, or live in a repository you point
 the path is resolved once at startup, and reaching the same directory through a link or by its real
 name is the same profile. Inside it, what counts is where a path *resolves*, not whether it is a
 link: a scenario file must resolve under the resolved `scenarios/` directory *and* under the
-resolved profile. A `scenarios/` linked out of the profile therefore fails every write that touches
-a scenario file — including `scenario new`, `scenario rm`, `override add` and `override clear` —
-with `path escapes …`; a single file linked out, or into a sibling directory inside the profile,
-fails only the writes to that scenario. A grouped file is held to exactly the same rule, so a
-scenario the proxy serves is one it can also save.
+resolved profile. A `scenarios/` linked out of the profile therefore loads nothing; a single file
+linked out, or into a sibling directory inside the profile, is skipped on its own. A grouped file
+is held to exactly the same rule.
 
-Reads are held to the same rule, so such a file is not loaded at all: startup skips it with
-`path escapes …` in its load problems, and `lyrebird validate` names it. That is the point — a
-scenario the proxy served but could never save was a scenario you could not edit and could not tell
-apart from one that had loaded. Move the whole profile, not the scenarios.
+Such a file is not loaded at all: startup skips it with `path escapes …` in its load problems, and
+`lyrebird validate` names it. That is the point — a scenario served from outside the profile is one
+you cannot tell apart from a scenario that is in it. Move the whole profile, not the scenarios.
 
 Scenarios you save go into the profile — that is what it is for. Everything the tool
 writes for its own purposes stays out, in the macOS directory that matches how long the file
@@ -229,16 +226,12 @@ and what the PAC advertises — those are deliberately separate settings.
 - `POST /reset` — start a fresh run in the active scenario: rewind sequence cursors and clear answer
   counts, for every rule or one named with `{"id": ...}`. Returns `{"scenario": …, "reset": {id:
   runId}}` — the run id per rule is what binds a later assertion to this boundary
-- `GET|POST /overrides` — act on the **active scenario**
-- `DELETE /overrides` — **destructive**: deletes every override in the active scenario and rewrites
-  its file. The only endpoint that does this.
-- `GET /scenarios` · `POST /scenarios` · `PUT /scenarios/active` ·
-  `DELETE /scenarios?name=<url-encoded>`
+- `GET /overrides` — the rules of the **active scenario**
+- `GET /scenarios` · `PUT /scenarios/active`
   - Each listed scenario carries `group` — its folder, or `""` at the root of `scenarios/`. It is
     derived from the name, never stored: the folder a file sits in *is* the group.
-  - Delete takes the name in the **query**, percent-encoded, because a grouped name contains `/` and
-    no path segment can carry one.
-- To move a scenario, move its file and then `POST /scenarios/reload` `{"use": …}`.
+- To add, change, move or remove a scenario, write, edit, move or delete its file and then
+  `POST /scenarios/reload` `{"use": …}`. Nothing in the engine writes into a profile.
 - `POST /scenarios/reload` `{"use": …}` (optional) — re-read every scenario file, for a profile
   edited outside the engine. All or nothing: any problem is **409**
   `{"error": "reload_refused", "problems": [...]}` and the proxy goes on serving what it already
@@ -247,18 +240,16 @@ and what the PAC advertises — those are deliberately separate settings.
   ids from before the reload belong to nothing. If the active scenario is no longer on disk the
   reload refuses rather than falling back to `default`; `use` names its replacement.
 
-`POST /overrides` refuses (**400**) a rule that fails validation and installs nothing. A scenario
-*file* is instead reported-and-dropped at startup, because the file is in front of you and the
-proxy must still start; an API call answering 200 for a rule it discarded is worse than refusing.
+A rule that fails validation is reported-and-dropped when its file is read, naming the rule and the
+field. That is the only validation boundary there is, which is why a reload refuses whole: a file
+somebody has just edited being silently half-loaded is indistinguishable from one that worked.
 
-A write whose scenario file resolves outside `scenarios/` or outside the profile is refused with
-**400** `{"error": "invalid_name", "detail": "path escapes …"}` before anything live changes —
-[Profiles](#profiles) has the layouts that cause it. A name that could not be a path component is a
-separate refusal, reported per endpoint: creating with one is the same **400** with a `detail` of
-`invalid scenario name …`, and so is activating, browsing or deleting with one — a string that could
-never be a scenario is refused rather than reported as one that is merely absent. (Deleting already
-answered 400; what changed is the slug, from `cannot_delete` to `invalid_name`.) A name nested more
-than one level deep is refused the same way.
+A scenario file that resolves outside `scenarios/` or outside the profile is not loaded at all, and
+is named in the load problems — [Profiles](#profiles) has the layouts that cause it. A name that
+could not be a path component is refused with **400** `{"error": "invalid_name", "detail":
+"invalid scenario name …"}` when activating or browsing with it — a string that could never be a
+scenario is refused rather than reported as one that is merely absent. A name nested more than one
+level deep is refused the same way.
 
 A `POST`, `PUT`, `PATCH` or `DELETE` carrying a body must send `Content-Type: application/json`,
 and the `Host` header must be a loopback name with the control port. Cross-origin requests are
@@ -313,8 +304,9 @@ wrote — a rule carrying `statsu: 503` would otherwise load cleanly and reply 2
 | `notes` | Free text for the author. Ignored by the engine. |
 
 `notes` is the only free-text field — JSON has no comments, and a rule usually needs a sentence
-saying why it exists. At startup an override that carries an unknown field is reported and skipped,
-naming the field; the rest of its scenario still loads. An `override add` is refused outright.
+saying why it exists. When a file is read, an override that carries an unknown field is reported and
+skipped, naming the field; the rest of its scenario still loads at startup, and a reload refuses
+whole.
 
 `match` supports these fields and no others — an unknown one is rejected rather than ignored,
 because a typo'd field is not a stricter matcher but a missing constraint:
@@ -326,10 +318,9 @@ because a typo'd field is not a stricter matcher but a missing constraint:
 | `query` | Query parameters that must all be present with these exact values. Others are ignored. |
 | `bodyContains` | A substring that must appear in the request body. |
 
-The help text of `lyrebird override add` and the validation that accepts or rejects a rule share
-one vocabulary, `OVERRIDE_FIELD_HELP` and `MATCHER_FIELD_HELP` in `rules.py`, so the CLI cannot
-advertise a field validation would refuse. The two tables above mirror that vocabulary; they are
-maintained by hand, so keep them in step with it.
+The vocabulary lives once, in `OVERRIDE_FIELD_HELP` and `MATCHER_FIELD_HELP` in `rules.py`, and the
+validation that accepts or rejects a rule is generated from it. The two tables above mirror that
+vocabulary; they are maintained by hand, so keep them in step with it.
 
 `delayMs` delays a matched response (that flow only), up to a ceiling of 60 s — a typo must not be
 able to wedge a flow indefinitely. The delay is applied before the mode is looked at, so it holds a
@@ -491,7 +482,7 @@ classifier `up` and `down` act on) · `session.py` (the journal: root, lock, rea
 ```
 
 `test_rules.py` covers matching order, patch merging, sequences and override validation;
-`test_store.py` and `test_control.py` cover scenario persistence, path containment and the control
+`test_store.py` and `test_control.py` cover scenario loading, path containment and the control
 API's Host/Origin/Content-Type guard; `test_config.py` pins the host-scoping agreement between the
 addon, mitmproxy's `allow_hosts` and the generated PAC, with `test_addon.py`, `test_netproxy.py`
 and `test_launcher.py` covering the mitmproxy options, the `networksetup` parsers and how

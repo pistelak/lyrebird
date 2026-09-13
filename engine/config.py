@@ -140,8 +140,8 @@ def mitmproxy_confdir() -> Path:
 
 
 def atomic_write(path: Path, text: str) -> None:
-    """Write privately and indivisibly: these files hold response payloads and pids, so they must
-    not be world-readable and must never be observed half-written.
+    """Write privately and indivisibly: these files hold the session journal's pids and ownership,
+    so they must not be world-readable and must never be observed half-written.
 
     `mkstemp` rather than a name of our own, for two reasons. It creates the file no more
     permissively than 0600 before handing back a descriptor — the umask can make it stricter still,

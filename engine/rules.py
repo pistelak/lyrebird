@@ -73,8 +73,8 @@ STEP_FIELDS = ("status", "headers", "body")
 SEQUENCE_FIELDS = ("steps", "advanceOn", "onExhausted")
 
 # The matcher vocabulary, with what each field means. One dict rather than a tuple and a docstring
-# somewhere else, because three things are generated from it — validation, the "unknown field" error,
-# and the CLI help — and a capability nobody can discover is reported as a missing feature.
+# somewhere else, because validation and the "unknown field" error are both generated from it, and a
+# capability nobody can discover is reported as a missing feature.
 MATCHER_FIELD_HELP = {
     "method": "HTTP method, compared case-insensitively. Omit to match any method.",
     "path": "Path without the query string. '*' is the only wildcard; everything else is literal.",
@@ -83,7 +83,7 @@ MATCHER_FIELD_HELP = {
 }
 MATCHER_FIELDS = tuple(MATCHER_FIELD_HELP)
 
-# The top-level vocabulary, for the same three consumers and the same reason. `notes` is the one
+# The top-level vocabulary, for the same consumers and the same reason. `notes` is the one
 # field the engine never reads: JSON has no comments and scenarios are written by hand, so an author
 # needs somewhere to say why a rule exists. Everything outside this table is a typo — including
 # `nots` — and a typo'd field is not a harmless extra: `statsu` leaves the rule answering with a
@@ -794,9 +794,8 @@ def normalise_scenario(scenario: Any, name: str) -> dict:
         raise ValidationError("scenario must be a JSON object")
 
     # Underscore keys are ours: `_problems` below, and the sequence cursors the store hangs off the
-    # scenario. `_persistable` strips them on the way out, so nothing we wrote can contain one — but
-    # a hand-edited or imported file can, and `_ruleRuntime` reaching the store means either a
-    # crash inside a proxy hook or a scenario that quietly starts on step 2.
+    # scenario. A hand-edited or imported file can carry one, and `_ruleRuntime` reaching the store
+    # means either a crash inside a proxy hook or a scenario that quietly starts on step 2.
     result = {key: value for key, value in scenario.items() if not key.startswith("_")}
     result["name"] = name
     result.setdefault("schemaVersion", 1)
@@ -838,7 +837,8 @@ def normalise_scenario(scenario: Any, name: str) -> dict:
         # `matched: null`, which reads as "nothing answered".
         if validated.get("id") is None:
             validated["id"] = derived_id(validated)
-        # Ids address a rule: `add_override` replaces by id, and sequence state is keyed by it. Two
+        # Ids address a rule: `reset` and `assert-answered` take one, and sequence state is keyed by
+        # it. Two
         # rules sharing an id would share a cursor and could not be replaced independently — so the
         # duplicate is reported and dropped rather than loaded into a scenario where it would
         # misbehave quietly.
