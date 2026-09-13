@@ -28,11 +28,23 @@ on this repository, rather than opening a public issue.
   it trusts the CA, and neither answer leaves that device's traffic alone;
   [engine/README.md — Which simulator](engine/README.md#which-simulator) says what each one gets.
 - **Changes your active network service's proxy settings.** It installs a PAC pointing at the local
-  proxy. Your previous PAC URL and enabled state are recorded and restored by `lyrebird down`, and
-  by the watchdog if the proxy dies. A PAC that isn't Lyrebird's is left untouched.
-  This is best-effort, not a guarantee: if the watchdog is itself killed, the machine loses power,
-  or `networksetup` fails, the PAC can be left pointing at a dead port. `lyrebird status` reports
-  the true state, and System Settings ▸ Network ▸ *service* ▸ Proxies is the manual fix.
+  proxy. Your previous PAC URL and enabled state go into a per-user session journal under
+  `~/Library/Application Support/Lyrebird/session/`, written and fsynced to disk *before* the PAC is
+  touched, and `lyrebird down` — or the watchdog, if the proxy dies — restores them from it. Two
+  things are guaranteed by that: the settings to put back survive a power cut, because they were
+  durable before anything changed; and there is one PAC-owning session per user, taken under a lock,
+  so two runs cannot both snapshot the PAC and both install — the failure that left a Mac
+  "restored" to a PAC that was already Lyrebird's. A PAC that is not this session's is never
+  overwritten — `down` preserves the recorded baseline in that directory's `archive/`, prints the
+  path and exits non-zero, and putting those settings back is then yours to do.
+  What is *not* guaranteed: a `kill -9` that takes the proxy and the watchdog together, a power cut,
+  or a `networksetup` that fails can still leave the PAC pointing at a dead port until the next
+  command; a PAC changed by hand mid-run supersedes the baseline; a foreign write inside a single
+  `networksetup` command is overwritten without trace; and another login account's session is
+  outside all of it. `lyrebird status` reports the true state, `lyrebird down` is the recovery
+  command, and System Settings ▸ Network ▸ *service* ▸ Proxies is the manual fix.
+  [TROUBLESHOOTING.md](TROUBLESHOOTING.md#what-the-session-journal-does-not-rule-out) has the full
+  list.
 - **Decrypts TLS only for the hosts you list** in `profile.json`, matched exactly. Subdomains are
   not implied. An empty list intercepts nothing; a malformed profile aborts startup rather than
   falling back to a default.

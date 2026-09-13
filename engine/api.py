@@ -175,14 +175,19 @@ def observe_health(port: int | None = None) -> HealthObservation:
 def _profile_mismatch(running: str) -> str:
     """The one sentence for "the port is held by someone else's proxy", wherever we learn it.
 
-    It names both fingerprints and both remedies: "a different profile" without them leaves the
-    operator no way to tell which one they are looking at.
+    It names both fingerprints: "a different profile" without them leaves the operator no way to
+    tell which one they are looking at.
+
+    It does *not* offer another control port any more. There is one PAC-owning session per user, so
+    `LYREBIRD_CONTROL_PORT=…` only changes the owner this run would request while the journal that
+    refused it stays exactly where it is — and the next `up` refuses again, with the operator now
+    believing the port was the problem. `lyrebird down` first is the remedy that works.
     """
     return (
         f"{ui.RED}a different profile is already running on port {config.CONTROL_PORT}{ui.R}\n"
         f"  running: {running}   requested: {config.PROFILE_FINGERPRINT}\n"
-        f"  stop it first (`lyrebird down`) or use a different --profile, or another port via\n"
-        f"  LYREBIRD_CONTROL_PORT."
+        f"  stop it first (`lyrebird down`), then start this profile — or point at the profile\n"
+        f"  that is running with --profile."
     )
 
 

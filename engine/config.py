@@ -10,8 +10,10 @@ There are two seams, deliberately kept apart:
   underneath it, which is what the tests and anyone who wants one directory to delete rely on.
   Never put either in a repo.
 
-Runtime files are keyed by *control port*, not by profile, so ``lyrebird down`` finds the running
-instance no matter which profile — or which directory — it is invoked from.
+The session journal lives at one fixed per-user path (see ``session.py``) and is **not** moved by
+``LYREBIRD_STATE_DIR``: a PAC belongs to the Mac's network service, so who holds it is a fact about
+the user, not about a state directory — which is what lets ``lyrebird down`` find the running
+session from any profile, port or directory.
 
 Host scoping is **exact**: a profile lists complete hostnames and subdomains are not implied.
 The three mechanisms that enforce it (``is_intercepted_host`` for the addon, ``allow_hosts_regexes``
@@ -74,8 +76,8 @@ def _default_profile() -> Path:
 def _default_state_root() -> Path:
     """What must survive: `~/Library/Application Support/Lyrebird`.
 
-    Deliberately NOT `~/.config`: none of this is configuration. It is the active-scenario pointer,
-    the per-port recovery files, and the CA private key — which is better somewhere Finder hides,
+    Deliberately NOT `~/.config`: none of this is configuration. It is the active-scenario pointer
+    and the CA private key — which is better somewhere Finder hides,
     and all of which it would be wrong to lose. Time Machine includes this directory, which is the
     reason the log lives elsewhere: `tmutil isexcluded` reports Logs as excluded, so a log kept
     here would be backed up forever for no benefit.
@@ -134,20 +136,6 @@ def configure(profile: str | None = None) -> None:
     PROFILE_FINGERPRINT = hashlib.sha256(str(PROFILE_DIR).encode("utf-8")).hexdigest()[:12]
     STATE_FILE = STATE_ROOT / "profiles" / PROFILE_FINGERPRINT / "state.json"
     LOG_FILE = LOG_ROOT / f"{PROFILE_FINGERPRINT}.log"
-
-
-def state_root_id() -> str:
-    """The state root as a command-line token: the path itself has a space in it by default."""
-    return hashlib.sha256(str(STATE_ROOT).encode("utf-8")).hexdigest()[:12]
-
-
-def runtime_file() -> Path:
-    """Keyed by control port, not profile — `down` must find the live instance from anywhere."""
-    return STATE_ROOT / f"runtime-{CONTROL_PORT}.json"
-
-
-def lock_file() -> Path:
-    return STATE_ROOT / f"lock-{CONTROL_PORT}"
 
 
 def mitmproxy_confdir() -> Path:
@@ -227,50 +215,6 @@ def atomic_write(path: Path, text: str, *, durable: bool = False) -> None:
         with contextlib.suppress(OSError):
             tmp.unlink(missing_ok=True)
         raise
-
-
-class RuntimeRecordUnreadable(RuntimeError):
-    """The record exists and could not be read. A different claim from "there is no record": read
-    as `{}`, a corrupt file made `down` invent "no previous PAC", disable the routing, delete the
-    only copy of what to put back and report the restore a success — see
-    test_down_does_not_claim_to_restore_from_a_record_it_could_not_read."""
-
-    def __init__(self, path: Path, reason: str) -> None:
-        super().__init__(f"{path} cannot be read: {reason}")
-        self.path = path
-        self.reason = reason
-
-
-def read_runtime() -> dict:
-    """`{}` only when there is no record. A record that is there but cannot be read raises; every
-    caller decides what it can still do without it, and none may pretend it was absent."""
-    path = runtime_file()
-    # Read, not stat-then-read: an `is_file()` guard made a directory at this path, or a path
-    # that cannot be stat'd, read as "no record". Only "no such file" is absence.
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError as error:
-        if path.is_symlink():
-            # A link whose target is gone raises the same error as no entry at all, and is not
-            # the same thing: the entry is there, and what it pointed at may come back.
-            raise RuntimeRecordUnreadable(path, f"dangling symlink: {error}") from None
-        return {}
-    except (ValueError, OSError, RecursionError) as error:
-        # `ValueError` rather than `JSONDecodeError` (the decoder raises the plain one for a
-        # number too long to convert) and `RecursionError` (for nesting too deep): both used to
-        # traceback out of `down` and `status`.
-        raise RuntimeRecordUnreadable(path, str(error)) from None
-    if not isinstance(data, dict):
-        raise RuntimeRecordUnreadable(path, f"expected a JSON object, found {type(data).__name__}")
-    if not data:
-        # `up` never writes an empty record; one that is there and empty says nothing about what
-        # to put back, and read as absent it made `down` invent "no previous PAC" from it.
-        raise RuntimeRecordUnreadable(path, "the record is empty")
-    return data
-
-
-def write_runtime(data: dict) -> None:
-    atomic_write(runtime_file(), json.dumps(data, indent=2))
 
 
 configure()

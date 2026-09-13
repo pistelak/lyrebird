@@ -5,12 +5,14 @@ from __future__ import annotations
 import json
 import subprocess
 from pathlib import Path
-from typing import NamedTuple
 
 import click
 
 import config
+import ownership
+import session
 import ui
+from ownership import Simulator
 
 # MARK: - Small helpers
 
@@ -27,14 +29,9 @@ class SimulatorError(Exception):
     """No simulator to act on, and why. The message is the sentence the operator reads."""
 
 
-class Simulator(NamedTuple):
-    """A device simctl commands are addressed to *by UDID* — never by `booted`."""
-
-    udid: str
-    name: str
-
-    def __str__(self) -> str:
-        return f"{self.name} ({self.udid})"
+# One type for a device, defined in the pure core: `resolve_simulator` returns exactly what
+# `SessionRecord.simulator` stores, so nothing converts at the journal boundary.
+__all__ = ["Simulator"]
 
 
 def _first_line(result: subprocess.CompletedProcess, fallback: str) -> str:
@@ -235,17 +232,16 @@ def _bound_simulator(selector: str | None) -> Simulator:
     rule as `up`'s applies (the single booted candidate, or a refusal naming them).
     """
     if selector is None:
-        try:
-            recorded = config.read_runtime().get("simulator")
-        except config.RuntimeRecordUnreadable as error:
+        journal = session.Session().read()
+        if isinstance(journal, ownership.Unreadable):
             # Not "nothing recorded": that would resolve to whatever is booted, which may not be
-            # the device holding the CA. See test_relaunch_refuses_over_a_record_it_cannot_read.
+            # the device holding the CA. See test_relaunch_refuses_over_a_journal_it_cannot_read.
             raise SimulatorError(
-                f"the device this run trusted is recorded in {error.path}, which cannot be read "
-                f"({error.reason}) — pass --simulator, or fix or remove the file"
-            ) from None
-        if isinstance(recorded, dict) and recorded.get("udid"):
-            selector = str(recorded["udid"])
+                f"the device this run trusted is recorded in session.json, which cannot be read "
+                f"({journal.reason}) — pass --simulator, or run `lyrebird down`"
+            )
+        if isinstance(journal, ownership.SessionRecord) and journal.simulator is not None:
+            selector = journal.simulator.udid
     return resolve_simulator(selector)
 
 

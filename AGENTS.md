@@ -105,7 +105,7 @@ lyrebird --profile PATH up --use NAME --simulator <udid>   # `xcrun simctl list 
 
 With exactly one iOS simulator booted you can leave it out. With several booted and no choice
 made, `up` and `trust-ca` **refuse and list the booted devices** rather than let simctl pick one
-for you. `status` reports the device the last `up` used (`simulator` in `--json`), and
+for you. `status` reports the device the session recorded (`simulator` in `--json`), and
 `lyrebird relaunch [BUNDLEID]` relaunches the app on that same device — use it instead of
 `xcrun simctl launch booted <bundleid>` mid-run.
 
@@ -212,7 +212,15 @@ lyrebird --profile PATH status --json
   "simBundleId": "com.example.Store",
   "profile": "/path/to/profile",
   "service": "Wi-Fi",
-  "pac": { "url": "http://127.0.0.1:8088/proxy.pac", "enabled": true, "ours": true }
+  "pac": { "url": "http://127.0.0.1:8088/proxy.pac", "enabled": true, "ours": true },
+  "journalError": null,
+  "session": {
+    "phase": "active",
+    "owner": { "controlPort": 8088, "profileFingerprint": "3f0a1c4d9b22" },
+    "service": { "name": "Wi-Fi", "device": "en0" },
+    "watchdog": "alive",
+    "archive": null
+  }
 }
 ```
 
@@ -220,6 +228,20 @@ Exit code is 0 only when the proxy is up **and** intercepting **for the profile 
 `lyrebird status > /dev/null` works as a readiness check on its own. `--json` selects the output
 format and nothing else — both forms exit the same way, so `lyrebird status && …` is safe to
 write either way round.
+
+`session` is this Mac's one PAC-owning session, read from the journal rather than from the proxy,
+so it answers whether or not anything is running. `phase` is `absent` · `acquiring` · `active` ·
+`restored` · `archived` · `unreadable`; `watchdog` is `alive` · `dead` · `unknown`, or `none` for a
+phase that owns no watchdog; `owner`, `service` and `archive` are `null` where the journal names
+none. `journalError` is non-null when the journal could not be read at all — by this command or by
+the proxy, which reads it too — and that means `down` cannot restore from it.
+
+Two of them mean the machine still needs something from you, and `status` exits 1 for both:
+`"watchdog": "dead"` is automatic restoration lost (`lyrebird down && lyrebird up`), and
+`"phase": "archived"` means the previous settings were never put back and are waiting in the file
+`archive` names — `lyrebird down` says so too, and exits 1.
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md#the-proxy-is-gone-but-the-network-still-points-at-it) has
+what to do with either.
 
 The control port can be held by a proxy started for a *different* profile. That proxy is
 intercepting, but not for you, so `status` exits non-zero and says so: `profileMismatch` is `true`
@@ -243,6 +265,11 @@ Set `simBundleId` in the profile and `up` handles it — and name the scenario i
 It restores the proxy settings that were there before. Run it even on your failure paths. If your
 process is killed before it can, a watchdog restores them within a couple of seconds — but do not
 rely on that as the normal path.
+
+`down` is also the only recovery command, and it needs nothing to find the session: no `--profile`,
+no port, no directory. It reads this user's one session journal, which is what the run recorded the
+settings in. Exit 0 means they are back; exit 1 means they are not, and it says what is in the way —
+including a session it archived, whose baseline it prints the path to for you to put back by hand.
 
 ## Making a scenario
 

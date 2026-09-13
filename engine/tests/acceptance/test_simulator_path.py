@@ -24,12 +24,12 @@ screen — because either alone can be true while the path is broken:
 
 from __future__ import annotations
 
-import json
-import os
-import signal
 import time
 
 import pytest
+
+import ownership
+import procs
 
 pytestmark = pytest.mark.acceptance
 
@@ -204,9 +204,12 @@ def the_watchdog_restores_the_settings_when_the_proxy_is_killed(harness):
     harness.up("--no-relaunch", "--use", "fixture-replaced")
     assert harness.pac_is_ours(), f"the PAC was not installed: {harness.pac().describe()}"
 
-    pid = harness.runtime().get("proxyPid")
-    assert pid, f"no proxy pid in the runtime file: {json.dumps(harness.runtime())}"
-    os.kill(pid, signal.SIGKILL)
+    journal = harness.journal()
+    assert isinstance(journal, ownership.SessionRecord), f"no session record after `up`: {journal}"
+    assert isinstance(journal.phase, ownership.Active), f"the session is {ownership.phase_word(journal)}: {journal}"
+    # Through the journalled `Ref`, never a bare `os.kill` on a pid read out of a record: a proxy
+    # that exited and whose pid was reused in the meantime must receive nothing.
+    assert procs.kill_now(journal.phase.proxy, "proxy", journal.owner.control_port) is not procs.Termination.NOT_RUNNING
 
     deadline = time.time() + WATCHDOG_WINDOW
     while not harness.restored() and time.time() < deadline:

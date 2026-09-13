@@ -744,3 +744,26 @@ def test_decide_release_keeps_the_journal_while_a_ref_is_not_proven_dead():
             )
         )
         assert isinstance(decision, own.KeepJournal)
+
+
+def test_down_decides_archive_unreadable_in_the_pure_core():
+    """A journal that cannot be read decides its own fate here, never in the executor: whatever
+    else was observed, the bytes are preserved and the record replaced.
+
+    Left to `down`, "is this the unreadable row?" would be a consequential decision taken outside
+    the pure core — and the one row where every other fact is irrelevant is exactly the one an
+    executor would be tempted to shortcut.
+    """
+    for service, pac, health, scan in itertools.product(SERVICES, [*own.PacClass, own.NotObserved()], HEALTHS, SCANS):
+        decision = own.decide_down(
+            own.DownObs(
+                journal=own.Unreadable("expected an object, found list"),
+                service=service,
+                pac=pac,
+                health=health,
+                proxy=own.NotObserved(),
+                watchdog=own.NotObserved(),
+                scan=scan,
+            )
+        )
+        assert decision == own.Archive("unreadable"), (service, pac, health, scan)

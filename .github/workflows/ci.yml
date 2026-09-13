@@ -47,6 +47,9 @@ jobs:
           "$RUNNER_TEMP/bin/lyrebird" --help
           # No proxy is running here, so `status` must report that and exit 1 — "not intercepting".
           # Exit 0 would mean it claimed a proxy it cannot see, so the code is asserted, not ignored.
+          # This assumes the runner's user has no Lyrebird session: the session journal lives at a
+          # fixed per-user path that no environment variable moves, so on a shared or reused runner
+          # that had one, `status` would be reporting a session this job never started.
           status_rc=0
           "$RUNNER_TEMP/bin/lyrebird" --profile "$GITHUB_WORKSPACE/engine/examples" status --json \
             > "$RUNNER_TEMP/status.json" || status_rc=$?

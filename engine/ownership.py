@@ -816,6 +816,20 @@ ReleaseDecision = ReleaseNow | KeepJournal
 _DOWN = "run `lyrebird down`"
 
 
+def phase_word(journal: Journal) -> str:
+    """The journal's shape as one word, for `/health` and `status`. `Archived` is one word whatever
+    its context: what a reader does about it is the same either way."""
+    match journal:
+        case Absent():
+            return "absent"
+        case Unreadable():
+            return "unreadable"
+        case Archived():
+            return "archived"
+        case SessionRecord():
+            return _phase_name(journal.phase)
+
+
 def _phase_name(phase: Phase) -> str:
     match phase:
         case Acquiring():

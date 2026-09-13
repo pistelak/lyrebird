@@ -20,13 +20,19 @@ Prerequisites are settled before anything is started, and they split two ways on
 
 Once the prerequisites pass, nothing skips.
 
-**The cleanup is not allowed to depend on the thing under test.** `lyrebird down` is what runs
-first, because putting the network back is its job and this is where that job is checked. But a
-`down` that fails, hangs, or half-finishes is exactly the regression worth catching, and it must
-not also be the reason a developer's Mac is left routed at a dead port. So the settings are read
-back from `networksetup` directly, and if they are not the ones recorded before anything started,
-this kills the proxy this run started, gives the watchdog its chance, and failing that restores the
-baseline itself — reporting both the original failure and the fact that it had to.
+**The cleanup is not allowed to depend on the thing under test.** The `down` *phase* goes
+through the shipped command, because putting the network back is its job and this is where that job
+is checked. The *finalizer* does not: an ordinary `down` finds the session from any directory,
+profile or port, so once this run's own session has been released, a contributor's session started
+in the meantime is what that `down` would tear down. It calls the same executor in-process —
+`supervisor.down_session(session, only_owner=…)` — with an ownership precondition evaluated inside
+its lock. The settings are then read back from `networksetup` directly, and if they are not the
+ones recorded before anything started, this stops the processes this run's journal names and falls
+back to `_restore_by_hand` — which imports nothing from `supervisor`, so a defect in that
+executor's wiring cannot defeat both the teardown and the cleanup, and decides with the same pure
+function and writes with the same primitives, so it cannot drift from the product's rules either.
+It writes only over a journal carrying this run's own owner, and reports both the original failure
+and the fact that it had to act.
 
 **There is one interruption path.** SIGTERM and SIGHUP are turned into `KeyboardInterrupt`, which
 is what a Ctrl-C already raises, so every route out of a run is the route pytest already unwinds:
@@ -40,6 +46,7 @@ undo the restore that follows.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
 import re
@@ -48,12 +55,21 @@ import signal
 import socket
 import subprocess
 import time
+import traceback
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import NamedTuple
 
 import pytest
 import simstate
+
+import api
+import netproxy
+import ownership
+import procs
+import session
+import supervisor
 
 REPO = Path(__file__).resolve().parents[3]
 LYREBIRD = REPO / "bin" / "lyrebird"
@@ -87,6 +103,9 @@ KILL_WAIT = 15.0
 # How long a proxy `down` has already asked to stop may take to go before it counts as a stray.
 SHUTDOWN_GRACE = 5.0
 WATCHDOG_GRACE = 30.0
+# How long the finalizer waits for the session lock. Longer than a watchdog tick and shorter than
+# a run: a lock it cannot take is a thing to report, never a thing to wait out forever.
+LOCK_WAIT = 60.0
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
@@ -126,7 +145,7 @@ def _run_grouped(args: list[str], env: dict, timeout: float) -> subprocess.Compl
     is signalled.
 
     Not the proxy and the watchdog: `up` detaches those into sessions of their own on purpose, and
-    the runtime file names them for the cleanup to find. Killing them here would make every `up`
+    the session journal names them for the cleanup to find. Killing them here would make every `up`
     its own teardown.
 
     Because every failure path kills and reaps before it propagates, there is never an in-flight
@@ -237,16 +256,6 @@ def _interruptible() -> Iterator[None]:
             signal.signal(signum, handler)
 
 
-def _pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True  # alive and somebody else's
-    return True
-
-
 def _fail(what: str, result: subprocess.CompletedProcess) -> None:
     pytest.fail(
         f"{what}\n  command: {' '.join(result.args)}\n"
@@ -273,14 +282,28 @@ def _free_ports(count: int) -> list[int]:
     return ports
 
 
-def _active_service() -> str | None:
-    """The network service carrying the default route, resolved the way macOS reports it.
+def _service_table() -> list[tuple[str, str]]:
+    """Every (name, device), read from macOS by this harness rather than through `netproxy`.
+
+    A `(*)` entry is a disabled service, which still holds its PAC — so the marker is part of the
+    pattern rather than a reason to drop the line.
+    """
+    order = _try_run(["networksetup", "-listnetworkserviceorder"], timeout=60)
+    if order is None or order.returncode != 0:
+        return []
+    found = re.findall(r"\((?:\d+|\*)\)\s*(.+?)\n\(Hardware Port:.*?Device:\s*(\w+)\)", order.stdout)
+    return [(name.strip(), device) for name, device in found]
+
+
+def _active_service() -> ownership.ServiceRef | None:
+    """The service carrying the default route — name *and* device — resolved the way macOS
+    reports it.
 
     Deliberately not `lyrebird status --json`, and deliberately not an import of `netproxy`:
-    `status` answers with the service the *runtime record* names (engine/cli.py), so once `up` has
-    run it echoes back the value this harness recorded and a guard built on it compares a number
-    with itself. This is the second opinion — the same two questions the engine asks the OS, asked
-    here, so a route that moved is seen whatever Lyrebird believes.
+    `status` answers with the service the *journal* names, so once `up` has run it echoes back the
+    value this harness recorded and a guard built on it compares a number with itself. This is the
+    second opinion — the same two questions the engine asks the OS, asked here, so a route that
+    moved is seen whatever Lyrebird believes.
     """
     route = _try_run(["route", "-n", "get", "default"], timeout=30)
     if route is None:
@@ -288,12 +311,9 @@ def _active_service() -> str | None:
     interface = re.search(r"interface:\s*(\S+)", route.stdout)
     if not interface:
         return None
-    order = _try_run(["networksetup", "-listnetworkserviceorder"], timeout=60)
-    if order is None:
-        return None
-    for name, device in re.findall(r"\(\d+\)\s*(.+?)\n\(Hardware Port:.*?Device:\s*(\w+)\)", order.stdout):
+    for name, device in _service_table():
         if device == interface.group(1):
-            return name.strip()
+            return ownership.ServiceRef(name=name, device=device)
     return None
 
 
@@ -499,7 +519,10 @@ class Harness:
         self.profile = profile
         self.state = state
         self.env = env
-        self.service: str | None = None
+        # By device as well as by name: a rename of this run's service, with the old name handed to
+        # another device, would otherwise have the harness read the other one and report a failed
+        # restore after production correctly restored this one.
+        self.service: ownership.ServiceRef | None = None
         self.baseline = Pac("", False)
         self.control_port = env["LYREBIRD_CONTROL_PORT"]
         self.our_pac_url = f"http://127.0.0.1:{self.control_port}/proxy.pac"
@@ -547,17 +570,20 @@ class Harness:
         later: the honest answer is to stop mutating and say so, with the recorded service still
         restorable because nothing else was touched.
 
-        Asked of macOS rather than of `status --json`, which reports the service the runtime record
-        names and would therefore agree with this run by construction.
+        Asked of macOS rather than of `status --json`, which reports the service the journal names
+        and would therefore agree with this run by construction. A moved route is a refusal in the
+        engine too — `up` says `lyrebird down && lyrebird up` — so this stops rather than following
+        it, and compares *devices*: a rename is not a move.
         """
         print(f"— phase: {name}", flush=True)
         now = _active_service()
-        if now != self.service:
+        here = self.service.device if self.service else None
+        if now is None or now.device != here:
             pytest.fail(
-                f"the active network service changed from '{self.service}' to '{now}' "
-                f"before the phase '{name}'. Stopping: a PAC installed on '{now}' is not "
-                f"one this run recorded a baseline for. '{self.service}' is restored on "
-                f"the way out; check '{now}' by hand if an earlier phase reached it."
+                f"the default route moved from device '{here}' to '{now.device if now else None}' "
+                f"before the phase '{name}'. Stopping: a PAC installed on the new service is not "
+                f"one this run recorded a baseline for. The recorded service is restored on the way "
+                f"out; check the new one by hand if an earlier phase reached it."
             )
 
     def status(self) -> dict:
@@ -570,24 +596,44 @@ class Harness:
             _fail("`lyrebird status --json` did not print JSON", result)
         return state
 
-    def runtime(self) -> dict:
-        path = self.state / f"runtime-{self.control_port}.json"
-        if not path.is_file():
-            return {}
-        try:
-            recorded = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return {}
-        return recorded if isinstance(recorded, dict) else {}
+    def journal(self) -> ownership.Journal:
+        """What the session journal says, read from the *real* per-user root.
+
+        There is one per user and no environment variable moves it, which is why the prerequisites
+        refuse to start over somebody else's — and why the acceptance conftest overrides the fast
+        suite's temporary root: the `up` that wrote this ran in another process.
+        """
+        return session.Session().read()
+
+    def owner(self) -> ownership.Owner:
+        """This run's complete `Owner` — all three fields, exactly as `config` computes them."""
+        return ownership.Owner(
+            control_port=int(self.control_port),
+            profile_fingerprint=hashlib.sha256(str(self.profile.resolve()).encode("utf-8")).hexdigest()[:12],
+            state_root=str(Path(self.state).resolve()),
+        )
 
     # MARK: - The network, read from macOS rather than from Lyrebird
 
-    def _read_pac(self) -> Pac | None:
-        """None when macOS could not be asked — which is not the same as "there is no PAC", and is
-        why the cleanup treats it as a failure to verify rather than as a clean network."""
+    def service_name(self) -> str | None:
+        """The name that carries this run's recorded *device* now — `netproxy.resolve`'s rule,
+        written here so a rename cannot make the harness read another service and report a failed
+        restore after production correctly restored this one."""
         if self.service is None:
             return None
-        result = _try_run(["networksetup", "-getautoproxyurl", self.service], timeout=60)
+        on_device = [name for name, device in _service_table() if device == self.service.device]
+        if self.service.name in on_device:
+            return self.service.name
+        return on_device[0] if len(on_device) == 1 else None
+
+    def _read_pac(self) -> Pac | None:
+        """None when macOS could not be asked, or when the recorded device carries no one service —
+        which is not the same as "there is no PAC", and is why the cleanup treats it as a failure to
+        verify rather than as a clean network."""
+        name = self.service_name()
+        if name is None:
+            return None
+        result = _try_run(["networksetup", "-getautoproxyurl", name], timeout=60)
         if result is None or result.returncode != 0:
             return None
         url = re.search(r"URL:\s*(\S+)", result.stdout)
@@ -597,7 +643,7 @@ class Harness:
     def pac(self) -> Pac:
         now = self._read_pac()
         if now is None:
-            pytest.fail(f"could not read the PAC on '{self.service}'")
+            pytest.fail(f"could not read the PAC on device '{self.service.device if self.service else None}'")
         return now
 
     def pac_is_ours(self) -> bool:
@@ -608,28 +654,29 @@ class Harness:
     def restored(self, now: Pac | None = None) -> bool:
         """Are the settings back to what this run found?
 
-        Not a string comparison, for two reasons that both come from `netproxy.restore_pac`:
+        A *verification* predicate, and only that. The snapshot it compares against is what the run
+        is checked and reported with; the journal's `baseline` — observed under the lock at
+        acquisition — is the only target anything ever writes, because a user who reconfigures the
+        PAC between this snapshot and `up` has changed what "restored" means and only the journal
+        knows it.
 
-        * it normalises `enabled` to `bool(url) and enabled`, so a baseline that was somehow
-          enabled with no URL is correctly restored *disabled* — requiring the recorded flag back
-          would reject a correct restore;
-        * macOS rejects an empty PAC URL, so with no URL to put back it can only switch the PAC
-          off, leaving the URL Lyrebird installed in the field. Disabled-with-our-URL is therefore
-          the restored state on a machine that started with none — the same state an ordinary
-          `lyrebird down` leaves.
+        Not a string comparison, because the target is plan-v6's:
 
-        The exception is that narrow: with an empty baseline the URL left behind must be empty or
-        this run's own, and with any other baseline the URL must come back exactly.
+        * an empty baseline has the target `Off`, and macOS rejects an empty PAC URL — so all that
+          can be restored is the flag, leaving whatever URL is in the field. Disabled-with-a-
+          Lyrebird-URL is the restored state on a machine that started with none;
+        * a *disabled Lyrebird* baseline — residue from an earlier run, possibly on another port —
+          has the same `Off` target, so demanding that exact old URL back would fail a correct
+          restore;
+        * every other baseline comes back exactly, flag and all.
         """
         now = now if now is not None else self._read_pac()
         if now is None:
             return False  # unread is not restored
-        expected_enabled = self.baseline.enabled and bool(self.baseline.url)
-        if now.enabled != expected_enabled:
-            return False
-        if self.baseline.url:
-            return now.url == self.baseline.url
-        return now.url in ("", self.our_pac_url)
+        off_target = not self.baseline.url or (LYREBIRD_PAC.match(self.baseline.url) and not self.baseline.enabled)
+        if off_target:
+            return not now.enabled and (now.url == "" or bool(LYREBIRD_PAC.match(now.url)))
+        return (now.url, now.enabled) == (self.baseline.url, self.baseline.enabled)
 
     # MARK: - The app
 
@@ -722,177 +769,434 @@ class Harness:
         return problems
 
     def _restore_the_network(self) -> list[str]:
-        """`lyrebird down`, then macOS's own account of whether that worked.
+        """The owner-checked teardown, then macOS's own account of whether it worked.
 
-        `down` goes first, because restoring is its job and this is where that job is checked. What
-        follows does not trust it: the settings are read back from `networksetup`, and if they are
-        wrong this puts them back itself rather than leaving the Mac routed at a port whose proxy it
-        just stopped. Every step it had to take is returned, so a run whose cleanup was performed
-        for it fails loudly instead of looking tidy.
+        Every attempt goes through `supervisor.down_session(only_owner=…)` — the same executor the
+        shipped `down` runs, with an ownership precondition evaluated inside its lock — so a
+        successor session appearing before any of them is refused rather than torn down. Nothing
+        here trusts the result: the settings are read back from `networksetup`, and if they are
+        wrong the independent fallback below acts instead of leaving the Mac routed at a port whose
+        proxy this run just stopped. Every step it had to take is returned, so a run whose cleanup
+        was performed for it fails loudly instead of looking tidy.
         """
         problems: list[str] = []
+        disposition, archive = "none", None
+        released = refused = False
         try:
-            stopped = self._attempt_down()
-            if stopped is None or stopped.returncode != 0:
-                # One retry, then report. `down` fails most often because `networksetup` failed for
-                # a moment during a network change, and a second call is the recovery available
-                # inside the tool this check exists to exercise.
-                stopped = self._attempt_down()
-            if stopped is None:
-                problems.append(f"`lyrebird down` did not complete within {DOWN_TIMEOUT}s or could not be started")
-            elif stopped.returncode != 0:
-                problems.append(f"`lyrebird down` exited {stopped.returncode}:\n{stopped.stdout}\n{stopped.stderr}")
+            for attempt in range(2):
+                outcome, failure = self._attempt_down()
+                if outcome is None:
+                    # A wiring error in the executor must not skip the rest of the cleanup and
+                    # leave an owned `Active` routed at a dead proxy.
+                    problems.append(failure or "the in-process teardown failed for an unknown reason")
+                    break
+                if disposition == "none" and outcome.disposition != "none":
+                    # The first non-`none` disposition is what this run did; a later `Absent`
+                    # observation must never overwrite an earlier `archived`.
+                    disposition, archive = outcome.disposition, outcome.archive
+                if outcome.refused is not None:
+                    problems.append(f"the teardown was refused, and wrote nothing: {outcome.refused}")
+                    refused = True
+                    break
+                if outcome.released:
+                    released = True
+                    break
+                if attempt:
+                    # Retried while an owner-matching journal remains — a `Restored(ref)` kept
+                    # because the proxy would not die still needs accounting and unlinking.
+                    problems.append("a session record of this run remains after two teardown attempts")
+            if disposition == "archived":
+                problems.append(
+                    f"this run's session was archived ({archive}); its previous settings were never put back "
+                    f"by Lyrebird — see that file"
+                )
 
-            # Unconditional, and not driven by the runtime file. `up` starts mitmdump detached and
-            # records its pid only once it is healthy and the CA is trusted (engine/cli.py), so an
-            # interrupt in that window leaves a proxy that `down` cannot find — no runtime record,
-            # and no health yet to rediscover it from — and no PAC to make it obvious either, since
-            # a run interrupted there never installed one. Asking the process table instead finds
-            # it whatever Lyrebird managed to write down.
             problems.extend(self._stop_our_proxies())
 
-            if not self.restored():
+            settled = self.restored()
+            if not settled:
                 problems.append(
                     f"the Mac's auto-proxy settings were not restored on "
-                    f"'{self.service}' by `lyrebird down`.\n"
+                    f"'{self.service_name()}' by the teardown.\n"
                     f"  before: {self.baseline.describe()}\n"
                     f"  after:  {self._describe_now()}"
                 )
+            # The fallback runs for an unrestored PAC *and* for a record that is still there: a
+            # terminal record whose refs were never accounted for is a live recorded proxy the
+            # independent scan excludes by design, and nothing else would ever stop it. It never
+            # runs after a refusal — that journal is provably somebody else's.
+            if not refused and (not settled or not released):
                 problems.extend(self._restore_by_hand())
         except BaseException as unexpected:  # noqa: BLE001 - a finalizer that raises cleans nothing
             # Not the deferred signals — those cannot arrive here any more. Anything else that goes
             # wrong is reported rather than raised, so the caller still hears about the network.
             problems.append(
                 f"the cleanup itself failed with {unexpected!r}; the network may not "
-                f"be restored — check System Settings ▸ Network ▸ {self.service} ▸ "
+                f"be restored — check System Settings ▸ Network ▸ {self.service_name()} ▸ "
                 f"Proxies"
             )
         return problems
 
-    def _attempt_down(self) -> subprocess.CompletedProcess | None:
+    def _attempt_down(self) -> tuple[object | None, str | None]:
+        """One in-process teardown, wrapped whole.
+
+        `Exception`, not `OSError`/`SubprocessError`: this is a function call now, and a traceback
+        out of it used to become an exit status nobody read. The traceback goes in the report and
+        the finalizer continues to the independent fallback.
+        """
         try:
-            return self.attempt("down", timeout=DOWN_TIMEOUT)
-        except (OSError, subprocess.SubprocessError):
-            return None
+            return supervisor.down_session(session.Session(), only_owner=self.owner()), None
+        except Exception as error:  # noqa: BLE001 - reported, never raised out of a finalizer
+            return None, f"the in-process `down` raised {error!r}\n{traceback.format_exc()}"
 
     def _describe_now(self) -> str:
         now = self._read_pac()
         return now.describe() if now else "(could not be read)"
 
-    def _restore_by_hand(self) -> list[str]:
-        """The last resort: put the recorded settings back, once nothing is left to undo it.
+    # MARK: - The independent fallback
+    #
+    # plan-v6 asks for this to exist *and* to be independent: it imports nothing from
+    # `supervisor`, so a defect in that executor's wiring cannot defeat both the teardown and the
+    # cleanup. It cannot drift from the product's rules either, because it decides with the same
+    # pure function (`ownership.decide_down`) and writes with the same primitives
+    # (`netproxy.write_pac_*` under the session lock). It is the executor's row, written a second
+    # time — the one place that duplication is worth having.
 
-        The proxy is already gone — `_stop_our_proxies` runs first — so this is the watchdog's
-        window. Its whole job is to restore the PAC when the proxy dies and it holds the same
-        recorded baseline, so it is given its chance before anything here touches `networksetup`;
-        waiting for it to exit also waits for any `networksetup` it started, which would otherwise
-        land on top of this one.
+    def _restore_by_hand(self) -> list[str]:
+        """Put this run's own journal right, under one uninterrupted lock, or say what remains.
+
+        It writes **only** over a journal carrying this run's complete `Owner`. Over anything else
+        — no journal, another owner's, one that cannot be read, one that names nobody, a terminal
+        checkpoint — it writes nothing and prints what remains and `lyrebird down` for a person to
+        run knowingly.
         """
         notes = [
-            "this harness restored them itself, because a cleanup that depends on the command "
+            "this harness acted itself, because a cleanup that depends on the command "
             "it is checking cannot be relied on to run"
         ]
-
-        deadline = time.time() + WATCHDOG_GRACE
-        while not self.restored() and time.time() < deadline:
-            time.sleep(1)
-        watchdog_pid = self.runtime().get("watchdogPid")
-        if isinstance(watchdog_pid, int) and watchdog_pid > 0:
-            self._wait_for_exit(watchdog_pid, KILL_WAIT)
-        if self.restored():
-            notes.append("the watchdog restored them before this had to")
-            return notes
-
-        if self.service:
-            if self.baseline.url:
-                # Set the URL, and prove it took before switching anything on: `-setautoproxyurl`
-                # enables the PAC as a side effect, so enabling after a failed set would route the
-                # Mac at whatever URL is in the field — which, right now, is ours.
-                _try_run(["networksetup", "-setautoproxyurl", self.service, self.baseline.url], timeout=60)
-                now = self._read_pac()
-                if now is None or now.url != self.baseline.url:
-                    _try_run(["networksetup", "-setautoproxystate", self.service, "off"], timeout=60)
-                    notes.append(
-                        f"AND FAILED: could not put the previous PAC URL back on "
-                        f"'{self.service}' (it now reads {self._describe_now()}), so "
-                        f"routing was switched off rather than left pointing at ours. "
-                        f"Set it by hand: System Settings ▸ Network ▸ {self.service} ▸ "
-                        f"Proxies"
-                    )
-                    return notes
-            # macOS rejects an empty URL, so with nothing recorded the only thing to restore is
-            # "off" — which is exactly what `restore_pac` does, and leaves our URL in the field.
-            _try_run(
-                [
-                    "networksetup",
-                    "-setautoproxystate",
-                    self.service,
-                    "on" if (self.baseline.enabled and self.baseline.url) else "off",
-                ],
-                timeout=60,
-            )
-
-        if not self.restored():
-            notes.append(
-                f"AND FAILED: the settings on '{self.service}' are still "
-                f"{self._describe_now()}, wanted {self.baseline.describe()}. "
-                f"Fix by hand: System Settings ▸ Network ▸ {self.service} ▸ Proxies"
-            )
+        store = session.Session()
+        try:
+            store.ensure_root()
+            with store.locked(timeout=LOCK_WAIT) as lock_fd:
+                notes.extend(self._under_the_lock(store, lock_fd))
+        except (OSError, session.LockBusy, netproxy.NetworkSetupError, procs.ProcessCheckError) as error:
+            notes.append(f"AND FAILED: {error!r}; run `lyrebird down` and check the proxy settings by hand")
         return notes
 
-    def _stop_our_proxies(self) -> list[str]:
-        """Kill any mitmdump still running for this run, and say so.
+    def _owner_gate(self, journal: ownership.Journal) -> str | None:
+        """Proceed only over a journal that provably carries this run's owner.
 
-        Identity comes from the command line, not from a pid somebody wrote down: `up` starts it
-        with `--set confdir=<state>/mitmproxy` (engine/cli.py), and this run's state directory is a
-        temporary path nothing else has ever been given. A recorded pid can be stale — the file
-        outlives the process, and the OS reuses numbers — and, worse, may never have been recorded
-        at all.
-
-        A brief wait first: `down` has asked it to stop and it may still be on its way out. Only
-        one that outlives that is a problem, and it is reported as one — a proxy that had to be
-        killed here is a proxy `down` did not stop.
+        `Unreadable` and `Archived(Unknown)` name nobody — the second by definition — so whose the
+        PAC is cannot be proven, and acting would risk a successor whose record merely failed to
+        decode. `Absent` is refused too: after a release through `Archived` the baseline was given
+        up, and no journal is no authority to put a preflight snapshot back.
         """
-        problems = []
-        for pid in self._our_proxy_pids():
-            if self._wait_for_exit(pid, SHUTDOWN_GRACE):
-                continue  # `down` had it in hand after all
-            with contextlib.suppress(OSError):
-                os.kill(pid, signal.SIGKILL)
-            gone = self._wait_for_exit(pid, KILL_WAIT)
-            problems.append(
-                f"a proxy this run started was still running after `down` (pid {pid}); "
-                f"it was killed here{'' if gone else f', and did not exit within {KILL_WAIT:g}s'}"
+        mine = self.owner()
+        if isinstance(journal, ownership.Absent):
+            return "no session journal remains: nothing here is this run's to put back"
+        if isinstance(journal, ownership.Unreadable):
+            return (
+                f"the session journal cannot be read ({journal.reason}); whose it is cannot be proven, "
+                f"so nothing was written — run `lyrebird down`"
             )
-        return problems
+        if isinstance(journal, ownership.Archived):
+            if isinstance(journal.context, ownership.Unknown):
+                return "the archived session names no owner; nothing was written — run `lyrebird down`"
+            if journal.context.owner != mine:
+                return _not_ours(journal.context.owner)
+            return None
+        if journal.owner != mine:
+            return _not_ours(journal.owner)
+        return None
 
-    def _our_proxy_pids(self) -> list[int]:
-        listing = _try_run(["ps", "-axo", "pid=,command="], timeout=30)
-        if listing is None or listing.returncode != 0:
-            return []
-        pids = []
-        for line in listing.stdout.splitlines():
-            pid, _, command = line.strip().partition(" ")
-            if pid.isdigit() and "mitmdump" in command and str(self.state) in command:
-                pids.append(int(pid))
-        return pids
+    def _under_the_lock(self, store: session.Session, lock_fd: int) -> list[str]:
+        journal = store.read()
+        gate = self._owner_gate(journal)
+        if gate is not None:
+            return [gate]
+        if isinstance(journal, ownership.Archived) or isinstance(journal.phase, ownership.Restored):
+            return self._terminal(store, journal)
+        if isinstance(journal.phase, ownership.Acquiring) and journal.phase.proxy is None:
+            # Nothing was installed, so there is no PAC to put back — only the scan's extras.
+            return [
+                "this run's `up` recorded no proxy; nothing was installed",
+                *self._release(store, journal),
+            ]
+        return self._holding(store, lock_fd, journal)
 
-    @staticmethod
-    def _wait_for_exit(pid: int, timeout: float) -> bool:
-        """Has the process gone? Polls cheaply, and only asks `ps` if it is about to say no.
+    def _terminal(self, store: session.Session, journal) -> list[str]:
+        """A `Restored` or `Archived(Known)` this run left: the PAC is never touched again, but the
+        refs the record names are still accounted for and the record still has to go.
 
-        `kill -0` still succeeds on a process that has exited but whose parent has not reaped it,
-        so a signalled child would read as running for as long as nobody waited on it. Nothing is
-        executing at that point, and reporting it as a proxy that would not die would send someone
-        looking for a process that is not there.
+        The barrier comes first: `write` may have replaced the journal and then failed its
+        directory sync, and an unlink over a visible-but-undurable checkpoint could let a crash
+        resurrect the earlier `Active`.
         """
-        deadline = time.time() + timeout
-        while _pid_alive(pid) and time.time() < deadline:
-            time.sleep(0.2)
-        if not _pid_alive(pid):
-            return True
-        state = _try_run(["ps", "-o", "state=", "-p", str(pid)], timeout=15)
-        return state is not None and state.stdout.strip().upper().startswith("Z")
+        try:
+            store.barrier()
+        except OSError as error:
+            return [f"AND FAILED: the checkpoint could not be made durable ({error!r}); the journal is kept"]
+        notes = ["the session was already checkpointed; the PAC was not touched"]
+        if not self.restored():
+            notes.append(f"the settings still read {self._describe_now()}, wanted {self.baseline.describe()}")
+        # A terminal record still names refs, and nothing else will ever stop them: both guarded
+        # teardown attempts raising before their accounting would otherwise leave a live recorded
+        # proxy that the independent scan excludes by design.
+        return notes + self._account(journal, _journal_port(journal)) + self._release(store, journal)
+
+    def _holding(self, store: session.Session, lock_fd: int, journal) -> list[str]:
+        """`Active` / `Acquiring(ref)`: fence, then observe and decide *again*, and act on the
+        second decision only — exactly `down`'s row."""
+        port = journal.owner.control_port
+        first = ownership.decide_down(self._observe(journal))
+        if isinstance(first, (ownership.Preserve, ownership.Refuse)):
+            return [f"nothing was written: {first.reason}"]
+
+        watchdog = journal.phase.watchdog if isinstance(journal.phase, ownership.Active) else None
+        if watchdog is not None:
+            # Not proven gone is not done: the watchdog would repair its own residue, and both
+            # `down_session` attempts preserved on exactly this.
+            stopped = procs.terminate(watchdog, "watchdog", port)
+            if stopped is procs.Termination.STILL_RUNNING:
+                return [f"AND FAILED: the watchdog (pid {watchdog.pid}) would not stop; nothing was written"]
+
+        second = ownership.decide_down(self._observe(journal))
+        if isinstance(second, (ownership.Preserve, ownership.Refuse)):
+            # Nothing signalled either: a proxy stopped over an unreadable second read would leave
+            # an `Active` journal, a PAC possibly enabled at a dead port, and no watchdog.
+            return [f"the watchdog was stopped; nothing else was written or signalled: {second.reason}"]
+
+        notes: list[str] = []
+        if isinstance(second, ownership.Archive):
+            # A foreign PAC or a gone service is never overwritten. The recorded processes are
+            # still stopped — that evidence is what makes stopping them safe.
+            path = store.archive_record(_now(), second.reason, journal)
+            notes.append(f"the PAC was {second.reason}; this run's baseline is at {path}")
+            record = ownership.Archived(
+                version=ownership.SESSION_VERSION,
+                since=_now(),
+                reason=second.reason,
+                path=str(path),
+                context=ownership.Known(journal.owner, journal.service, journal.phase.proxy),
+            )
+            try:
+                store.write(record)
+            except (OSError, session.Unrepresentable) as error:
+                notes.append(f"AND FAILED: the archive record could not be written ({error!r}); the journal is kept")
+                return notes + self._account(journal, port)
+            return notes + self._account(journal, port) + self._release(store, record)
+
+        if isinstance(second, ownership.Restore):
+            self._write_the_baseline(journal, second.target, lock_fd)
+            notes.append("the previous settings were put back")
+        else:
+            notes.append("the previous settings were already in place")
+        checkpoint = ownership.SessionRecord(
+            version=journal.version,
+            since=journal.since,
+            simulator=journal.simulator,
+            owner=journal.owner,
+            service=journal.service,
+            baseline=journal.baseline,
+            phase=ownership.Restored(journal.phase.proxy),
+        )
+        try:
+            store.write(checkpoint)
+        except (OSError, session.Unrepresentable) as error:
+            return notes + [f"AND FAILED: the checkpoint could not be written ({error!r}); the journal is kept"]
+        return notes + self._account(journal, port) + self._release(store, checkpoint)
+
+    def _write_the_baseline(self, journal, target, lock_fd: int) -> None:
+        """§4's recipe by class and target, against the *journal's* baseline — never the preflight
+        snapshot — with a read-back that must satisfy the target."""
+        name = netproxy.resolved_name(journal.service)
+        found = netproxy.pac_status(name)
+        cls = ownership.classify(found, journal.owner.control_port, journal.baseline)
+        if ownership.satisfies(cls, target):
+            return
+        if isinstance(target, ownership.Off):
+            netproxy.write_pac_state(netproxy.resolved_name(journal.service), False, lock_fd=lock_fd)
+        elif cls is ownership.PacClass.RESUMABLE:
+            netproxy.write_pac_state(netproxy.resolved_name(journal.service), target.enabled, lock_fd=lock_fd)
+        else:
+            # `-setautoproxyurl` switches the PAC on as a side effect, so the flag follows the URL.
+            netproxy.write_pac_url(netproxy.resolved_name(journal.service), target.url, lock_fd=lock_fd)
+            if not target.enabled:
+                netproxy.write_pac_state(netproxy.resolved_name(journal.service), False, lock_fd=lock_fd)
+            elif not netproxy.pac_status(netproxy.resolved_name(journal.service)).enabled:
+                netproxy.write_pac_state(netproxy.resolved_name(journal.service), True, lock_fd=lock_fd)
+        back = netproxy.pac_status(netproxy.resolved_name(journal.service))
+        if not ownership.satisfies(ownership.classify(back, journal.owner.control_port, journal.baseline), target):
+            raise netproxy.UnexpectedPac(f"the PAC did not restore (wanted {target}, now: {back})")
+
+    def _observe(self, journal) -> ownership.DownObs:
+        """The same facts the executor gathers, through the same modules."""
+        port = journal.owner.control_port
+        try:
+            service: ownership.Service = netproxy.resolve(journal.service)
+        except netproxy.NetworkSetupError as error:
+            service = ownership.ServiceFailed(str(error))
+        pac: ownership.PacClass | ownership.NotObserved = ownership.NotObserved()
+        if isinstance(service, ownership.Present):
+            try:
+                observed: ownership.Observed = netproxy.pac_status(service.name)
+            except netproxy.NetworkSetupError as error:
+                observed = ownership.PacUnreadable(str(error))
+            pac = ownership.classify(observed, port, journal.baseline)
+        proxy = journal.phase.proxy
+        watchdog = journal.phase.watchdog if isinstance(journal.phase, ownership.Active) else None
+        return ownership.DownObs(
+            journal=journal,
+            service=service,
+            pac=pac,
+            health=api_observe(port),
+            proxy=procs.liveness(proxy, "proxy", port) if proxy else ownership.NotObserved(),
+            watchdog=procs.liveness(watchdog, "watchdog", port) if watchdog else ownership.NotObserved(),
+            scan=procs.scan_marked(),
+        )
+
+    def _account(self, journal, port: int | None) -> list[str]:
+        """Stop the refs the record names, through their *persisted* identity. UNKNOWN is preserved
+        and reported: a fresh scan ref never re-authorises signalling a pid nothing proved."""
+        notes: list[str] = []
+        proxy = _recorded_proxy(journal)
+        if proxy is None or port is None:
+            return notes
+        for ref, marker in ((proxy, "proxy"),):
+            state = procs.liveness(ref, marker, port)
+            if state is ownership.Liveness.UNKNOWN:
+                notes.append(f"the recorded {marker} (pid {ref.pid}) could not be identified; it was left running")
+                continue
+            if state is ownership.Liveness.PROVEN_DEAD:
+                continue
+            try:
+                if procs.terminate(ref, marker, port) is procs.Termination.STILL_RUNNING:
+                    notes.append(f"the recorded {marker} (pid {ref.pid}) is still running")
+            except procs.ProcessCheckError as error:
+                notes.append(f"the recorded {marker} (pid {ref.pid}) could not be stopped: {error}")
+        return notes
+
+    def _release(self, store: session.Session, journal) -> list[str]:
+        """Unlink only when `decide_release` says every obligation is closed."""
+        port = _journal_port(journal)
+        proxy = _recorded_proxy(journal)
+        decision = ownership.decide_release(
+            ownership.ReleaseObs(
+                journal=journal,
+                proxy=procs.liveness(proxy, "proxy", port) if proxy and port else ownership.NotObserved(),
+                watchdog=ownership.NotObserved(),
+                health=api_observe(port) if port else ownership.NotObserved(),
+                sweep=ownership.NotObserved(),
+                scan=procs.scan_marked(),
+            )
+        )
+        if isinstance(decision, ownership.ReleaseNow):
+            store.unlink()
+            return []
+        return [f"the session record is kept for `lyrebird down`: {decision.reason}"]
+
+    def _stop_our_proxies(self) -> list[str]:
+        """Stop any proxy still running *for this run*, behind the same owner gate and under the
+        same lock.
+
+        Identity is the marked argv, not a pid somebody wrote down: this run's control port is a
+        free port unique to it, and `--set confdir=<state>/mitmproxy` names a temporary directory
+        nothing else has ever been given. §5's exclusion applies first — a pid the journal names is
+        left to the teardown while its persisted identity is alive or unknown, because a fresh scan
+        ref must never re-authorise signalling it — and everything else is signalled only through
+        `procs.terminate` with the `Ref` captured at discovery, so a proxy that exits during the
+        grace wait and whose pid is reused receives nothing.
+
+        An incomplete scan, an unidentifiable process or one that would not stop is a *reported
+        cleanup failure*, never "nothing to stop".
+        """
+        problems: list[str] = []
+        store = session.Session()
+        try:
+            store.ensure_root()
+            with store.locked(timeout=LOCK_WAIT):
+                journal = store.read()
+                gate = self._owner_gate(journal)
+                if gate is not None and not isinstance(journal, ownership.Absent):
+                    return [f"the process cleanup was skipped: {gate}"]
+                excluded = _excluded(journal)
+                scan = procs.scan_marked()
+                if isinstance(scan, ownership.Incomplete):
+                    return ["the process table could not be read whole, so nothing here can say what is left"]
+                for marked in scan.found:
+                    if marked.ref.pid in excluded or not self._is_ours(marked):
+                        continue
+                    problems.append(self._stop(marked))
+        except (OSError, session.LockBusy) as error:
+            return [f"the process cleanup could not take the session lock ({error!r})"]
+        return [problem for problem in problems if problem]
+
+    def _is_ours(self, marked: ownership.Marked) -> bool:
+        confdir = f"confdir={Path(self.state).resolve() / 'mitmproxy'}"
+        return marked.port == int(self.control_port) and confdir in marked.cmdline
+
+    def _stop(self, marked: ownership.Marked) -> str:
+        try:
+            outcome = procs.terminate(marked.ref, marked.kind, marked.port)
+        except procs.ProcessCheckError as error:
+            return f"a {marked.kind} of this run (pid {marked.ref.pid}) could not be identified or stopped: {error}"
+        if outcome is procs.Termination.NOT_RUNNING:
+            return ""
+        if outcome is procs.Termination.STILL_RUNNING:
+            return f"a {marked.kind} of this run (pid {marked.ref.pid}) would not stop"
+        return f"a {marked.kind} this run started was still running after the teardown (pid {marked.ref.pid})"
+
+
+def _journal_port(journal) -> int | None:
+    if isinstance(journal, ownership.SessionRecord):
+        return journal.owner.control_port
+    if isinstance(journal, ownership.Archived) and isinstance(journal.context, ownership.Known):
+        return journal.context.owner.control_port
+    return None
+
+
+def _recorded_proxy(journal):
+    if isinstance(journal, ownership.SessionRecord):
+        return getattr(journal.phase, "proxy", None)
+    if isinstance(journal, ownership.Archived) and isinstance(journal.context, ownership.Known):
+        return journal.context.proxy
+    return None
+
+
+def _excluded(journal) -> set[int]:
+    """Pids the journal names whose persisted identity is alive or unknown: those belong to the
+    teardown, and a fresh scan ref must not re-authorise signalling them."""
+    if isinstance(journal, ownership.SessionRecord):
+        port = journal.owner.control_port
+        refs = [(getattr(journal.phase, "proxy", None), "proxy")]
+        if isinstance(journal.phase, ownership.Active):
+            refs.append((journal.phase.watchdog, "watchdog"))
+    elif isinstance(journal, ownership.Archived) and isinstance(journal.context, ownership.Known):
+        port, refs = journal.context.owner.control_port, [(journal.context.proxy, "proxy")]
+    else:
+        return set()
+    return {
+        ref.pid
+        for ref, marker in refs
+        if ref is not None and procs.liveness(ref, marker, port) is not ownership.Liveness.PROVEN_DEAD
+    }
+
+
+def _not_ours(owner: ownership.Owner) -> str:
+    return (
+        f"a Lyrebird session on port {owner.control_port} (profile {owner.profile_fingerprint}) owns the PAC "
+        f"and it is not this run's: nothing was written — run `lyrebird down` if it is yours"
+    )
+
+
+def _now() -> str:
+    return datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+
+
+def api_observe(port: int) -> ownership.Health:
+    """The health reading, through the engine's own transport — the acceptance conftest lifts the
+    fast suite's guard on it, because these reads go to the proxy this run started."""
+    return api.observe_health(port).health
 
 
 @pytest.fixture(scope="session")
@@ -948,6 +1252,16 @@ def harness(tmp_path_factory: pytest.TempPathFactory, simulator: str, fixture_ap
     for scenario in sorted(FIXTURE_SCENARIOS.glob("*.json")):
         shutil.copy(scenario, profile / "scenarios" / scenario.name)
 
+    # The session journal lives at one fixed per-user path that no environment variable moves,
+    # so a session already there belongs to somebody: this run would acquire over it, record its
+    # PAC as the thing to restore, and release the record it was holding.
+    existing = session.Session().read()
+    if not isinstance(existing, ownership.Absent):
+        pytest.fail(
+            f"a Lyrebird session exists for this user ({session.Session().journal_path}): "
+            f"{ownership.phase_word(existing)}\n  run `lyrebird down` first"
+        )
+
     world.service = _active_service()
     if not world.service:
         pytest.fail(
@@ -1000,4 +1314,11 @@ def _no_real_psutil():
 @pytest.fixture(autouse=True)
 def _no_real_control_transport():
     """The harness's own in-process health reads go to the proxy this run started."""
+    return None
+
+
+@pytest.fixture(autouse=True)
+def _no_real_watchdog():
+    """The watchdog here is the shipped one, started by the `up` this check runs — and it is the
+    thing the watchdog phase exists to exercise."""
     return None

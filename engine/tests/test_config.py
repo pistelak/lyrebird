@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 import config
+import session
 
 # MARK: - Host validation
 
@@ -156,25 +157,25 @@ def test_state_dir_override_collapses_both(monkeypatch, tmp_path):
     monkeypatch.setenv("LYREBIRD_STATE_DIR", str(tmp_path / "elsewhere"))
     config.configure()
 
-    for path in (
-        config.STATE_FILE,
-        config.LOG_FILE,
-        config.runtime_file(),
-        config.lock_file(),
-        config.mitmproxy_confdir(),
-    ):
+    for path in (config.STATE_FILE, config.LOG_FILE, config.mitmproxy_confdir()):
         assert config.STATE_ROOT in path.parents, f"{path} escaped the override"
 
 
+def test_the_session_root_stays_outside_the_state_dir_override(monkeypatch, tmp_path, _no_real_session_root):
+    """Deliberately *not* collapsed. A PAC belongs to the Mac's network service, so who holds it is
+    one fact per user — moved under `LYREBIRD_STATE_DIR`, two instances would each keep their own
+    journal and each install over the other, which is the failure the journal exists to end."""
+    monkeypatch.setenv("LYREBIRD_STATE_DIR", str(tmp_path / "elsewhere"))
+    config.configure()
+
+    root = _no_real_session_root()  # the real `default_root`, which the suite otherwise patches away
+    assert config.STATE_ROOT not in root.parents and root != config.STATE_ROOT
+    assert root.parts[-4:] == ("Library", "Application Support", "Lyrebird", "session")
+
+
 def test_state_paths_stay_out_of_the_profile(profile):
-    """A profile kept in git must never have runtime files written into it."""
-    for path in (
-        config.STATE_FILE,
-        config.LOG_FILE,
-        config.runtime_file(),
-        config.lock_file(),
-        config.mitmproxy_confdir(),
-    ):
+    """A profile kept in git must never have tool-owned files written into it."""
+    for path in (config.STATE_FILE, config.LOG_FILE, config.mitmproxy_confdir(), session.default_root()):
         assert config.PROFILE_DIR not in path.parents, f"{path} is inside the profile"
 
 
@@ -429,66 +430,6 @@ def test_atomic_write_aborts_if_the_descriptor_will_not_close(tmp_path, monkeypa
 
     assert len(attempts) == 1, f"closed {len(attempts)} times; the second may hit someone else's fd"
     assert target.read_text() == "previous", "the destination was replaced despite a failed write"
-
-
-def test_a_record_that_cannot_be_read_is_not_an_absent_one(profile):
-    """`{}` used to mean both. `down` acted on the absent reading — invented "no previous PAC" —
-    over a file that still held the real one."""
-    config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
-    assert config.read_runtime() == {}, "absent is {}"
-
-    config.runtime_file().write_bytes(b"not json at all\xff")
-    with pytest.raises(config.RuntimeRecordUnreadable, match="cannot be read"):
-        config.read_runtime()
-
-    config.runtime_file().write_text("[1, 2]", encoding="utf-8")
-    with pytest.raises(config.RuntimeRecordUnreadable, match="expected a JSON object, found list"):
-        config.read_runtime()
-
-
-def test_a_directory_or_an_unreadable_path_at_the_record_is_not_absent(profile):
-    """`is_file()` before the read made a directory at the path — or one that cannot be stat'd —
-    read as "no record"; only "no such file" is."""
-    config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
-    config.runtime_file().mkdir()
-    with pytest.raises(config.RuntimeRecordUnreadable, match="cannot be read"):
-        config.read_runtime()
-
-
-def test_a_number_the_decoder_refuses_is_still_an_unreadable_record(profile):
-    """`json.loads` raises a bare `ValueError`, not `JSONDecodeError`, for an integer longer than
-    it will convert; that one used to escape every handler as a traceback."""
-    config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
-    config.runtime_file().write_text('{"proxyPid": ' + "9" * 5000 + "}", encoding="utf-8")
-    with pytest.raises(config.RuntimeRecordUnreadable):
-        config.read_runtime()
-
-
-def test_a_dangling_symlink_at_the_record_is_not_an_absent_one(profile):
-    """Reading a link whose target is gone raises the same "no such file" as no entry at all —
-    and the entry is there, with whatever it pointed at possibly coming back."""
-    config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
-    config.runtime_file().symlink_to(config.STATE_ROOT / "gone.json")
-    with pytest.raises(config.RuntimeRecordUnreadable, match="dangling symlink"):
-        config.read_runtime()
-
-
-def test_nesting_the_decoder_cannot_follow_is_still_an_unreadable_record(profile):
-    """`json.loads` raises `RecursionError` for nesting too deep, which no `ValueError` handler
-    sees; it used to traceback out of `down` and `status`."""
-    config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
-    config.runtime_file().write_text("[" * 20_000 + "]" * 20_000, encoding="utf-8")
-    with pytest.raises(config.RuntimeRecordUnreadable):
-        config.read_runtime()
-
-
-def test_an_empty_record_is_not_an_absent_one(profile):
-    """`up` never writes `{}`; a file holding it says nothing about what to put back, and read as
-    absent it made `down` invent "no previous PAC" from it."""
-    config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
-    config.runtime_file().write_text("{}", encoding="utf-8")
-    with pytest.raises(config.RuntimeRecordUnreadable, match="empty"):
-        config.read_runtime()
 
 
 def test_atomic_write_is_only_durable_when_it_is_asked_to_be(tmp_path, monkeypatch):

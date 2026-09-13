@@ -28,7 +28,19 @@ from enum import Enum
 
 import psutil
 
-from ownership import Complete, Incomplete, Liveness, Marked, Marker, Ref, Scan
+from ownership import (
+    Active,
+    Complete,
+    Incomplete,
+    Journal,
+    Liveness,
+    Marked,
+    Marker,
+    Ref,
+    Scan,
+    SessionRecord,
+    Unreadable,
+)
 
 
 class ProcessCheckError(RuntimeError):
@@ -264,3 +276,19 @@ def scan_marked(*, exclude: int | None = None) -> Scan:
     if incomplete:
         return Incomplete()
     return Complete(tuple(found))
+
+
+def watchdog_word(journal: Journal) -> str:
+    """What `/health` and `status` say about automatic restoration: `alive|dead|unknown` about a
+    recorded ref, and `none` only for a *decoded* phase that provably owns none.
+
+    `Unreadable` is `unknown`, not `none`: a corrupt `session.json` may be an `Active` record whose
+    watchdog is alive, and `none` would assert a fact nobody observed and silence the
+    lost-restoration warning — see test_health_session_field_for_every_phase_and_on_timeout.
+    """
+    if isinstance(journal, Unreadable):
+        return "unknown"
+    if isinstance(journal, SessionRecord) and isinstance(journal.phase, Active):
+        state = liveness(journal.phase.watchdog, "watchdog", journal.owner.control_port)
+        return {Liveness.ALIVE: "alive", Liveness.PROVEN_DEAD: "dead", Liveness.UNKNOWN: "unknown"}[state]
+    return "none"

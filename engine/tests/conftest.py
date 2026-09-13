@@ -25,7 +25,7 @@ import supervisor
 
 # After the engine imports: `cli_doubles` imports them too, and `config` resolves its paths at
 # import from the environment set above.
-from cli_doubles import FakePsutil  # noqa: E402
+from cli_doubles import FakeNetwork, FakePsutil  # noqa: E402
 
 
 @pytest.fixture
@@ -71,34 +71,21 @@ def _no_real_watchdog(monkeypatch):
     loop never reaches its only `return` and outlives pytest, repairing the PAC on the
     contributor's own Wi-Fi.
 
+    It is *no real watchdog and no ready-pipe wait*: the fake registers a marked watchdog pid in
+    whatever `FakePsutil` is installed at the moment it is called, and returns its `Ref` — which is
+    exactly what the production spawn returns once the child has reported itself ready.
+
     Doubled here rather than in each test that calls `up`: a test that forgets leaves a process
     behind and passes anyway, which is not a failure anything would report. Pinned by
-    `test_up_spawns_no_real_watchdog_subprocess`. Yields the real function for the one test that
-    checks what it would have spawned, against a `Popen` of its own."""
+    `test_up_spawns_no_real_watchdog_subprocess`. Yields the real function for the tests that check
+    what it would have spawned, against a `Popen` of their own."""
     real = supervisor._spawn_watchdog
-    monkeypatch.setattr(supervisor, "_spawn_watchdog", lambda service: 4242)
-    yield real
 
+    def spawn(port):
+        # Resolved at call time: a test that installs its own `FakePsutil` gets the watchdog in it.
+        return procs.psutil.spawn_ref("watchdog", port)
 
-@pytest.fixture(autouse=True)
-def _no_real_process_scan(monkeypatch):
-    """`down` scans this machine's process table for a proxy on its port when health is silent.
-    Left real, a test would find a contributor's own running Lyrebird and reason about — or
-    signal — it. Tests about the scan replace this with the processes they mean; the ones about
-    the scan itself take the real function from this fixture."""
-    real = supervisor._proxies_on_port
-    monkeypatch.setattr(supervisor, "_proxies_on_port", lambda: [])
-    yield real
-
-
-@pytest.fixture(autouse=True)
-def _no_real_process_identity(monkeypatch):
-    """Whose process a pid is comes from `ps` on this machine, and the pids the CLI tests record
-    (99, 4242, 4321) belong to whatever happens to run there — dead on one Mac, a system daemon
-    on the CI runner, which `down` then refused as another Lyrebird's. Every pid is this
-    Lyrebird's unless a test says otherwise; the process tests take the real function back."""
-    real = supervisor._identity_of
-    monkeypatch.setattr(supervisor, "_identity_of", lambda pid, marker: supervisor.Identity.OURS)
+    monkeypatch.setattr(supervisor, "_spawn_watchdog", spawn)
     yield real
 
 
@@ -107,10 +94,12 @@ def _no_real_session_root(monkeypatch, tmp_path):
     """The session journal lives at one fixed per-user path — `~/Library/Application
     Support/Lyrebird/session` — which is a contributor's *own* session. Every construction of a
     `Session` goes through `default_root()`, so this one patch keeps the whole suite off it.
-    Pinned by `test_the_real_per_user_root_is_never_the_one_a_test_sees`."""
+    Pinned by `test_the_real_per_user_root_is_never_the_one_a_test_sees`. Yields the real
+    function for the one test that asserts where it points."""
+    real = session.default_root
     root = tmp_path / "session"
     monkeypatch.setattr(session, "default_root", lambda: root)
-    return root
+    yield real
 
 
 @pytest.fixture(autouse=True)
@@ -146,23 +135,17 @@ def runner():
 
 
 @pytest.fixture
-def fake_network(monkeypatch):
-    """A Wi-Fi service whose PAC is currently ours and enabled."""
-    state = {"service": "Wi-Fi", "restored": None, "terminated": []}
+def network(monkeypatch):
+    """One Wi-Fi service on en0 carrying the default route, with no PAC set."""
+    return FakeNetwork().install(monkeypatch)
 
-    monkeypatch.setattr(netproxy, "active_service", lambda: state["service"])
-    monkeypatch.setattr(netproxy, "pac_status", lambda service: netproxy.PacStatus(netproxy.pac_url(), True, True))
 
-    def restore(service, url, enabled):
-        state["restored"] = (service, url, enabled)
-
-    monkeypatch.setattr(netproxy, "restore_pac", restore)
-    monkeypatch.setattr(
-        supervisor,
-        "_terminate",
-        lambda pid, marker: state["terminated"].append((pid, marker)) or supervisor.Termination.STOPPED,
-    )
-    return state
+@pytest.fixture
+def table(monkeypatch):
+    """An empty process table, installed as the one `procs` sees."""
+    fake = FakePsutil()
+    monkeypatch.setattr(procs, "psutil", fake)
+    return fake
 
 
 @pytest.fixture
@@ -174,5 +157,6 @@ def offline(monkeypatch):
 
     monkeypatch.setattr(api, "_control", refuse)
     monkeypatch.setattr(api, "_health", refuse)
+    monkeypatch.setattr(api, "observe_health", refuse)
     monkeypatch.setattr(netproxy, "active_service", refuse)
     monkeypatch.setattr(store.Store, "__init__", refuse)

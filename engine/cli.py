@@ -26,8 +26,10 @@
     lyrebird logs                         print the last 60 lines; path on stderr
 
 Routing uses a *host-scoped PAC* so only the hosts in your profile go through the proxy; everything
-else stays DIRECT. Whatever PAC you had before is recorded and put back on `down` — and by the
-watchdog if the proxy dies, so a crash is unlikely to strand the Mac pointing at a dead port.
+else stays DIRECT. Whatever PAC you had before is recorded in this user's one session journal and
+put back on `down` — and by the watchdog if the proxy dies, so a crash is unlikely to strand the
+Mac pointing at a dead port. There is one such session per user: `lyrebird down` finds it from any
+profile, port or directory, and is the only recovery command there is.
 """
 
 from __future__ import annotations

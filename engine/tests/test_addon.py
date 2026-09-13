@@ -18,7 +18,9 @@ from mitmproxy.test import taddons, tflow, tutils
 import addon
 import config
 import netproxy
+import ownership
 import rules
+import session
 
 
 def test_proxy_options_are_accepted_by_mitmproxy(hosts):
@@ -791,7 +793,7 @@ def test_health_reports_an_unreadable_pac_instead_of_dying(profile, monkeypatch)
     def boom(service):
         raise netproxy.NetworkSetupError("`networksetup -getautoproxyurl Wi-Fi` failed: 1")
 
-    monkeypatch.setattr(netproxy, "active_service", lambda: "Wi-Fi")
+    monkeypatch.setattr(netproxy, "active_service", lambda: ownership.ServiceRef("Wi-Fi", "en0"))
     monkeypatch.setattr(netproxy, "pac_status", boom)
     meta = asyncio.run(addon.Lyrebird()._meta())
     assert meta["proxyUp"] is True
@@ -830,9 +832,9 @@ def blocking_pac_status(monkeypatch, entered, release):
         state["entries"] += 1
         entered.set()
         state["expired"] = not release.wait(5)
-        return netproxy.PacStatus(url=netproxy.pac_url(), enabled=True, ours=True)
+        return ownership.Pac(url=ownership.our_url(config.CONTROL_PORT), enabled=True)
 
-    monkeypatch.setattr(netproxy, "active_service", lambda: "Wi-Fi")
+    monkeypatch.setattr(netproxy, "active_service", lambda: ownership.ServiceRef("Wi-Fi", "en0"))
     monkeypatch.setattr(netproxy, "pac_status", blocked)
     return state
 
@@ -912,42 +914,119 @@ def test_the_addon_refuses_to_load_on_a_malformed_profile(profile):
         addon.Lyrebird()
 
 
-def test_health_reports_an_unreadable_record_without_denying_the_route(monkeypatch, hosts):
-    """Where packets go is one fact and whether `down` can restore is another. A corrupt record
-    used to read as absent and vanish from health; falsifying `intercepting` over it would be the
-    opposite mistake. The record's state gets its own field."""
-    config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
-    config.runtime_file().write_bytes(b"not json at all\xff")
-    monkeypatch.setattr(netproxy, "active_service", lambda: "Wi-Fi")
-    monkeypatch.setattr(netproxy, "intercepting", lambda service: service == "Wi-Fi")
+def _corrupt_journal():
+    store = session.Session()
+    store.ensure_root()
+    store.journal_path.write_bytes(b"not json at all\xff")
+    return store
 
-    service, intercepting, pac_error, runtime_error = addon.Lyrebird()._observe()
+
+def test_health_reports_an_unreadable_journal_without_denying_the_route(monkeypatch, hosts):
+    """Where packets go is one fact and whether `down` can restore is another. A corrupt journal
+    used to read as absent and vanish from health; falsifying `intercepting` over it would be the
+    opposite mistake. The journal's state gets its own field."""
+    _corrupt_journal()
+    monkeypatch.setattr(netproxy, "active_service", lambda: ownership.ServiceRef("Wi-Fi", "en0"))
+    monkeypatch.setattr(netproxy, "intercepting", lambda service, port: service == "Wi-Fi")
+
+    service, intercepting, pac_error, journal_error, block = addon.Lyrebird()._observe()
 
     assert (service, intercepting, pac_error) == ("Wi-Fi", True, None)
-    assert "cannot be read" in runtime_error
+    assert journal_error is not None
     meta = asyncio.run(_meta_of(addon.Lyrebird()))
-    assert "cannot be read" in meta["runtimeError"]
+    assert meta["journalError"] == journal_error
     assert meta["intercepting"] is True
+    assert block == {"phase": "unreadable", "watchdog": "unknown"}, "a corrupt record may hold a live watchdog"
 
 
 async def _meta_of(subject):
     return await subject._meta()
 
 
-def test_health_forgets_a_runtime_error_once_the_record_is_fixed(monkeypatch, hosts):
+def test_health_forgets_a_journal_error_once_the_journal_is_fixed(monkeypatch, hosts):
     """Kept on the object, the error outlived the record it described: a later observation that
     failed on the PAC read repeated it. It is part of each observation instead."""
-    config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
-    config.runtime_file().write_bytes(b"not json at all\xff")
-    monkeypatch.setattr(netproxy, "active_service", lambda: "Wi-Fi")
-    monkeypatch.setattr(netproxy, "intercepting", lambda service: True)
+    store = _corrupt_journal()
+    monkeypatch.setattr(netproxy, "active_service", lambda: ownership.ServiceRef("Wi-Fi", "en0"))
+    monkeypatch.setattr(netproxy, "intercepting", lambda service, port: True)
     subject = addon.Lyrebird()
     assert subject._observe()[3] is not None
 
-    config.runtime_file().unlink()
+    store.journal_path.unlink()
     monkeypatch.setattr(
-        netproxy, "intercepting", lambda service: (_ for _ in ()).throw(netproxy.NetworkSetupError("x"))
+        netproxy, "intercepting", lambda service, port: (_ for _ in ()).throw(netproxy.NetworkSetupError("x"))
     )
 
-    service, intercepting, pac_error, runtime_error = subject._observe()
-    assert (intercepting, pac_error, runtime_error) == (False, "x", None)
+    service, intercepting, pac_error, journal_error, block = subject._observe()
+    assert (intercepting, pac_error, journal_error) == (False, "x", None)
+    assert block == {"phase": "absent", "watchdog": "none"}
+
+
+def test_health_reads_the_journals_service_by_device_not_by_its_old_name(monkeypatch, hosts):
+    """A rename that hands the old name to another device must not have this session's
+    interception read off *that* device. The journal records name and device; the device is what
+    survives, so resolution goes through it."""
+    import procs
+    from cli_doubles import FakeNetwork, FakePsutil, record, write_journal
+
+    table = FakePsutil()
+    monkeypatch.setattr(procs, "psutil", table)
+    proxy = table.spawn_ref("proxy", config.CONTROL_PORT)
+    watchdog = table.spawn_ref("watchdog", config.CONTROL_PORT)
+    ours = ownership.Pac(ownership.our_url(config.CONTROL_PORT), True)
+    FakeNetwork({"Office Wi-Fi": ("en0", ours), "Wi-Fi": ("en1", ownership.Pac("", False))}, route="en1").install(
+        monkeypatch
+    )
+    write_journal(record(ownership.Active(proxy, watchdog), service=ownership.ServiceRef("Wi-Fi", "en0")))
+
+    service, intercepting, pac_error, journal_error, block = addon.Lyrebird()._observe()
+
+    assert (service, intercepting) == ("Office Wi-Fi", True)
+    assert (pac_error, journal_error) == (None, None)
+    assert block == {"phase": "active", "watchdog": "alive"}
+
+
+def test_health_reports_session_phase_and_watchdog_liveness(monkeypatch, hosts):
+    """The app renders `watchdog: dead` as "automatic restoration lost", so a phase that owns no
+    watchdog must not borrow that word."""
+    import procs
+    from cli_doubles import FakeNetwork, FakePsutil, record, write_journal
+
+    table = FakePsutil()
+    monkeypatch.setattr(procs, "psutil", table)
+    FakeNetwork().install(monkeypatch)
+    proxy = table.spawn_ref("proxy", config.CONTROL_PORT)
+    watchdog = table.spawn_ref("watchdog", config.CONTROL_PORT)
+
+    write_journal(record(ownership.Active(proxy, watchdog)))
+    assert addon.Lyrebird()._observe()[4] == {"phase": "active", "watchdog": "alive"}
+
+    table.processes[watchdog.pid].gone = True
+    assert addon.Lyrebird()._observe()[4] == {"phase": "active", "watchdog": "dead"}
+
+    write_journal(record(ownership.Restored(proxy)))
+    assert addon.Lyrebird()._observe()[4] == {"phase": "restored", "watchdog": "none"}
+
+    write_journal(record(ownership.Acquiring(None)))
+    assert addon.Lyrebird()._observe()[4] == {"phase": "acquiring", "watchdog": "none"}
+
+
+def test_health_session_field_for_every_phase_and_on_timeout(monkeypatch, hosts):
+    """An observation that overruns reports the last session block it saw, and `{"phase":
+    "unknown", "watchdog": "unknown"}` when there has never been one — `none` there would assert a
+    fact nobody looked at."""
+    import procs
+    from cli_doubles import FakeNetwork, FakePsutil
+
+    monkeypatch.setattr(procs, "psutil", FakePsutil())
+    FakeNetwork().install(monkeypatch)
+    monkeypatch.setattr(addon, "_OBSERVE_DEADLINE", 0.001)
+
+    def never(service):
+        time.sleep(5)
+        raise AssertionError("unreachable")
+
+    monkeypatch.setattr(netproxy, "pac_status", never)
+    meta = asyncio.run(addon.Lyrebird()._meta())
+    assert meta["session"] == {"phase": "unknown", "watchdog": "unknown"}
+    assert "did not finish" in meta["pacError"]

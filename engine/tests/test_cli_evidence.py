@@ -10,7 +10,6 @@ import time
 
 import api
 import cli
-import netproxy
 from cli_doubles import _BASE_SEQ, _answers_over, _health_payload, _polling
 
 
@@ -201,24 +200,6 @@ def test_sequence_wait_fails_fast_when_the_rule_vanishes_mid_wait(profile, runne
     result = runner.invoke(cli.cli, ["sequence", "wait", "ovr_a", "--step", "1"])
     assert result.exit_code == 1
     assert "was removed" in result.output
-
-
-def test_status_json_carries_answer_counts(profile, runner, monkeypatch):
-    """AGENTS.md documents `answers` in `status --json`; it was in /health and never forwarded."""
-    monkeypatch.setattr(api, "_health", _answers_over({"count": 2}))
-    monkeypatch.setattr(netproxy, "active_service", lambda: "Wi-Fi")
-    monkeypatch.setattr(netproxy, "pac_status", lambda service: netproxy.PacStatus(netproxy.pac_url(), True, True))
-    result = runner.invoke(cli.cli, ["status", "--json"])
-    assert json.loads(result.output)["answers"] == [{"id": "ovr_a", "active": True, "count": 2, "runId": "run1"}]
-
-
-def test_status_json_carries_sequences(profile, runner, monkeypatch):
-    monkeypatch.setattr(api, "_health", _health_with())
-    monkeypatch.setattr(netproxy, "active_service", lambda: "Wi-Fi")
-    monkeypatch.setattr(netproxy, "pac_status", lambda service: netproxy.PacStatus(netproxy.pac_url(), True, True))
-    result = runner.invoke(cli.cli, ["status", "--json"])
-    assert result.exit_code == 0
-    assert '"sequences"' in result.output and "ovr_a" in result.output
 
 
 # MARK: - Proving a mock was in play

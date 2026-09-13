@@ -143,34 +143,44 @@ the procedure got. The phases: a locally replaced HTTPS response reaching the ap
 being selected *before* the launch that meets it (a decoy answers the same request differently, so
 getting the right one cannot be luck); a two-step sequence moving on at the next launch, confirmed
 from both ends with `sequence wait`; `up --use <unknown>` refusing, launching nothing and leaving
-the proxy for `down`; `down` putting the previous proxy settings back; and the watchdog putting
-them back when the proxy is killed outright. They go through the shipped commands wherever there is
-one — `up --simulator`, `lyrebird relaunch`, `assert-answered --run` — so the path a user takes is
-the path that is checked; `simctl` is called directly only for what Lyrebird has no command for
-(install, uninstall, boot, shutdown, reading the app's container).
+the proxy for `down`; `down` putting the previous proxy settings back from the session journal; and
+the watchdog putting them back from the same journal when the proxy is killed outright. They go
+through the shipped commands wherever there is one — `up --simulator`, `lyrebird relaunch`,
+`assert-answered --run` — so the path a user takes is the path that is checked; `simctl` is called
+directly only for what Lyrebird has no command for (install, uninstall, boot, shutdown, reading the
+app's container).
 
 **What it does to your machine.** It builds and installs the fixture app, adds Lyrebird's CA to
 that simulator's keychain, and switches the *active network service's* auto-proxy URL to a PAC on a
 loopback port for about a minute. Traffic for `api.example.com` goes to the proxy; everything else
-stays `DIRECT`.
+stays `DIRECT`. Unlike the hermetic checks, it writes your **real** session journal under
+`~/Library/Application Support/Lyrebird/session/` — a run that took the ownership record somewhere
+else would prove nothing about ownership — so it is not something to run beside a session of your
+own, and the prerequisite check above refuses to start over a Lyrebird PAC that is already enabled.
 
 **The profile.** Made by the run, not committed: `lyrebird init` writes the bundled example
 profile into a temporary directory and the harness points its `simBundleId` at the fixture app.
 Keep generated profiles outside the repository; only the synthetic examples in `engine/examples`
 belong in version control.
 
-**Cleanup.** It runs `down` however the run ended — a failing check, a Ctrl-C, or a `kill`, all of
-which take the same path: SIGTERM and SIGHUP are turned into the `KeyboardInterrupt` pytest already
-unwinds, so every finalizer runs and the report is still printed. It then reads the PAC back from
+**Cleanup.** It runs `down` however the run ended — the same executor the command runs, in-process
+and with an owner precondition, so a finalizer arriving after its own session was released cannot
+tear down somebody else's — for a failing check, a Ctrl-C, or a `kill`, all of which take the same
+path: SIGTERM and SIGHUP are turned into the `KeyboardInterrupt` pytest already unwinds, so every
+finalizer runs and the report is still printed. It then reads the PAC back from
 `networksetup` and fails if the settings are not the ones recorded before anything started, so a
 restore that did not happen cannot pass unnoticed. (With no PAC URL configured to begin with,
 "restored" means *disabled*: macOS rejects an empty PAC URL, so `down` can only switch ours off and
 the URL stays in the field — the same thing an ordinary `lyrebird down` leaves behind.) If `down`
 did not restore them, the harness kills the proxy this run started — after `ps` confirms the pid is
-still that process — gives the watchdog its window, and failing that sets the recorded values back
-itself; and it still fails, saying so, because a cleanup that depends on the command it is checking
-is not a cleanup. The fixture app is uninstalled and a simulator this run booted is shut down
-again, both checked rather than assumed.
+still that process — gives the watchdog its window, and failing that, restores them itself only over
+a journal carrying this run's own owner in an `Active` or `Acquiring` phase, and only after proving
+the watchdog stopped, re-reading the PAC and deciding on it with the same rules as `down`, then
+checkpointing `Restored`; over anything else — no journal, another owner's, an unreadable or
+owner-less one, a terminal checkpoint, or a PAC it may not touch — it writes nothing and prints what
+remains and `lyrebird down` for you to run knowingly; and it still fails, saying so, because a
+cleanup that depends on the command it is checking is not a cleanup. The fixture app is uninstalled
+and a simulator this run booted is shut down again, both checked rather than assumed.
 
 Only the *first* signal acts. Everything after it is teardown — restoring the network,
 uninstalling the app, shutting the simulator down — and a second signal in the middle of that
@@ -186,16 +196,18 @@ own timeouts, and `kill -9` is still `kill -9`.
 detached, so it and its watchdog survive with the PAC still installed. Nothing can promise
 otherwise.
 
-The remedy needs only the control port, and it is the same one users get, in
+The remedy is one command, and it is the same one users get, in
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md#the-proxy-is-gone-but-the-network-still-points-at-it):
-read the control port back from the installed PAC and run `down` against it. The temporary profile
-is gone by then, but `down` does not need it — it discovers the proxy on that port.
+`lyrebird down`, from anywhere. The temporary profile is gone by then and nothing recorded the port
+where you can see it, but `down` needs neither — the session journal is this user's, at a fixed
+path, and that is what it restores from.
 
 Two things are deliberately left on disk. **The CA stays trusted in that simulator** — `simctl`
 offers no way to remove one root certificate; `xcrun simctl keychain <udid> reset` clears added
 certificates, or erase the device. And the profile, state directory, proxy log and CA private key
 live in pytest's temporary tree (`/private/var/folders/…/pytest-of-$USER/`), which keeps the last
-few runs by design; delete that directory if you would rather they were gone. The generated
+few runs by design; delete that directory if you would rather they were gone. The session journal is
+the exception — it is the real one, and a run that ends cleanly releases it. The generated
 `FixtureApp.xcodeproj`, its `Info.plist` and `acceptance/FixtureApp/.build` stay in the checkout
 and are ignored by git.
 
@@ -377,10 +389,12 @@ happens. This is the shape that made sequence cursors advance on requests they n
 
 **Test the failure path.** Every instance above was found by running the tool or reviewing it, not
 by the tests, because the tests covered the happy path. The CLI suite is almost entirely failure
-paths — an unreadable runtime file, a foreign PAC, nothing to stop — and that is the model to copy:
-`engine/tests/test_cli_supervisor.py`, `test_cli_evidence.py`, `test_cli_offline.py`,
-`test_cli_profile.py`, `test_cli_launch.py` and `test_cli_simulator.py`, over the doubles they
-share in `cli_doubles.py`.
+paths — an unreadable journal, a foreign PAC, nothing to stop — and that is the model to copy:
+`engine/tests/test_cli_up.py`, `test_cli_down.py`, `test_cli_watchdog.py`, `test_cli_status.py`,
+`test_cli_evidence.py`, `test_cli_offline.py`, `test_cli_profile.py`, `test_cli_launch.py` and
+`test_cli_simulator.py`, over the doubles they share in `cli_doubles.py`. Underneath them, `test_ownership.py` exhausts the decisions those
+executors act on, `test_session.py` the journal they write, and `test_procs.py` the process
+identity they refuse to signal without.
 
 **A comment names the failure it prevents, and the test that pins it.** The comments in this
 codebase explain *why*, usually by citing the bug a line prevents, and that is worth keeping. What

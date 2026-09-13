@@ -75,12 +75,22 @@ deserves to live:
 
 | | |
 |---|---|
-| `~/Library/Application Support/Lyrebird/` | must survive: the active-scenario pointer, per-port runtime and lock files, and the CA |
+| `~/Library/Application Support/Lyrebird/` | must survive: the active-scenario pointer and the CA |
+| `~/Library/Application Support/Lyrebird/session/` | who holds the PAC: the session journal, its lock and the archive |
 | `~/Library/Logs/Lyrebird/` | for a person to read: the proxy log — this is where the Console app looks |
 
-Runtime files are keyed by **control port**, not profile, so `lyrebird down` finds the running
-instance from any directory. `LYREBIRD_STATE_DIR` collapses both underneath one directory,
-which is how the tests keep their writes in a temp tree and how you get a single thing to delete.
+There is **one PAC-owning session per user**, and `session/` is where it is written down:
+`session.json` names the owner, the network service it took, the proxy settings that were there
+before, and which phase it is in; `session.lock` is held for the whole of `up`, `down` and every
+watchdog tick, so two runs cannot both snapshot the PAC and both install; `archive/` keeps a
+baseline that could no longer be put back. Because the journal — not a control port — is the
+authority, `lyrebird down` finds the running session from any profile, any port and any directory.
+
+`LYREBIRD_STATE_DIR` collapses the state and log directories underneath one directory, which is how
+the tests keep their writes in a temp tree and how you get a single thing to delete. It does **not**
+move `session/`: a PAC belongs to the Mac's network service, so who holds it is a fact about the
+user and not about a state directory, and two state directories that each recorded an owner of
+their own is exactly how a Mac ended up routed at a dead port.
 
 The active-scenario pointer and the log file are keyed by the **profile fingerprint** instead — the
 first 12 hex characters of a sha256 of the resolved profile path — so relocating a profile selects
@@ -107,9 +117,15 @@ is why it lives in `~/.config` and neither of the above does.
 ```
 
 `up` prints a **🔴 INTERCEPT ACTIVE** banner and starts a watchdog that notices within a couple of
-seconds if the proxy dies and makes a best-effort attempt to put your previous proxy settings
-back, so a crash is unlikely to strand the Mac pointing at a dead port. There is no idle
-self-shutdown.
+seconds if the proxy dies and puts your previous proxy settings back from the session journal, so a
+crash is unlikely to strand the Mac pointing at a dead port. It restores only what it can still
+prove is this session's: a PAC that somebody else has since set is archived rather than overwritten,
+and `down` then exits 1 and tells you where the baseline was kept. There is no idle self-shutdown.
+
+A second `up` over a live session is idempotent — it re-selects the scenario and relaunches. It is
+not a migration: if the default route has moved to another network service since the session took
+its own, `up` refuses and says `lyrebird down && lyrebird up`, which restores the old service before
+anything takes the new one.
 
 After `up`, **relaunch the simulator app** — URLSession caches the proxy config it saw at launch —
 or set `simBundleId` in the profile and Lyrebird relaunches it for you. `up --use NAME` selects the
@@ -165,8 +181,15 @@ and what the PAC advertises — those are deliberately separate settings.
 - `DELETE /recent` clears the traffic history only; rules, sequence cursors, answer counts and run IDs
   are preserved. New traffic appears normally and event IDs are not reused.
 - `GET /health` (reports `intercepting` / `proxyUp` / `pacEnabled` / `simBundleId` / `scenarios` /
-  `sequences` / `answers` / `loadProblems` / `scenariosNotWhole`, and `pacError` when the PAC could
-  not be read — `intercepting` is then unproven, not off) · `GET /recent`
+  `sequences` / `answers` / `loadProblems` / `scenariosNotWhole` / `session`, and `pacError` when
+  the PAC could not be read — `intercepting` is then unproven, not off — and `journalError` when the
+  session journal could not be read) · `GET /recent`
+  - `session` is `{"phase": …, "watchdog": …}`: the journal's phase as one word
+    (`absent` · `acquiring` · `active` · `restored` · `archived` · `unreadable`) and whether the
+    recorded watchdog is `alive` · `dead` · `unknown` · `none`. `none` means a phase that provably
+    owns no watchdog ref; `unknown` means nobody could tell, including over a journal that could not
+    be decoded — a corrupt one may be an `Active` record whose watchdog is fine, so the two are kept
+    apart rather than both reading as "automatic restoration lost".
   - Each `/recent` entry carries an engine-assigned `id` (`evt-1`, `evt-2`, …) so a client polling
     the list can keep a selection on the row the user picked, including across repeats of the same
     request. Ids replace any caller-supplied value, stay unique across the list's rollover, and
@@ -468,8 +491,11 @@ device, CA trust, relaunch) · `scenario.py` (scenarios and rules on the running
 `evidence.py` (runs, sequences, answer counts) · `offline.py` (`validate`, `explain-match` — reads
 files; the live `explain-match` only reads the proxy) · `api.py` (control-API calls and their profile scoping) · `ui.py`
 (colours, banner, log tail). Behind them: `addon.py` (mitmproxy addon) · `rules.py`
-(match/patch/validate, unit-tested) · `control.py` (aiohttp API) · `store.py` · `netproxy.py` ·
-`config.py` (paths, ports, host scoping) · `examples/`.
+(match/patch/validate, unit-tested) · `ownership.py` (the record types and the pure decisions `up`,
+`down`, the watchdog and the release act on) · `session.py` (the journal: root, lock, durable writes,
+archive) · `procs.py` (the psutil adapter — is the process this journal names still that process?) ·
+`control.py` (aiohttp API) · `store.py` · `netproxy.py` · `config.py` (paths, ports, host scoping) ·
+`examples/`.
 
 ## Tests
 
@@ -484,16 +510,22 @@ addon, mitmproxy's `allow_hosts` and the generated PAC, with `test_addon.py`, `t
 and `test_launcher.py` covering the mitmproxy options, the `networksetup` parsers and how
 `bin/lyrebird` finds its engine.
 
-The largest of them is the CLI suite, split by concern the way the commands are:
-`test_cli_supervisor.py` (`up`, `down`, the watchdog, `status`, the lock) · `test_cli_evidence.py`
-(`sequence`, `reset`, `assert-answered`) · `test_cli_offline.py` (`explain-match` and `validate`) ·
-`test_cli_profile.py` (which profile a control call means) · `test_cli_launch.py` (selecting the
-scenario before the app is launched) · `test_cli_simulator.py` (which device the CA and the
-relaunch land on), over the doubles they share in `cli_doubles.py`. It is almost entirely failure
-paths — an unreadable runtime file, a foreign PAC, nothing to stop, a proxy running someone else's
-profile, a proxy that is alive but silent. Underneath it, `test_supervisor_process.py` covers the
-three process helpers `up` and `down` decide with (`_pid_alive`, `_pid_is_ours`, `_terminate`) at
-the `os.kill` and `ps` seams, including one real process that ignores SIGTERM.
+`test_ownership.py` exhausts the ownership decisions — a product over every observation `up`,
+`down`, the watchdog and the release can be handed, asserting that each is total and that doubt
+never acts — and pins the strictness of the journal's decoder. `test_session.py` covers the journal
+itself: what reads as unreadable rather than absent, that a write is durable before it counts, that
+an archive never replaces an earlier archive, and that the lock survives into a child whose parent
+was killed. `test_procs.py` covers the psutil adapter at the process seam, with real children for
+the reuse and escalation paths.
+
+The largest of them is the CLI suite, split by concern the way the commands are: `test_cli_up.py` ·
+`test_cli_down.py` · `test_cli_watchdog.py` · `test_cli_status.py` (one file per executor) ·
+`test_cli_evidence.py` (`sequence`, `reset`, `assert-answered`) · `test_cli_offline.py`
+(`explain-match` and `validate`) · `test_cli_profile.py` (which profile a control call means) ·
+`test_cli_launch.py` (selecting the scenario before the app is launched) · `test_cli_simulator.py`
+(which device the CA and the relaunch land on), over the doubles they share in `cli_doubles.py`. It
+is almost entirely failure paths — an unreadable journal, a foreign PAC, nothing to stop, a proxy
+running someone else's profile, a proxy that is alive but silent.
 
 All of it is hermetic — the simulator, the network and the proxy are replaced with doubles — so it
 checks the orchestration but cannot prove that CA trust, relaunch, PAC routing or teardown work

@@ -13,18 +13,25 @@ import pytest
 import api
 import cli
 import config
-import netproxy
+import ownership
+import procs
 import rules
-import supervisor
 from cli_doubles import (
     _BASE_SEQ,
     FOREIGN_FINGERPRINT,
+    FakeHealth,
+    FakeNetwork,
+    FakePsutil,
     _answers_over,
     _answers_with_a_conflict,
-    _discovery_times_out,
     _health_payload,
     _polling,
     _status_network,
+    answering,
+    body,
+    record,
+    up_after,
+    write_journal,
 )
 
 
@@ -110,16 +117,33 @@ def test_a_polling_read_refused_for_the_wrong_profile_is_not_reported_as_unreach
 
 
 def test_up_refuses_to_adopt_a_proxy_running_another_profile(profile, runner, monkeypatch):
-    """`up` must not report INTERCEPT ACTIVE for a proxy serving somebody else's rules."""
-    (profile / "profile.json").write_text('{"hosts": ["api.example.com"]}', encoding="utf-8")
-    config.reload_profile()
-    monkeypatch.setattr(api, "_health", lambda: _health_payload(profileFingerprint=FOREIGN_FINGERPRINT))
+    """`up` must not report INTERCEPT ACTIVE for a proxy serving somebody else's rules.
+
+    The journal names this session and its PAC is installed, so everything else about the run says
+    "idempotent" — the fingerprint the proxy reports is the one fact that says otherwise, and the
+    remedy is `lyrebird down`, never another control port: there is one session per user, so a
+    different port would only change what this run requests while the journal stays.
+    """
+    table = FakePsutil()
+    monkeypatch.setattr(procs, "psutil", table)
+    proxy = table.spawn_ref("proxy", config.CONTROL_PORT)
+    watchdog = table.spawn_ref("watchdog", config.CONTROL_PORT)
+    network = FakeNetwork({"Wi-Fi": ("en0", ownership.Pac(ownership.our_url(config.CONTROL_PORT), True))})
+    up_after(
+        monkeypatch,
+        profile,
+        record(ownership.Active(proxy, watchdog)),
+        network,
+        table,
+        health=FakeHealth(table, payload={"profileFingerprint": FOREIGN_FINGERPRINT}),
+    )
 
     result = runner.invoke(cli.cli, ["up"])
 
     assert result.exit_code == 1
     assert FOREIGN_FINGERPRINT in result.output
     assert "lyrebird down" in result.output
+    assert "LYREBIRD_CONTROL_PORT" not in result.output, "another port changes nothing under one session"
 
 
 @pytest.mark.parametrize(
@@ -234,27 +258,29 @@ def test_a_health_reading_without_a_fingerprint_is_still_accepted(profile, runne
     assert result.exit_code == 0
 
 
-def test_down_still_stops_a_proxy_that_belongs_to_another_profile(profile, runner, fake_network, monkeypatch):
-    """`down` is the recovery command: it must put the network back whatever is running, or the
-    scoping added everywhere else would strand the Mac pointing at a proxy it may not name."""
-    config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
-    config.runtime_file().write_bytes(b"not json at all\xff")
-    monkeypatch.setattr(
-        api,
-        "_health",
-        lambda: None if fake_network["terminated"] else {"pid": 4242, "profileFingerprint": FOREIGN_FINGERPRINT},
-    )
+def test_down_still_stops_a_proxy_that_belongs_to_another_profile(profile, runner, monkeypatch):
+    """`down` is the recovery command: it must put the network back whatever profile is running, or
+    the scoping added everywhere else would strand the Mac pointing at a proxy it may not name.
 
-    monkeypatch.setattr(
-        supervisor, "_identity_of", lambda pid, marker: supervisor.Identity.OURS
-    )  # this state directory's
+    The journal is the authority and it names this session; the *fingerprint* the proxy reports is
+    deliberately not a fact `decide_down` consults, so a profile mismatch cannot keep an obligation
+    open.
+    """
+    table = FakePsutil()
+    monkeypatch.setattr(procs, "psutil", table)
+    proxy = table.spawn_ref("proxy", config.CONTROL_PORT)
+    watchdog = table.spawn_ref("watchdog", config.CONTROL_PORT)
+    corporate = ownership.Pac("http://proxy.example.com/corp.pac", True)
+    network = FakeNetwork({"Wi-Fi": ("en0", ownership.Pac(ownership.our_url(config.CONTROL_PORT), True))})
+    network.install(monkeypatch)
+    write_journal(record(ownership.Active(proxy, watchdog), baseline=corporate))
+    FakeHealth(table, payload={"profileFingerprint": FOREIGN_FINGERPRINT}).install(monkeypatch)
 
     result = runner.invoke(cli.cli, ["down"])
 
-    assert result.exit_code == 1, "the record is unreadable, so the previous PAC is unknown — never 0 here"
-    assert fake_network["restored"] == ("Wi-Fi", "", False), "ours switched off whoever owns the proxy"
-    assert (4242, "addon.py") in fake_network["terminated"]
-    assert f"runs another profile ({FOREIGN_FINGERPRINT}) — stopping it anyway" in result.output
+    assert result.exit_code == 0, result.output
+    assert network.pac("Wi-Fi") == corporate, "the baseline is back"
+    assert not table.alive(proxy.pid) and not table.alive(watchdog.pid)
 
 
 def test_override_add_help_lists_every_override_field(profile, runner):
@@ -279,8 +305,10 @@ def test_override_add_help_lists_every_matcher_field(profile, runner):
 def test_status_json_says_null_when_the_engine_cannot_report(profile, runner, monkeypatch):
     """A proxy still running from before these fields existed cannot answer the question. Reporting
     `[]` would say "nothing has answered", which is a different claim from "I could not ask"."""
-    monkeypatch.setattr(api, "_health", lambda: {"activeScenario": "default", "scenarios": []})
-    _status_network(monkeypatch)
+    world = _status_network(monkeypatch)
+    FakeHealth(sequence=[body({"pid": world["proxy"].pid, "activeScenario": "default", "scenarios": []})]).install(
+        monkeypatch
+    )
     payload = json.loads(runner.invoke(cli.cli, ["status", "--json"]).output)
     assert payload["answers"] is None and payload["sequences"] is None
 
@@ -288,8 +316,8 @@ def test_status_json_says_null_when_the_engine_cannot_report(profile, runner, mo
 def test_status_json_says_empty_when_the_engine_reports_nothing_to_show(profile, runner, monkeypatch):
     """The other half of the distinction: a current engine sends one entry per rule, so an empty
     list is a real state and must not be confused with the case above."""
-    monkeypatch.setattr(api, "_health", _health_payload)
-    _status_network(monkeypatch)
+    world = _status_network(monkeypatch)
+    FakeHealth(sequence=[answering(world["proxy"].pid)]).install(monkeypatch)
     payload = json.loads(runner.invoke(cli.cli, ["status", "--json"]).output)
     assert payload["answers"] == [] and payload["sequences"] == []
 
@@ -298,8 +326,8 @@ def test_status_json_reports_a_discovery_timeout_rather_than_printing_nothing(pr
     """`--json` is what a script reads. An uncaught error from discovery printed no JSON at all,
     so the caller could not tell "not intercepting" from "the command fell over" — and the exit
     code is 1 for both. The reason goes where every other unproven PAC goes."""
-    monkeypatch.setattr(api, "_health", _health_payload)
-    monkeypatch.setattr(netproxy, "active_service", _discovery_times_out)
+    FakeHealth(sequence=[answering(4321)]).install(monkeypatch)
+    FakeNetwork().die_at(1).install(monkeypatch)
 
     result = runner.invoke(cli.cli, ["status", "--json"])
 
