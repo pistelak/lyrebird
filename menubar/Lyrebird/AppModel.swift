@@ -77,10 +77,12 @@ final class AppModel {
         return health
     }
 
-    /// Older engines omit the fingerprint; accept them as the CLI does.
+    /// A proxy that reports no fingerprint predates the guard, so nothing can vouch for whose it
+    /// is: it is another profile, as the CLI now treats it. Accepting it let this app read, activate
+    /// and reset a stranger's profile behind a daemon that enforces nothing.
     private static func isOurs(_ health: Health, expected: String) -> Bool {
         guard health.proxyUp == true else { return false }
-        return health.profileFingerprint == nil || health.profileFingerprint == expected
+        return health.profileFingerprint == expected
     }
 
     private var pollTask: Task<Void, Never>?
@@ -194,6 +196,35 @@ final class AppModel {
         DockPresence.settingChanged()
         await discoverProfile()
         await refresh()
+    }
+
+    /// Settings, committed. A changed control URL first stops the session the old one addresses:
+    /// `down` finds this user's one session from anywhere, so nothing about the old target has to
+    /// be kept — only that it runs before the new value is written. It runs on every URL change,
+    /// not only when the last health reading said a proxy was up: a stale or unreadable reading is
+    /// no proof there is nothing to stop, and `down` over no session already says so and succeeds.
+    /// A `down` that fails refuses the edit and says why, rather than leaving a proxy intercepting
+    /// on a port the app no longer describes while the menu says Stopped. One save at a time: a
+    /// second one arriving while the first's `down` runs would race it for the values written.
+    /// Returns the refusal, or nil once the settings are in.
+    func commitSettings(controlURL: String, launcher: String, profile: String, dockOnlyWhileWindowOpen: Bool)
+        async -> String?
+    {
+        guard !busy else { return "another save is still running — try again in a moment" }
+        busy = true
+        defer { busy = false }
+        let previous = Config.defaults.string(forKey: Config.controlURLKey) ?? Config.defaultControlURL
+        if controlURL != previous {
+            if let failure = await Control.down().failure {
+                return "the session on \(previous) could not be stopped, so the control URL was not changed: \(failure)"
+            }
+        }
+        Config.defaults.set(controlURL, forKey: Config.controlURLKey)
+        Config.defaults.set(launcher, forKey: Config.lyrebirdPathKey)
+        Config.defaults.set(profile, forKey: Config.profilePathKey)
+        Config.defaults.set(dockOnlyWhileWindowOpen, forKey: Config.dockOnlyWhileWindowOpenKey)
+        await settingsChanged()
+        return nil
     }
 
     private func clearReadings() {
@@ -312,9 +343,12 @@ final class AppModel {
         switch healthRead {
         case .up(let health):
             guard health.proxyUp == true else { return .down }
-            // A health with no fingerprint is an older engine, which the CLI accepts too: it is a
-            // proxy that cannot answer the question, not one that answered it differently.
-            if let running = health.profileFingerprint, running != expected {
+            // A health with no fingerprint is an older engine that cannot answer the question, and
+            // the CLI refuses it too: until a proxy says whose it is, it is somebody else's.
+            guard let running = health.profileFingerprint else {
+                return .foreignProfile(running: "none reported")
+            }
+            if running != expected {
                 return .foreignProfile(running: running)
             }
             return health.intercepting == true ? .intercepting : .pacDisabled
