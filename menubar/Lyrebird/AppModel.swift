@@ -200,14 +200,21 @@ final class AppModel {
 
     /// Settings, committed. A changed control URL first stops the session the old one addresses:
     /// `down` finds this user's one session from anywhere, so nothing about the old target has to
-    /// be kept — only that it runs before the new value is written. A `down` that fails refuses
-    /// the edit and says why, rather than leaving a proxy intercepting on a port the app no longer
-    /// describes while the menu says Stopped. Returns the refusal, or nil once the settings are in.
+    /// be kept — only that it runs before the new value is written. It runs on every URL change,
+    /// not only when the last health reading said a proxy was up: a stale or unreadable reading is
+    /// no proof there is nothing to stop, and `down` over no session already says so and succeeds.
+    /// A `down` that fails refuses the edit and says why, rather than leaving a proxy intercepting
+    /// on a port the app no longer describes while the menu says Stopped. One save at a time: a
+    /// second one arriving while the first's `down` runs would race it for the values written.
+    /// Returns the refusal, or nil once the settings are in.
     func commitSettings(controlURL: String, launcher: String, profile: String, dockOnlyWhileWindowOpen: Bool)
         async -> String?
     {
+        guard !busy else { return "another save is still running — try again in a moment" }
+        busy = true
+        defer { busy = false }
         let previous = Config.defaults.string(forKey: Config.controlURLKey) ?? Config.defaultControlURL
-        if controlURL != previous, health?.proxyUp == true {
+        if controlURL != previous {
             if let failure = await Control.down().failure {
                 return "the session on \(previous) could not be stopped, so the control URL was not changed: \(failure)"
             }

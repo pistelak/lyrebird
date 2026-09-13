@@ -601,15 +601,24 @@ extension AppTests {
     struct SettingsCommitTests {
         private static let newURL = "http://127.0.0.1:9000"
 
-        private func modelWithAProxyUp() async -> AppModel {
-            StubURLProtocol.install { request in
-                request.url?.path == "/__mock__/health"
-                    ? (Stub.response(request, 200), Fixture.health(fingerprint: Fixture.ours))
-                    : Stub.read(request)
-            }
-            let model = makeModel(expecting: Fixture.ours)
-            await model.refresh()
-            return model
+        /// A launcher that records what it was asked to run and the control port it was handed —
+        /// the old URL's, if the settings are still unwritten when it runs — then exits as told.
+        private func spyLauncher(exiting code: Int) throws -> (path: String, calls: URL) {
+            let dir = FileManager.default.temporaryDirectory
+                .appendingPathComponent("lyrebird-launcher-\(ProcessInfo.processInfo.globallyUniqueString)")
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let calls = dir.appendingPathComponent("calls")
+            let script = dir.appendingPathComponent("lyrebird")
+            let body =
+                "#!/bin/sh\nprintf '%s port=%s\\n' \"$*\" \"$LYREBIRD_CONTROL_PORT\" >> \"\(calls.path)\"\nexit \(code)\n"
+            try body.write(to: script, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+            Config.defaults.set(script.path, forKey: Config.lyrebirdPathKey)
+            return (script.path, calls)
+        }
+
+        private func recorded(_ calls: URL) -> String {
+            (try? String(contentsOf: calls, encoding: .utf8)) ?? ""
         }
 
         private func commit(_ model: AppModel, to url: String, launcher: String) async -> String? {
@@ -619,43 +628,67 @@ extension AppTests {
         @Test
         func aChangedControlURLStopsTheOldSessionBeforeItIsWritten() async throws {
             try await withAppTestEnvironment {
-                // `/usr/bin/true` stands in for a `down` that succeeds.
-                Config.defaults.set("/usr/bin/true", forKey: Config.lyrebirdPathKey)
-                let model = await modelWithAProxyUp()
+                let launcher = try spyLauncher(exiting: 0)
+                let model = makeModel(expecting: Fixture.ours)
 
-                let refusal = await commit(model, to: Self.newURL, launcher: "/usr/bin/true")
+                let refusal = await commit(model, to: Self.newURL, launcher: launcher.path)
 
                 #expect(refusal == nil)
+                // `down`, and against the old URL's port: the settings were unwritten when it ran.
+                #expect(recorded(launcher.calls).contains("down port=8088"))
                 #expect(Config.defaults.string(forKey: Config.controlURLKey) == Self.newURL)
             }
         }
 
         @Test
-        func aDownThatFailsRefusesTheEditAndKeepsTheOldURL() async throws {
+        func aDownThatFailsRefusesTheEditAndWritesNothing() async throws {
             try await withAppTestEnvironment {
-                // `/usr/bin/false` stands in for a `down` that could not put the network back.
-                Config.defaults.set("/usr/bin/false", forKey: Config.lyrebirdPathKey)
-                let model = await modelWithAProxyUp()
-                let before = Config.defaults.string(forKey: Config.controlURLKey)
+                let launcher = try spyLauncher(exiting: 1)
+                Config.defaults.set("/before/profile", forKey: Config.profilePathKey)
+                Config.defaults.set(false, forKey: Config.dockOnlyWhileWindowOpenKey)
+                let model = makeModel(expecting: Fixture.ours)
 
-                let refusal = await commit(model, to: Self.newURL, launcher: "/usr/bin/false")
+                // Every setting differs from what is stored, so a partial write would show.
+                let refusal = await model.commitSettings(
+                    controlURL: Self.newURL, launcher: "/after/launcher", profile: "/after/profile",
+                    dockOnlyWhileWindowOpen: true)
 
                 #expect(refusal?.contains("could not be stopped") == true)
-                #expect(Config.defaults.string(forKey: Config.controlURLKey) == before, "nothing written")
+                #expect(recorded(launcher.calls).contains("down"), "the refusal came from a `down` that ran")
+                #expect(Config.defaults.string(forKey: Config.controlURLKey) != Self.newURL)
+                #expect(Config.defaults.string(forKey: Config.lyrebirdPathKey) == launcher.path)
+                #expect(Config.defaults.string(forKey: Config.profilePathKey) == "/before/profile")
+                #expect(Config.defaults.bool(forKey: Config.dockOnlyWhileWindowOpenKey) == false)
             }
         }
 
         @Test
         func anUnchangedControlURLRunsNoDown() async throws {
             try await withAppTestEnvironment {
-                // A `down` here would refuse, so a nil refusal proves none ran.
-                Config.defaults.set("/usr/bin/false", forKey: Config.lyrebirdPathKey)
-                let model = await modelWithAProxyUp()
+                let launcher = try spyLauncher(exiting: 1)  // a `down` here would refuse, and be recorded
+                let model = makeModel(expecting: Fixture.ours)
                 let current = Config.defaults.string(forKey: Config.controlURLKey) ?? Config.defaultControlURL
 
-                let refusal = await commit(model, to: current, launcher: "/usr/bin/false")
+                let refusal = await commit(model, to: current, launcher: launcher.path)
 
                 #expect(refusal == nil)
+                // Profile discovery runs the launcher after any save; `down` must not be among the calls.
+                #expect(!recorded(launcher.calls).contains("down"))
+            }
+        }
+
+        @Test
+        func aSecondSaveWhileTheFirstIsStoppingTheOldSessionIsRefused() async throws {
+            try await withAppTestEnvironment {
+                let launcher = try spyLauncher(exiting: 0)
+                let model = makeModel(expecting: Fixture.ours)
+                model.busy = true  // the first save's `down` is still running
+
+                let refusal = await commit(model, to: Self.newURL, launcher: launcher.path)
+
+                #expect(refusal?.contains("another save") == true)
+                #expect(recorded(launcher.calls) == "")
+                #expect(Config.defaults.string(forKey: Config.controlURLKey) != Self.newURL)
             }
         }
     }
