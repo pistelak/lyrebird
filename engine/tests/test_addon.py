@@ -520,6 +520,25 @@ def test_the_error_hook_ignores_flows_with_no_sequence(hosts, profile):
     assert subject.store.recent_list() == []
 
 
+def test_a_flow_that_errors_after_its_response_is_recorded_once(hosts, profile):
+    """mitmproxy runs `error` after `response` for a flow that dies on its way to the client. The
+    patch was applied and credited in `response`; a second entry from `error`, uncredited and marked
+    `upstream_failed`, would be a request that happened once shown twice with two verdicts."""
+    subject = subject_with(
+        profile, {"id": "p", "mode": "patch", "match": {"path": "/api/v1/orders/*"}, "patch": {"a": 1}}
+    )
+    flow = _flow()
+    run_request(subject, flow)
+    flow.response = tutils.tresp(headers=((b"content-type", b"application/json"),), content=b'{"b": 2}')
+    subject.response(flow)
+
+    subject.error(flow)
+
+    (entry,) = subject.store.recent_list()
+    assert entry["matched"] == "p" and "patchSkipped" not in entry
+    assert subject.store.answer_states()[0]["count"] == 1
+
+
 def test_a_patch_whose_upstream_fails_leaves_an_entry_with_the_reason(hosts, profile):
     """A patch was selected and the connection died before any response: nothing applied, nothing
     credited — and, until now, nothing in /recent either, which read as "the request never

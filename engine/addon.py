@@ -359,6 +359,10 @@ class Lyrebird:
                 flow.metadata["mock_patch_skipped"] = "body_unavailable_or_not_json"
 
         self._record(flow, status, matched)
+        # mitmproxy runs `error` after `response` for a flow that dies on its way to the client; a
+        # flow recorded here is not recorded again there — see
+        # test_a_flow_that_errors_after_its_response_is_recorded_once.
+        flow.metadata["mock_recorded"] = True
 
     def error(self, flow: http.HTTPFlow) -> None:
         """Record a sequence flow that failed before there was any response to record.
@@ -377,6 +381,8 @@ class Lyrebird:
         # `mock_advanced` counts too: a request no override answered can still have moved a
         # sequence, and if its upstream then fails the cursor has changed with nothing in /recent
         # to explain why.
+        if flow.metadata.get("mock_recorded"):
+            return
         pending = flow.metadata.get("mock_patch")
         if not (
             flow.metadata.get("mock_sequence")
