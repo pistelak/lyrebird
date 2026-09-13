@@ -68,6 +68,10 @@ def test_a_mutation_names_the_profile_it_means(profile, runner, monkeypatch):
 
     assert result.exit_code == 0
     assert seen["headers"]["x-lyrebird-profile"] == config.PROFILE_FINGERPRINT
+    # The other two scoping facts a mutation carries, built by the same code as the read path's:
+    # the loopback Host the guard accepts (421 otherwise) and the JSON content type (415 otherwise).
+    assert seen["headers"]["host"] == config.CONTROL_HOST_HEADER
+    assert seen["headers"]["content-type"] == "application/json"
 
 
 def test_a_read_names_the_profile_it_means_too(profile, monkeypatch):
@@ -77,6 +81,7 @@ def test_a_read_names_the_profile_it_means_too(profile, monkeypatch):
 
     assert api._get_json("/__mock__/recent") == []
     assert seen["headers"]["x-lyrebird-profile"] == config.PROFILE_FINGERPRINT
+    assert seen["headers"]["host"] == config.CONTROL_HOST_HEADER, "the same Host the mutation path sends"
 
 
 def test_use_refuses_to_switch_a_scenario_in_someone_elses_profile(profile, runner, monkeypatch):

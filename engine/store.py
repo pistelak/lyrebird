@@ -623,6 +623,20 @@ class Store:
             )
         return states
 
+    def runtime_states(self) -> tuple[list[dict], list[dict]]:
+        """Both views of the active scenario's runtime — `(sequences, answers)` — in the one order
+        that is right.
+
+        Reading the sequences mints a sequenced rule's slot, so its run id exists before its first
+        request and `sequence wait` has a token to hold; reading the answers only looks. Taken
+        separately in the other order, the first snapshot after an activation showed a null answer
+        run id beside a live sequence run id for one rule — two run ids for one run — and the order
+        lived in a comment at each call site. Here it lives once — see
+        test_runtime_states_gives_a_fresh_sequenced_rule_one_run_id.
+        """
+        sequences = self.sequence_states()
+        return sequences, self.answer_states()
+
     def reset_runtime(self, override_id: str | None = None) -> dict | None:
         """Start a fresh run: rewind sequence cursors and clear answer counts. None if `override_id`
         names no rule in the active scenario.

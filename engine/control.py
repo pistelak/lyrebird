@@ -126,6 +126,7 @@ def make_app(store: Store, meta_provider: MetaProvider) -> web.Application:
         # counters from the scenario before it with meta from after, a snapshot describing no
         # moment that ever existed. Everything after this line is synchronous.
         meta = await meta_provider()
+        sequences, answers = store.runtime_states()
         return web.json_response(
             {
                 "ok": True,
@@ -146,10 +147,10 @@ def make_app(store: Store, meta_provider: MetaProvider) -> web.Application:
                 # sent keyed by the scenario they belong to.
                 "loadProblems": store.load_problems,
                 "scenariosNotWhole": store.scenarios_not_whole,
-                "sequences": store.sequence_states(),
+                "sequences": sequences,
                 # Named for what it holds, not for the objects it describes: `overrides` would read as
                 # the rules themselves, which is what GET /overrides returns.
-                "answers": store.answer_states(),
+                "answers": answers,
                 **meta,
             }
         )
@@ -199,12 +200,9 @@ def make_app(store: Store, meta_provider: MetaProvider) -> web.Application:
         # lookup here would 404 that recovery instead of performing it.
         if requested is None or requested == store.active_name:
             active = True
-            # Sequences first: `sequence_states` mints a rule's runtime slot where `answer_states`
-            # only reads one, so reading answers first left the very first snapshot after activation
-            # showing a null `answer.runId` beside a live `sequenceState.runId` for one rule — two
-            # run ids for one run. See test_a_fresh_snapshot_gives_a_sequenced_rule_one_run_id.
-            sequences: dict[str, dict] = {state["id"]: state for state in store.sequence_states()}
-            answers: dict[str, dict] = {state["id"]: state for state in store.answer_states()}
+            sequence_states, answer_states = store.runtime_states()
+            sequences: dict[str, dict] = {state["id"]: state for state in sequence_states}
+            answers: dict[str, dict] = {state["id"]: state for state in answer_states}
             # Read after the healing `active_overrides` may have done, so the name reported is the
             # scenario these rules actually came from.
             overrides = store.active_overrides()

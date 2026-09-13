@@ -335,6 +335,21 @@ def test_a_self_triggered_sequence_advances_when_it_answers(profile):
     assert subject.sequence_states()[0]["nextStep"] == 2
 
 
+def test_runtime_states_gives_a_fresh_sequenced_rule_one_run_id(profile):
+    """Reading the sequences mints a sequenced rule's slot; reading the answers only looks. Taken
+    the other way round, the first snapshot showed a null answer run id beside a live sequence run
+    id for one rule. `runtime_states` fixes the order once, and `answer_states` on its own still
+    creates nothing."""
+    _scenario(profile, "default", SEQ)
+    subject = store.Store()
+    assert subject.answer_states()[0]["runId"] is None, "a read on its own mints nothing"
+
+    sequences, answers = subject.runtime_states()
+
+    assert sequences[0]["runId"] is not None
+    assert answers[0]["runId"] == sequences[0]["runId"], "one run id for one run"
+
+
 def test_a_shadowed_sequenced_rule_does_not_advance(profile):
     """`find_override` returns only the most specific match, so a rule whose matcher fits may still
     not be the rule that answered. Advancing it anyway would spend a step it never served — and the
