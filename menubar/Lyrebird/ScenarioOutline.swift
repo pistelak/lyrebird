@@ -260,7 +260,6 @@ extension RuleFormatting {
         // is what the reader will see — the word `error` is the setting, not the outcome.
         case "error": return "Further requests return 500"
         case "repeatLast": return "Further requests repeat step \(sequence.steps.count)"
-        case "passThrough": return "Further requests pass through"
         // A newer engine's word is a fact this app does not know, not one it may rename.
         default: return "Further requests: \(policy)"
         }

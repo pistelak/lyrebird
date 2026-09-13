@@ -193,6 +193,29 @@ def test_the_loader_holds_a_file_to_the_containment_scenario_path_applies(profil
     assert scenario is None and "escapes" in problems[0]
 
 
+def test_the_loader_reads_the_path_that_passed_containment(profile, monkeypatch):
+    """A link that resolves inside `scenarios/` passes the check; the read then went through the
+    link again, so a link retargeted outside the profile in between was what got read and served.
+    The loader reads the resolved path the check approved, and the link is never dereferenced twice."""
+    real = profile / "scenarios" / "real.json"
+    real.write_text(json.dumps({"name": "kept", "overrides": []}))
+    link = profile / "scenarios" / "kept.json"
+    link.symlink_to(real)
+    read_from = []
+    original = store.Path.read_text
+
+    def recording(self, *args, **kwargs):
+        read_from.append(self)
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(store.Path, "read_text", recording)
+
+    scenario, problems = store.load_scenario_file(link)
+
+    assert scenario is not None and problems == []
+    assert read_from == [real.resolve()], "read through the resolved path, not the link"
+
+
 def test_a_scenario_file_that_points_at_itself_does_not_stop_the_proxy_starting(profile):
     """`Path.resolve()` raises `RuntimeError("Symlink loop from …")`, which is not an OSError. The
     containment check runs before the read, so an uncaught one is a single self-referencing file in
