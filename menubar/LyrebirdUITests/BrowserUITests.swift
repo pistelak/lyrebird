@@ -1,5 +1,6 @@
 import XCTest
 
+@MainActor
 final class BrowserUITests: XCTestCase {
     func testRecentTrafficLayout() {
         withPreview(["--preview"]) { app, window in
