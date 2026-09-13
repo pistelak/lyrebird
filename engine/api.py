@@ -70,6 +70,26 @@ def _refuse_a_foreign_profile(error: urllib.error.HTTPError, body: dict, unprove
         raise SystemExit(unproven_exit)
 
 
+def _request(path: str, *, port: int | None = None, method: str = "GET", payload: Any = None) -> urllib.request.Request:
+    """The one place a control request is built: origin and `Host` from `port` (this profile's
+    port when None — the guard answers 421 to any other Host), the profile header on every call,
+    and the JSON content type on one that carries a body (415 otherwise).
+
+    The read and the mutation paths used to build these separately and agree by luck; a change to
+    one that missed the other failed as a bare 421 on reads, or as a read answered by a proxy
+    running somebody else's profile — see test_a_mutation_names_the_profile_it_means and
+    test_a_read_names_the_profile_it_means_too, which pin all three on both paths.
+    """
+    origin = CONTROL if port is None else f"http://{config.CONTROL_HOST}:{port}"
+    host = config.CONTROL_HOST_HEADER if port is None else f"{config.CONTROL_HOST}:{port}"
+    headers = {"Host": host, _PROFILE_HEADER: config.PROFILE_FINGERPRINT}
+    data = None
+    if payload is not None:
+        data = json.dumps(payload).encode()
+        headers["content-type"] = "application/json"
+    return urllib.request.Request(f"{origin}{path}", data=data, headers=headers, method=method)
+
+
 def _get_json(path: str, timeout: float = 1.5, *, port: int | None = None, unproven_exit: int = 1) -> Any:
     """The proxy's answer, or None for "nothing usable answered".
 
@@ -77,13 +97,8 @@ def _get_json(path: str, timeout: float = 1.5, *, port: int | None = None, unpro
     Host, so a request to another session's port carrying this process's configured header would
     read as unreachable — see test_health_on_a_port_answers_a_real_control_server.
     """
-    origin = CONTROL if port is None else f"http://{config.CONTROL_HOST}:{port}"
-    host = config.CONTROL_HOST_HEADER if port is None else f"{config.CONTROL_HOST}:{port}"
-    request = urllib.request.Request(
-        f"{origin}{path}", headers={"Host": host, _PROFILE_HEADER: config.PROFILE_FINGERPRINT}
-    )
     try:
-        with _open(request, timeout) as response:
+        with _open(_request(path, port=port), timeout) as response:
             return json.loads(response.read().decode())
     except urllib.error.HTTPError as error:
         # A mismatch is an answer, not an outage: returning None would point at a dead port.
@@ -137,14 +152,8 @@ def _control(path: str, method: str = "GET", payload: Any = None, timeout: float
     otherwise fail as a bare 421 or 415, and the middle of which would act on a stranger's running
     state.
     """
-    headers = {"Host": config.CONTROL_HOST_HEADER, _PROFILE_HEADER: config.PROFILE_FINGERPRINT}
-    data = None
-    if payload is not None:
-        data = json.dumps(payload).encode()
-        headers["content-type"] = "application/json"
-    request = urllib.request.Request(f"{CONTROL}{path}", data=data, headers=headers, method=method)
     try:
-        with _open(request, timeout) as response:
+        with _open(_request(path, method=method, payload=payload), timeout) as response:
             return json.loads(response.read().decode())
     except urllib.error.HTTPError as error:
         body = _error_body(error)
