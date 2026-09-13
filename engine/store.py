@@ -731,7 +731,7 @@ class Store:
     def set_active(self, name: str) -> bool:
         # Validated before the membership test, so a name that could never be one is a refusal the
         # caller can act on rather than "not found" — see
-        # test_activating_browsing_and_deleting_an_unsafe_qualified_name_is_a_400.
+        # test_activating_an_unsafe_qualified_name_is_a_400.
         scenario_parts(name)
         if name not in self.scenarios:
             return False

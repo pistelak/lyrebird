@@ -1027,7 +1027,7 @@ def test_a_grouped_file_is_held_to_the_containment_scenario_path_applies(profile
     except store.UnsafeName:
         refused_by_path = True
 
-    assert (scenario is None) == refused_by_path, "load and save must agree about one identity"
+    assert (scenario is None) == refused_by_path, "loading and naming must agree about one identity"
     if refused_by_path:
         assert problems and "checkout/link.json" in problems[0]
 

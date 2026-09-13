@@ -11,8 +11,8 @@ aiohttp's `request.json()` ignores Content-Type, so without that last check a `t
 post would reach the API with no CORS preflight.
 
 `_guard` also refuses a request that names a profile other than the running one (409). That is not
-a security check — it is scoping, and it stops a CLI pointed at profile B from quietly mutating
-profile A, which holds the control port.
+a security check — it is scoping, and it stops a CLI pointed at profile B from quietly changing the
+running state of profile A, which holds the control port.
 """
 
 from __future__ import annotations

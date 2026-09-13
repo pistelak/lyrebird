@@ -23,8 +23,8 @@ import ui
 # MARK: - Offline inspection
 #
 # The file-reading path. Nothing here starts a process, touches network settings or constructs a
-# `Store` — a store creates directories and synthesises a `default` scenario, both of which are
-# changes to a profile somebody else may be using.
+# `Store` — a store reads the whole profile and synthesises a `default` scenario, neither of which an
+# inspection of one file should do.
 # `store.load_scenario_file` is the same function startup loads with, so what these commands
 # report is what the proxy would do, not a second opinion about it. (`explain_match` without
 # `--scenario` is the one call to the control API in this module, and it only reads.)
