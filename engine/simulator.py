@@ -55,12 +55,18 @@ def _simctl_devices() -> list[dict]:
     printable = " ".join(args)
     try:
         result = _run(args)
-        if result.returncode != 0:
-            raise SimulatorError(f"`{printable}` failed: {(result.stderr or result.stdout or '').strip()}")
+    except OSError as error:
+        raise SimulatorError(f"could not run `{printable}`: {error} — is Xcode installed?") from None
+    # One refusal for everything short of a readable listing, carrying what the command said on
+    # stderr: a listing that exits 0 with nothing usable on stdout usually said why there.
+    stderr = (result.stderr or "").strip()
+    if result.returncode != 0:
+        raise SimulatorError(f"`{printable}` failed: {stderr or result.stdout.strip() or f'exit {result.returncode}'}")
+    try:
         listing = json.loads(result.stdout)["devices"]
-        return [{**device, "runtime": runtime} for runtime, devices in listing.items() for device in devices]
-    except (OSError, ValueError, TypeError, KeyError, AttributeError) as error:
-        raise SimulatorError(f"could not read `{printable}`: {error}") from None
+        return [device for devices in listing.values() for device in devices]
+    except (ValueError, TypeError, KeyError, AttributeError) as error:
+        raise SimulatorError(f"could not read `{printable}`: {error}{f' — {stderr}' if stderr else ''}") from None
 
 
 def _is_named(device: dict, wanted: str) -> bool:

@@ -38,7 +38,7 @@ these belong to is [AGENTS.md](AGENTS.md).
 | `recent --matched` | `recent --json`, filtered on `matched` |
 | `scenario mv` | Move the file, then `scenario reload --use NAME` |
 | `scenario new --clone-from X` | Copy the file, then `scenario reload --use NAME` |
-| `trust-ca` on its own | `up --simulator X`; for another device, `down && up --simulator Y` |
+| `trust-ca` on its own | `up --simulator X`; for another device, `down && up --simulator Y`. Removing the CA again is `untrust-ca`, which prints the `simctl` line |
 | `onExhausted: passThrough` | `repeatLast`, or add the steps the run actually makes |
 | A remembered active scenario across restarts | The proxy starts on `default`; `up --use NAME` names it each time |
 

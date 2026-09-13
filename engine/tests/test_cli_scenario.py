@@ -1,4 +1,4 @@
-"""The scenario subcommands that reach the proxy: listing, moving, reloading, deleting.
+"""The scenario subcommands that reach the proxy: listing, reloading, deleting.
 
 A grouped name carries a `/`, which is exactly the character an HTTP path cannot hold — so these
 pin what each command puts on the wire, not just what it prints. The proxy is a recording double:
@@ -83,7 +83,7 @@ def test_scenario_list_prints_root_scenarios_first_then_each_folder(sent):
 
     lines = [line for line in result.output.splitlines() if line.strip()]
     assert lines[0].strip().startswith("default")
-    # The full name on every row: it is what `use`, `mv` and `rm` take, and a listing nobody can
+    # The full name on every row: it is what `use` and `rm` take, and a listing nobody can
     # copy a name out of is a listing that sends people to `ls`.
     assert any("archive/old" in line for line in lines)
     assert any("checkout/orders-outage" in line for line in lines)

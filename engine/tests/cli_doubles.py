@@ -485,21 +485,15 @@ class FakeHealth:
 # Devices with the shape `simctl list devices --json` reports, and nothing that could reach a real
 # one: every simctl call goes through `sim._run`, which `fake_simctl` replaces wholesale. The ids
 # are short and readable rather than real-looking UUIDs — nothing parses them, they are only
-# compared — but they keep upper case, so `--simulator phone-1` still tests a case-insensitive
-# match. A device's `runtime` names the bucket it is listed under, which is the only place simctl
-# says what platform it is; these are shaped like the real identifiers so the same parse is run.
-_IOS_RUNTIME = "com.example.SimRuntime.iOS-18-0"
-
-
+# compared.
 _PHONE = {"udid": "PHONE-1", "name": "iPhone 17 Pro", "state": "Booted", "isAvailable": True}
 
 
-def fake_simctl(monkeypatch, devices, *, list_status=0, keychain_status=0, launch_status=0):
+def fake_simctl(monkeypatch, devices, *, keychain_status=0, launch_status=0):
     """Stand in for every `xcrun simctl` call and record what was asked of it.
 
-    A test decides what is booted by setting each device's `state`, and what platform it is by
-    setting `runtime` (iOS unless it says otherwise) — no simulator on the machine running the
-    tests is read, booted, trusted or launched.
+    A test decides what is booted by setting each device's `state` — no simulator on the machine
+    running the tests is read, booted, trusted or launched.
     """
     calls = []
 
@@ -507,14 +501,9 @@ def fake_simctl(monkeypatch, devices, *, list_status=0, keychain_status=0, launc
         assert args[0] == "xcrun", f"unexpected shell-out in a simctl test: {args}"
         calls.append(args)
         if "list" in args:
-            # Grouped under runtime identifiers, as simctl groups them: the platform is not a
-            # field on the device, it is the bucket the device is listed in.
-            buckets: dict = {_IOS_RUNTIME: []}
-            for device in devices:
-                entry = dict(device)
-                buckets.setdefault(entry.pop("runtime", _IOS_RUNTIME), []).append(entry)
-            payload = {"devices": buckets}
-            return subprocess.CompletedProcess(args, list_status, json.dumps(payload), "")
+            # Grouped under one runtime bucket, as simctl groups them.
+            payload = {"devices": {"com.example.SimRuntime.iOS-18-0": [dict(device) for device in devices]}}
+            return subprocess.CompletedProcess(args, 0, json.dumps(payload), "")
         if "keychain" in args:
             return subprocess.CompletedProcess(
                 args, keychain_status, "", "" if keychain_status == 0 else "keychain failed"

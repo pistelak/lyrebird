@@ -1329,7 +1329,7 @@ def test_a_failed_unlink_leaves_the_scenario_in_memory_and_on_disk(profile, monk
     `create` under that name would then land on it."""
     subject = make_store(profile)
     subject.create_scenario("scratch")
-    subject.set_active("default")
+    subject.set_active("scratch")
 
     def refuse(self, missing_ok=False):
         raise PermissionError(errno.EACCES, "Permission denied")
@@ -1339,6 +1339,9 @@ def test_a_failed_unlink_leaves_the_scenario_in_memory_and_on_disk(profile, monk
     assert subject.delete_scenario("scratch") is False
     assert "scratch" in subject.scenarios
     assert (profile / "scenarios" / "scratch.json").is_file()
+    # And still the active one: switching to `default` before the unlink left the active scenario
+    # changed under a `rm` that reported failure.
+    assert subject.active_name == "scratch"
     assert any("could not delete" in problem for problem in subject.load_problems)
 
 

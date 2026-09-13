@@ -388,7 +388,7 @@ def _persistable(scenario: dict) -> dict:
 #
 # Per-rule state that must never reach a profile: sequence cursors, and the count of requests each
 # rule has answered. It hangs off the scenario under a leading underscore, which `_persistable`
-# already strips — so it is never written to a profile, never survives a clone, and is
+# already strips — so it is never written to a profile, and is
 # scoped to its scenario without a second key, all from machinery that was already here for
 # `_problems`.
 
@@ -848,20 +848,20 @@ class Store:
         if name == "default" or name not in self.scenarios:
             return False
         path = scenario_path(name)
-        if self.active_name == name:
-            self._activate("default")
         try:
             path.unlink()
         except FileNotFoundError:
             pass
         except (OSError, RuntimeError) as error:
-            # Dropped from memory only once the file is actually gone. Removing it first made a
-            # failed unlink report False while the proxy had already stopped serving the scenario —
-            # a store describing a profile that still holds the file, and the next `create` under
-            # that name landing on it. See
+            # Nothing changes until the file is actually gone — neither the store nor the active
+            # scenario. Removing it from memory first made a failed unlink report False while the
+            # proxy had already stopped serving the scenario, and switching to `default` first left
+            # the active scenario changed under a `rm` that reported failure. See
             # test_a_failed_unlink_leaves_the_scenario_in_memory_and_on_disk.
             self._problem(f"could not delete {_relative_label(path)}: {error}", name)
             return False
+        if self.active_name == name:
+            self._activate("default")
         del self.scenarios[name]
         self._disk_names.discard(name)
         # After the unlink: an entry left behind would be inherited by the next scenario created
