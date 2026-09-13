@@ -670,7 +670,7 @@ struct ScenarioOutlineTests {
 
         guard
             case .list(let shown, let note) = RuleFormatting.rulesColumn(
-                status: .intercepting, read: .ok(empty), controlPort: 8088)
+                status: .intercepting, read: .ok(empty))
         else {
             Issue.record("a scenario that answered with no rules is still a scenario")
             return
@@ -683,7 +683,7 @@ struct ScenarioOutlineTests {
         for read in [MockClient.RulesRead.unsupported, .unavailable("timed out"), nil] {
             guard
                 case .vacancy = RuleFormatting.rulesColumn(
-                    status: .intercepting, read: read, controlPort: 8088)
+                    status: .intercepting, read: read)
             else {
                 Issue.record("a read that produced no snapshot offered a list")
                 return
@@ -691,7 +691,7 @@ struct ScenarioOutlineTests {
         }
         guard
             case .vacancy(let down) = RuleFormatting.rulesColumn(
-                status: .down, read: .ok(snapshot([replaceRule()])), controlPort: 8088)
+                status: .down, read: .ok(snapshot([replaceRule()])))
         else {
             Issue.record("a proxy that is not running replaces the column")
             return

@@ -61,7 +61,8 @@ conventional route.
 ## Menu-bar controls
 
 Menu-bar glyph: filled bird with a green dot while intercepting, orange when the proxy is up but
-not intercepting, and an outlined bird with no dot when stopped.
+not intercepting or could not read the PAC at all (the menu says which), and an outlined bird with
+no dot when stopped.
 Click for a scenario menu, Start/Stop (`lyrebird up|down`), a Relaunch app command, the requests
 the proxy has seen, and settings.
 

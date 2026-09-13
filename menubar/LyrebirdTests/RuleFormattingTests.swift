@@ -61,24 +61,25 @@ struct RuleFormattingTests {
         // A blank list for all of these is the failure these empty states exist to avoid: "the proxy
         // is not running", "somebody else holds the port" and "this scenario has no rules" are three
         // different things to do next.
-        let down = RuleFormatting.rulesVacancy(status: .down, read: nil, controlPort: 8088)
+        let down = RuleFormatting.rulesVacancy(status: .down, read: nil)
         #expect(down?.message == "Proxy is not running.")
 
         let foreign = RuleFormatting.rulesVacancy(
-            status: .foreignProfile(running: RulesFixture.theirs), read: nil, controlPort: 8088)
-        #expect(foreign?.message.contains("8088") == true, Comment(rawValue: foreign?.message ?? "nil"))
-        #expect(foreign?.message.contains(RulesFixture.theirs) == true, Comment(rawValue: foreign?.message ?? "nil"))
+            status: .foreignProfile(running: RulesFixture.theirs), read: nil)
+        // Exactly this: the number that used to precede it was the traffic port mislabelled as the
+        // control port, and a `contains` on the profile would pass it back in.
+        #expect(foreign?.message == "The control port is held by profile \(RulesFixture.theirs), not this one.")
 
-        let old = RuleFormatting.rulesVacancy(status: .intercepting, read: .unsupported, controlPort: 8088)
+        let old = RuleFormatting.rulesVacancy(status: .intercepting, read: .unsupported)
         #expect(old?.message == "This engine predates the rules view.")
         #expect(old?.hint.contains("404") == true, Comment(rawValue: old?.hint ?? "nil"))
 
         let broken = RuleFormatting.rulesVacancy(
-            status: .intercepting, read: .unavailable("the connection timed out"), controlPort: 8088)
+            status: .intercepting, read: .unavailable("the connection timed out"))
         #expect(broken?.hint == "the connection timed out")
 
         let unknown = RuleFormatting.rulesVacancy(
-            status: .profileUnknown("lyrebird not found"), read: nil, controlPort: nil)
+            status: .profileUnknown("lyrebird not found"), read: nil)
         #expect(unknown?.hint.contains("lyrebird not found") == true, Comment(rawValue: unknown?.hint ?? "nil"))
     }
 
@@ -87,7 +88,7 @@ struct RuleFormattingTests {
         // Status is read first on purpose: a proxy that is not ours answers 404 to plenty of
         // things, and "update your engine" would send the operator to fix the wrong machine.
         let vacancy = RuleFormatting.rulesVacancy(
-            status: .foreignProfile(running: RulesFixture.theirs), read: .unsupported, controlPort: 8088)
+            status: .foreignProfile(running: RulesFixture.theirs), read: .unsupported)
 
         #expect(try #require(vacancy).message.contains(RulesFixture.theirs))
     }
@@ -105,7 +106,7 @@ struct RuleFormattingTests {
 
         #expect(RuleFormatting.problems(in: read) == snapshot.notWhole)
         #expect(
-            RuleFormatting.rulesVacancy(status: .intercepting, read: read, controlPort: 8088)?.message
+            RuleFormatting.rulesVacancy(status: .intercepting, read: read)?.message
                 == "orders-outage has no rules yet.",
             "the empty state still applies; the banner is what must appear beside it")
     }
@@ -124,7 +125,7 @@ struct RuleFormattingTests {
         let snapshot = RulesSnapshot(scenario: "baseline", notWhole: [], rules: [])
 
         let vacancy = try #require(
-            RuleFormatting.rulesVacancy(status: .intercepting, read: .ok(snapshot), controlPort: 8088))
+            RuleFormatting.rulesVacancy(status: .intercepting, read: .ok(snapshot)))
 
         #expect(vacancy.message == "baseline has no rules yet.")
     }
@@ -133,7 +134,7 @@ struct RuleFormattingTests {
     func aSnapshotWithRulesInItHasNothingToExplainAndShowsTheList() throws {
         let snapshot = try JSONDecoder().decode(RulesSnapshot.self, from: Data(RulesFixture.snapshot.utf8))
 
-        #expect(RuleFormatting.rulesVacancy(status: .intercepting, read: .ok(snapshot), controlPort: 8088) == nil)
+        #expect(RuleFormatting.rulesVacancy(status: .intercepting, read: .ok(snapshot)) == nil)
     }
 
     @Test func aRequestThatNeverGotAResponseIsNotAGreenZero() {

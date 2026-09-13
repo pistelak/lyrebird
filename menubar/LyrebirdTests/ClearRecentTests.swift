@@ -44,8 +44,11 @@ extension AppTests {
                     return (Stub.response(request, 500), body)
                 }
                 let client = Stub.makeClient()
-                let list = await client.scenarios()
-                #expect(list == nil)
+                guard case .unavailable(let reason) = await client.scenarios() else {
+                    Issue.record("an HTTP 500 with a list-shaped body read as a scenario list")
+                    return
+                }
+                #expect(reason.contains("500"), Comment(rawValue: reason))
             }
         }
 

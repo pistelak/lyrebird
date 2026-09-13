@@ -134,15 +134,13 @@ final class RuleDetailController: NSViewController {
         let flow = RuleFormatting.flowRow(state.ruleSelection, in: snapshot)
         if state.showsRecent {
             appendRecentDetail(content, state: state, to: document)
-        } else if let value = RuleFormatting.proxyVacancy(status: content.status, controlPort: content.controlPort) {
+        } else if let value = RuleFormatting.proxyVacancy(status: content.status) {
             appendVacancy(value, to: document)
         } else if let rule = RuleFormatting.detailRule(selection: state.ruleSelection, in: snapshot) {
             appendRuleDetail(rule, flow: flow, scenario: snapshot?.scenario, pick: state.pickedStep, to: document)
         } else if let value = flow?.transition {
             appendTransition(value, showRelated: true, scenario: state.scenario, to: document)
-        } else if let value = RuleFormatting.rulesVacancy(
-            status: content.status, read: content.rulesRead, controlPort: content.controlPort)
-        {
+        } else if let value = RuleFormatting.rulesVacancy(status: content.status, read: content.rulesRead) {
             appendVacancy(value, to: document)
         } else {
             appendVacancy(
@@ -152,7 +150,7 @@ final class RuleDetailController: NSViewController {
     }
 
     private func appendRecentDetail(_ content: BrowserContent, state: BrowserState, to document: DetailDocument) {
-        if let value = RuleFormatting.proxyVacancy(status: content.status, controlPort: content.controlPort) {
+        if let value = RuleFormatting.proxyVacancy(status: content.status) {
             appendVacancy(value, to: document)
         } else if case .unavailable(let reason) = content.recentRead {
             appendVacancy(.init(message: "Traffic could not be read.", hint: reason), to: document)

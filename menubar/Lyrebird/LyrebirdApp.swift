@@ -76,6 +76,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func installMenus() {
+        NSApp.mainMenu = makeMainMenu()
+    }
+
+    /// Built apart from installing it so a test can read what the menus carry — see
+    /// theFileMenuCarriesNoInterceptionItem.
+    func makeMainMenu() -> NSMenu {
         let main = NSMenu()
 
         func submenu(_ title: String) -> NSMenu {
@@ -102,7 +108,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let file = submenu("File")
         add(file, "Scenarios", #selector(showBrowser), "o", target: self)
         add(file, "Activate Scenario", #selector(RulesWindowController.activateSelectedScenario(_:)), "\r")
-        add(file, "Start Interception", #selector(RulesWindowController.toggleInterception(_:)))
+        // No Start/Stop here: with no browser window key the responder chain ends at the delegate,
+        // and the item sat greyed out under a stale title. The status menu and the toolbar carry it.
         add(file, "Close", #selector(NSWindow.performClose(_:)), "w")
         let edit = submenu("Edit")
         add(edit, "Undo", Selector(("undo:")), "z")
@@ -122,6 +129,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         add(window, "Enter Full Screen", #selector(NSWindow.toggleFullScreen(_:)), "f")
         window.items.last?.keyEquivalentModifierMask = [.command, .control]
         NSApp.windowsMenu = window
-        NSApp.mainMenu = main
+        return main
     }
 }

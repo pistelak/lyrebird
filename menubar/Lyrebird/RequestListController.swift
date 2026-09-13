@@ -144,7 +144,7 @@ final class RequestListController: NSViewController {
     }
 
     private func appendRecentRows(_ content: BrowserContent, to next: inout [Row]) {
-        if let vacancy = RuleFormatting.proxyVacancy(status: content.status, controlPort: content.controlPort) {
+        if let vacancy = RuleFormatting.proxyVacancy(status: content.status) {
             appendNote("vacancy", vacancy.message + "\n" + vacancy.hint, to: &next)
         } else if case .unavailable(let reason) = content.recentRead {
             appendNote("vacancy", "Traffic could not be read.\n" + reason, to: &next)
@@ -178,9 +178,7 @@ final class RequestListController: NSViewController {
         }
         let problems = RuleFormatting.problems(in: rulesRead)
         if !problems.isEmpty { appendNote("problems", problems.joined(separator: "\n"), error: true, to: &next) }
-        switch RuleFormatting.rulesColumn(
-            status: content.status, read: rulesRead, controlPort: content.controlPort)
-        {
+        switch RuleFormatting.rulesColumn(status: content.status, read: rulesRead) {
         case .vacancy(let vacancy): appendNote("vacancy", vacancy.message + "\n" + vacancy.hint, to: &next)
         case .list(let snapshot, let vacancy):
             appendSnapshotRows(snapshot, vacancy: vacancy, scenarios: content.scenarios, to: &next)

@@ -112,9 +112,11 @@ final class StatusItemController: NSObject {
             _ = command(content.recentPlaceholder, nil)
         } else {
             for entry in content.recent.prefix(8) {
+                // Rows, not commands: each used to be an enabled item that opened the browser wherever
+                // it already was, with the request it named not selected — see
+                // statusMenuUsesInjectedActionsAndFreshContentWithoutAModel.
                 let row = command(
-                    entry.method + "  " + RuleFormatting.statusText(entry.status) + "  " + entry.path, #selector(browse)
-                )
+                    entry.method + "  " + RuleFormatting.statusText(entry.status) + "  " + entry.path, nil)
                 row.toolTip = row.title
             }
         }
