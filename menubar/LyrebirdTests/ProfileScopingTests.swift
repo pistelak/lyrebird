@@ -436,7 +436,13 @@ extension AppTests {
                         "/bin/sh", ["-c", #"trap "" TERM; sleep 30"#],
                         readerStarted: { reader.buffer = $0 })
                 }
-                try await Task.sleep(for: .milliseconds(300))
+                // Wait for the reader to exist, not for a fixed 300 ms: on a slow runner the
+                // cancellation could land before the child or its reader did, and the escalation
+                // path this test exists for would never run.
+                for _ in 0..<500 where reader.buffer == nil {
+                    try await Task.sleep(for: .milliseconds(10))
+                }
+                #expect(reader.buffer != nil, "the reader never started, so there was nothing to cancel")
 
                 task.cancel()
                 _ = await task.value
@@ -601,25 +607,7 @@ extension AppTests {
     struct SettingsCommitTests {
         private static let newURL = "http://127.0.0.1:9000"
 
-        /// A launcher that records what it was asked to run and the control port it was handed —
-        /// the old URL's, if the settings are still unwritten when it runs — then exits as told.
-        private func spyLauncher(exiting code: Int) throws -> (path: String, calls: URL) {
-            let dir = FileManager.default.temporaryDirectory
-                .appendingPathComponent("lyrebird-launcher-\(ProcessInfo.processInfo.globallyUniqueString)")
-            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            let calls = dir.appendingPathComponent("calls")
-            let script = dir.appendingPathComponent("lyrebird")
-            let body =
-                "#!/bin/sh\nprintf '%s port=%s\\n' \"$*\" \"$LYREBIRD_CONTROL_PORT\" >> \"\(calls.path)\"\nexit \(code)\n"
-            try body.write(to: script, atomically: true, encoding: .utf8)
-            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
-            Config.defaults.set(script.path, forKey: Config.lyrebirdPathKey)
-            return (script.path, calls)
-        }
-
-        private func recorded(_ calls: URL) -> String {
-            (try? String(contentsOf: calls, encoding: .utf8)) ?? ""
-        }
+        private func recorded(_ calls: URL) -> String { recordedCalls(calls) }
 
         private func commit(_ model: AppModel, to url: String, launcher: String) async -> String? {
             await model.commitSettings(controlURL: url, launcher: launcher, profile: "", dockOnlyWhileWindowOpen: false)
