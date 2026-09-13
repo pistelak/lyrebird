@@ -7,13 +7,10 @@ files instead, and never changes anything.
 from __future__ import annotations
 
 import json
-import sys
-import urllib.parse
 
 import click
 
 import api
-import rules
 import supervisor
 import ui
 
@@ -56,136 +53,9 @@ def recent(as_json: bool, limit: int) -> None:
         click.echo(f"  {entry['method']:6} {entry['status']}  {entry['path']}{mark}{step}{advanced}{skipped}")
 
 
-@click.group()
-def override() -> None:
-    """Add or clear rules in the active scenario."""
-
-
-# Built from the vocabulary itself, so the help cannot claim a different set of fields from the one
-# validation accepts. A matcher field nobody can discover is reported as a missing feature — and the
-# rule people write instead is a broader one that quietly answers for its neighbours.
-_ADD_HELP = (
-    """Add a rule to the active scenario. RULE is JSON, or - to read stdin.
-
-Takes effect immediately — no restart, and the scenario file is updated.
-
-\b
-    lyrebird override add '{"match":{"path":"/api/v1/orders/*"},"mode":"replace","status":500}'
-
-An override accepts these fields, and only these:
-
-\b
-"""
-    + "\n".join(f"    {field:<13} {description}" for field, description in rules.OVERRIDE_FIELD_HELP.items())
-    + """
-
-`match` accepts these fields, and only these:
-
-\b
-"""
-    + "\n".join(f"    {field:<13} {description}" for field, description in rules.MATCHER_FIELD_HELP.items())
-    + """
-
-Constrain a rule as tightly as the thing you are testing. Sibling screens served from one path are
-told apart by `query`, and a rule that leaves it out answers for all of them:
-
-\b
-    lyrebird override add '{"match":{"method":"GET","path":"/api/items","query":{"kind":"alpha"}},
-                            "mode":"replace","status":200,"body":{}}'
-
-`lyrebird explain-match GET '/api/items?kind=alpha'` shows which rule a request would select, and
-which others it would also have matched.
-"""
-)
-
-
-@override.command(name="add", help=_ADD_HELP)
-@click.argument("rule")
-def override_add(rule: str) -> None:
-    raw = sys.stdin.read() if rule == "-" else rule
-    try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError as error:
-        click.echo(f"{ui.RED}✗ not valid JSON: {error}{ui.R}")
-        raise SystemExit(1) from None
-    result = api._control("/__mock__/overrides", "POST", payload)
-    click.echo(f"✓ added {result['id']}")
-
-
-@override.command(name="clear")
-@click.option("--force", is_flag=True, help="Required: this deletes rules and rewrites the file.")
-def override_clear(force: bool) -> None:
-    """Delete EVERY rule in the active scenario and rewrite its file. There is no undo."""
-    if not force:
-        click.echo(
-            f"{ui.RED}✗ refusing without --force{ui.R} — this deletes every override in the "
-            f"active scenario and rewrites the file on disk."
-        )
-        raise SystemExit(1)
-    result = api._control("/__mock__/overrides", "DELETE")
-    click.echo(f"✓ cleared {result['cleared']} override(s) from {result['scenario']}")
-
-
 @click.group(name="scenario")
 def scenario_group() -> None:
-    """Create and remove scenarios."""
-
-
-@scenario_group.command(name="new")
-@click.argument("name")
-@click.option("--activate/--no-activate", default=True, help="Switch to it once created.")
-def scenario_new(name: str, activate: bool) -> None:
-    """Create a scenario — use this for scratch work instead of editing a shared one."""
-    api._control("/__mock__/scenarios", "POST", {"name": name})
-    click.echo(f"✓ created {name}")
-    if activate:
-        api._control("/__mock__/scenarios/active", "PUT", {"name": name})
-        click.echo(f"✓ active: {name}")
-
-
-@scenario_group.command(name="rm")
-@click.argument("name")
-def scenario_rm(name: str) -> None:
-    """Delete a scenario and its file."""
-    # Encoded into the query, not interpolated into the path: `checkout/scratch` in the path matches
-    # no route, and the CLI would report a scenario that is right there as one that is not — see
-    # test_scenario_rm_sends_the_name_in_the_query_encoded.
-    api._control(f"/__mock__/scenarios?name={urllib.parse.quote(name, safe='')}", "DELETE")
-    click.echo(f"✓ deleted {name}")
-
-
-@scenario_group.command(name="list")
-@click.option("--json", "as_json", is_flag=True, help="Machine-readable output.")
-def scenario_list(as_json: bool) -> None:
-    """List the scenarios in this profile, by folder."""
-    payload = api._control("/__mock__/scenarios") or {"active": "", "scenarios": []}
-    if as_json:
-        click.echo(json.dumps(payload, indent=2))
-        return
-
-    active = payload.get("active")
-    scenarios = payload.get("scenarios") or []
-    if not scenarios:
-        click.echo(f"{ui.DIM}(no scenarios){ui.R}")
-        return
-
-    def row(scenario: dict, indent: str = "") -> None:
-        mark = "*" if scenario["name"] == active else " "
-        verified = f" {ui.GREEN}✓{ui.R}" if scenario.get("verified") else ""
-        count = f"  {ui.DIM}{scenario.get('overrideCount', 0)} rules{ui.R}"
-        # The full name, never the leaf: it is what `use` and `rm` take, and a listing that
-        # printed something else would be a listing nobody can copy from.
-        click.echo(f" {mark} {indent}{scenario['name']}{verified}{count}")
-
-    groups: dict[str, list[dict]] = {}
-    for scenario in scenarios:
-        groups.setdefault(scenario.get("group") or "", []).append(scenario)
-    for scenario in groups.pop("", []):
-        row(scenario)
-    for group in sorted(groups):
-        click.echo(f"   {ui.DIM}{group}/{ui.R}")
-        for scenario in groups[group]:
-            row(scenario, indent="  ")
+    """Work with the scenario files this profile holds."""
 
 
 @scenario_group.command(name="reload")

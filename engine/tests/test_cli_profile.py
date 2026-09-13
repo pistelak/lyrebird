@@ -15,7 +15,6 @@ import cli
 import config
 import ownership
 import procs
-import rules
 from cli_doubles import (
     _BASE_SEQ,
     FOREIGN_FINGERPRINT,
@@ -63,9 +62,9 @@ def _records_the_request(monkeypatch, payload):
 def test_a_mutation_names_the_profile_it_means(profile, runner, monkeypatch):
     """Without the header the API cannot tell a call meant for it from one meant for a profile that
     is not running, so it serves both and the caller never learns which one it changed."""
-    seen = _records_the_request(monkeypatch, {"id": "ovr_a", "active": True})
+    seen = _records_the_request(monkeypatch, {"reloaded": 1, "active": "default"})
 
-    result = runner.invoke(cli.cli, ["override", "add", '{"mode":"replace","status":204}'])
+    result = runner.invoke(cli.cli, ["scenario", "reload"])
 
     assert result.exit_code == 0
     assert seen["headers"]["x-lyrebird-profile"] == config.PROFILE_FINGERPRINT
@@ -228,25 +227,6 @@ def test_down_still_stops_a_proxy_that_belongs_to_another_profile(profile, runne
     assert result.exit_code == 0, result.output
     assert network.pac("Wi-Fi") == corporate, "the baseline is back"
     assert not table.alive(proxy.pid)
-
-
-def test_override_add_help_lists_every_override_field(profile, runner):
-    """Validation now rejects anything outside this vocabulary, so a field missing from the help is
-    a rule the author cannot write and cannot find out about."""
-    result = runner.invoke(cli.cli, ["override", "add", "--help"])
-    assert result.exit_code == 0
-    # The block itself, not substrings: `body` is a substring of `bodyContains` in the matcher
-    # block below it, so `field in output` passes with the `body` entry deleted.
-    block = result.output.split("An override accepts these fields", 1)[1].split("`match` accepts", 1)[0]
-    listed = {line.split()[0] for line in block.splitlines() if line.startswith("    ")}
-    assert listed == set(rules.OVERRIDE_FIELDS)
-
-
-def test_override_add_help_lists_every_matcher_field(profile, runner):
-    """The capability that already existed but could not be found from the tool itself."""
-    result = runner.invoke(cli.cli, ["override", "add", "--help"])
-    for field in rules.MATCHER_FIELDS:
-        assert field in result.output
 
 
 def test_status_json_says_null_when_the_engine_cannot_report(profile, runner, monkeypatch):

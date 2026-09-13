@@ -247,8 +247,8 @@ class Lyrebird:
 
         Crediting happens here rather than at `_record`, because this is the only place that knows
         an answer was actually produced. `_record` runs a hook later, by which time a scenario switch
-        or an `override add` may have replaced the rule this id names — and a flow that dies before
-        its response hook never reaches `_record` at all, though the override certainly answered it.
+        or a reload may have replaced the rule this id names — and a flow that dies before its
+        response hook never reaches `_record` at all, though the override certainly answered it.
         """
         if action == rules.EXHAUSTED_ERROR:
             flow.response = self._exhausted_response(flow, override)

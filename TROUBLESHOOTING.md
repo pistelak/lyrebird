@@ -23,7 +23,7 @@ these belong to is [AGENTS.md](AGENTS.md).
 | The app came back without the mock after a relaunch | It was relaunched on another device. `lyrebird relaunch` uses the one `up` recorded |
 | 421 / 415 from the API | Missing `Host: 127.0.0.1:8088` or `Content-Type: application/json` — or just use the CLI |
 | 409 `profile_mismatch` | Another profile's proxy holds the port. `lyrebird down` first, or pass the `--profile` that is running |
-| `path escapes …` when changing scenarios or overrides (API: 400 `invalid_name`) | A scenario file resolves outside `scenarios/` or outside the profile — usually a symlink. Symlink the whole profile instead |
+| `path escapes …` in the load problems | A scenario file resolves outside `scenarios/` or outside the profile — usually a symlink. Symlink the whole profile instead |
 | A scenario file is on disk but the proxy does not have it | Same cause: reads are held to the same rule, so it is skipped at load. `lyrebird validate` names it |
 | A scenario file added or moved by hand is not in the list | The engine reads the files once. `lyrebird scenario reload` re-reads them — it resets run evidence, so `reset` after it, not before |
 | `scenarios nest one level deep` | `scenarios/a/b/c.json` is too deep to name. Scenarios live in `scenarios/` or one folder below it |
@@ -37,7 +37,11 @@ these belong to is [AGENTS.md](AGENTS.md).
 | `wait-ready` | `assert-answered <id> --run R --timeout N` — it proves your rule answered, not merely that traffic arrived |
 | `recent --matched` | `recent --json`, filtered on `matched` |
 | `scenario mv` | Move the file, then `scenario reload --use NAME` |
+| `scenario new` | Write the file, then `scenario reload --use NAME` |
 | `scenario new --clone-from X` | Copy the file, then `scenario reload --use NAME` |
+| `scenario rm` | Delete the file, then `scenario reload` (naming a survivor with `--use` if it was the active one) |
+| `scenario list` | `status --json` lists the names; the menu-bar app shows them by folder |
+| `override add` / `override clear` | Edit the file, then `scenario reload` |
 | `trust-ca` on its own | `up --simulator X`; for another device, `down && up --simulator Y`. Removing the CA again is `untrust-ca`, which prints the `simctl` line |
 | `onExhausted: passThrough` | `repeatLast`, or add the steps the run actually makes |
 | A remembered active scenario across restarts | The proxy starts on `default`; `up --use NAME` names it each time |

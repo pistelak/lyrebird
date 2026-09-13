@@ -337,7 +337,7 @@ enum RuleFormatting {
             guard snapshot.rules.isEmpty else { return nil }
             return Vacancy(
                 message: "\(snapshot.scenario) has no rules yet.",
-                hint: "Add one with lyrebird override add, or edit the scenario file.")
+                hint: "Edit the scenario file, then Reload.")
         case .unsupported:
             return Vacancy(
                 message: "This engine predates the rules view.",

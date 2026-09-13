@@ -63,7 +63,8 @@ that:
 
 Scenario names arrive from that API and become filesystem paths, so they are
 validated as single path components and the resolved path is confirmed to stay inside the profile
-before any read, write, listing or unlink. This constrains *names supplied through the API*. It
+before any read or listing; nothing in the proxy writes into a profile. This constrains *names
+supplied through the API*. It
 does not sandbox the profile directory itself: scenario files found at startup are read from
 wherever `--profile` points, symlinks included, exactly as you told it to.
 
@@ -78,8 +79,8 @@ control API and drive the proxy. If that matters in your environment, do not run
 - **Your profile is private data.** Scenarios can contain real payloads captured from a real
   backend, and `/proxy.pac` contains every hostname you intercept. Before attaching
   `/recent`, `/overrides`, `/scenarios` output or a PAC file to a public issue, check what is in
-  them. Scenario files written by Lyrebird are `0600`; the examples `lyrebird init` copies keep the
-  mode they ship with (`0644`) until something rewrites them.
+  them. Lyrebird writes no scenario file, so their modes are whoever wrote them's; the examples
+  `lyrebird init` copies keep the mode they ship with (`0644`).
 
 ## Scope
 

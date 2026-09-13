@@ -6,7 +6,6 @@ look same-origin. These tests pin the three checks that close that gap.
 """
 
 import asyncio
-import errno
 import json
 import socket
 import urllib.error
@@ -65,13 +64,19 @@ def call(profile, method, path, *, headers=None, json_body=None, raw_body=None, 
 def test_cross_origin_text_plain_post_is_refused(profile):
     """aiohttp's request.json() ignores Content-Type, so without this check a plain form post —
     which needs no CORS preflight — would reach the API."""
-    status, _, _ = call(profile, "POST", "/__mock__/scenarios", json_body={"name": "evil"}, content_type="text/plain")
+    status, _, _ = call(
+        profile, "POST", "/__mock__/scenarios/reload", json_body={"use": "evil"}, content_type="text/plain"
+    )
     assert status == 415
 
 
 def test_cross_origin_json_post_is_refused(profile):
     status, _, _ = call(
-        profile, "POST", "/__mock__/scenarios", json_body={"name": "evil"}, headers={"Origin": "https://attacker.test"}
+        profile,
+        "POST",
+        "/__mock__/scenarios/reload",
+        json_body={"use": "evil"},
+        headers={"Origin": "https://attacker.test"},
     )
     assert status == 403
 
@@ -86,8 +91,8 @@ def test_same_origin_json_post_is_allowed(profile):
     status, _, _ = call(
         profile,
         "POST",
-        "/__mock__/scenarios",
-        json_body={"name": "scratch"},
+        "/__mock__/scenarios/reload",
+        json_body={},
         headers={"Origin": f"http://{config.CONTROL_HOST_HEADER}"},
     )
     assert status == 200
@@ -95,7 +100,7 @@ def test_same_origin_json_post_is_allowed(profile):
 
 def test_bodyless_mutation_needs_no_content_type(profile):
     """A bodyless DELETE carries no Content-Type; the guard must not demand one."""
-    status, _, _ = call(profile, "DELETE", "/__mock__/overrides")
+    status, _, _ = call(profile, "DELETE", "/__mock__/recent")
     assert status == 200
 
 
@@ -123,29 +128,30 @@ def test_a_call_naming_the_running_profile_is_served(profile):
     assert status == 200
 
 
-def test_a_call_naming_another_profile_is_refused_and_leaves_no_rule_behind(profile):
-    """The failure this closes: `lyrebird --profile B override add …` printed the new rule's id
-    while the rule went into profile A, which is what the port actually belongs to."""
+def test_a_call_naming_another_profile_is_refused_and_changes_nothing(profile):
+    """The failure this closes: `lyrebird --profile B use …` reported the switch while the proxy it
+    reached was profile A's, which is what the port actually belongs to."""
     (profile / "profile.json").write_text('{"hosts": []}', encoding="utf-8")
+    (profile / "scenarios" / "other.json").write_text(json.dumps({"overrides": []}), encoding="utf-8")
     config.reload_profile()
     app = control.make_app(store.Store(), _meta)
 
     async def main():
         async with TestClient(TestServer(app)) as client:
-            added = await client.post(
-                "/__mock__/overrides",
-                data=json.dumps({"mode": "replace", "match": {"path": "/api/items"}, "status": 503}),
+            switched = await client.put(
+                "/__mock__/scenarios/active",
+                data=json.dumps({"name": "other"}),
                 headers={"Host": config.CONTROL_HOST_HEADER, "Content-Type": "application/json", **_FOREIGN},
             )
-            listed = await client.get("/__mock__/overrides", headers={"Host": config.CONTROL_HOST_HEADER})
-            return added.status, await added.json(), await listed.json()
+            health = await client.get("/__mock__/health", headers={"Host": config.CONTROL_HOST_HEADER})
+            return switched.status, await switched.json(), await health.json()
 
-    status, body, listed = asyncio.run(main())
+    status, body, health = asyncio.run(main())
     assert status == 409
     assert body["error"] == "profile_mismatch"
     assert body["running"] == config.PROFILE_FINGERPRINT
     assert body["requested"] == "deadbeefcafe"
-    assert listed == [], "a refused rule must leave nothing behind"
+    assert health["activeScenario"] == "default", "a refused switch must leave the proxy where it was"
 
 
 def test_a_read_naming_another_profile_is_refused_too(profile):
@@ -156,9 +162,9 @@ def test_a_read_naming_another_profile_is_refused_too(profile):
 
 
 def test_a_bodyless_delete_naming_another_profile_is_refused(profile):
-    """`DELETE /overrides` is the destructive one, and it carries no body — so it must not reach the
-    handler through the gap left by a check that only looks at requests with one."""
-    status, _, body = call(profile, "DELETE", "/__mock__/overrides", headers=_FOREIGN)
+    """`DELETE /recent` carries no body — so it must not reach the handler through the gap left by a
+    check that only looks at requests with one."""
+    status, _, body = call(profile, "DELETE", "/__mock__/recent", headers=_FOREIGN)
     assert status == 409 and body["error"] == "profile_mismatch"
 
 
@@ -180,7 +186,7 @@ def test_the_pac_answers_a_call_naming_another_profile(profile):
 def test_an_empty_profile_header_is_a_mismatch_not_an_absence(profile):
     """`X-Lyrebird-Profile:` with nothing after it named nobody, and a truthiness check read that as
     "no header" — so a bodyless DELETE reached the handler. Empty is a value, and it is not ours."""
-    status, _, body = call(profile, "DELETE", "/__mock__/overrides", headers={"X-Lyrebird-Profile": ""})
+    status, _, body = call(profile, "DELETE", "/__mock__/recent", headers={"X-Lyrebird-Profile": ""})
     assert status == 409 and body["error"] == "profile_mismatch"
 
 
@@ -206,10 +212,9 @@ def test_a_call_that_names_no_profile_is_served(profile):
 
 
 def test_traversal_in_a_scenario_name_is_rejected(profile):
-    status, _, body = call(profile, "POST", "/__mock__/scenarios", json_body={"name": "../../ESCAPED"})
+    status, _, body = call(profile, "PUT", "/__mock__/scenarios/active", json_body={"name": "../../ESCAPED"})
     assert status == 400
     assert body["error"] == "invalid_name"
-    assert not (profile.parent / "ESCAPED.json").exists()
 
 
 def test_missing_scenario_name_is_a_bad_request(profile):
@@ -271,24 +276,24 @@ def test_health_does_not_blame_a_scenario_for_a_file_merely_named_after_it(profi
     assert body["scenariosNotWhole"] == {}, "orders-outage loaded whole and must not be blamed"
 
 
-def test_health_forgets_a_scenario_once_a_good_one_is_created_over_it(profile):
-    """The recovery path. A malformed `orders-outage.json` is how the entry gets there; creating
-    a scenario under that name is what an operator does about it, and the point of doing it is
-    that `up --use orders-outage` stops refusing. An entry left behind would go on refusing to
-    launch the app over a file that no longer decides anything."""
+def test_health_forgets_a_scenario_once_the_file_is_fixed_and_reloaded(profile):
+    """The recovery path. A malformed `orders-outage.json` is how the entry gets there; fixing the
+    file and reloading is what an operator does about it, and the point of doing it is that
+    `up --use orders-outage` stops refusing. An entry left behind would go on refusing to launch
+    the app over a file that no longer decides anything."""
     (profile / "scenarios" / "orders-outage.json").write_text("{ not json", encoding="utf-8")
 
-    def create_a_good_one(subject):
+    def fix_the_file_and_reload(subject):
         assert subject.scenarios_not_whole["orders-outage"], "the malformed file was recorded"
-        subject.create_scenario("orders-outage")
+        (profile / "scenarios" / "orders-outage.json").write_text(json.dumps({"overrides": []}), encoding="utf-8")
+        subject.reload_scenarios()
 
-    status, _, body = call(profile, "GET", "/__mock__/health", prepare=create_a_good_one)
+    status, _, body = call(profile, "GET", "/__mock__/health", prepare=fix_the_file_and_reload)
 
     assert status == 200
     # Empty is what the CLI reads: `up --use orders-outage` finds no problems and goes on to relaunch.
     assert body["scenariosNotWhole"] == {}
     assert "orders-outage" in body["scenarios"]
-    assert body["loadProblems"], "what startup found stays on the record; it just no longer decides"
 
 
 def test_health_reports_no_load_problems_when_every_scenario_loaded(profile):
@@ -308,37 +313,16 @@ def test_health_does_not_leak_the_configured_host_list(profile):
     assert not [key for key in body if "host" in key.lower()]
 
 
-# MARK: - Clearing overrides
-
-
-def test_clearing_overrides_reports_what_it_deleted(profile):
-    """So a client that calls it by mistake at least says so out loud."""
-    (profile / "profile.json").write_text('{"hosts": []}', encoding="utf-8")
-    config.reload_profile()
-    app = control.make_app(store.Store(), _meta)
-
-    async def main():
-        async with TestClient(TestServer(app)) as client:
-            headers = {"Host": config.CONTROL_HOST_HEADER, "Content-Type": "application/json"}
-            await client.post(
-                "/__mock__/overrides", data=json.dumps({"mode": "replace", "match": {"path": "/a"}}), headers=headers
-            )
-            response = await client.delete("/__mock__/overrides", headers=headers)
-            return await response.json()
-
-    assert asyncio.run(main()) == {"cleared": 1, "scenario": "default"}
-
-
 def test_malformed_json_says_so(profile):
     """Returning {} instead reported the next problem it caused ("name_required") rather than the
     real one, sending the caller to look in the wrong place."""
-    status, _, body = call(profile, "POST", "/__mock__/scenarios", raw_body="{not json")
+    status, _, body = call(profile, "POST", "/__mock__/scenarios/reload", raw_body="{not json")
     assert status == 400
     assert "malformed" in body["detail"].lower()
 
 
 def test_a_non_object_body_says_so(profile):
-    status, _, body = call(profile, "POST", "/__mock__/scenarios", raw_body="[1,2,3]")
+    status, _, body = call(profile, "POST", "/__mock__/scenarios/reload", raw_body="[1,2,3]")
     assert status == 400
     assert "object" in body["detail"].lower()
 
@@ -449,43 +433,6 @@ def test_reset_is_still_behind_the_content_type_guard(profile):
     assert status == 415
 
 
-def test_creating_a_scenario_that_already_exists_is_a_conflict(profile):
-    """AGENTS.md promises the refusal: creating a scenario that already exists must not silently
-    replace it."""
-    seed(profile)
-    payload = {"name": "scratch"}
-    status, _, _ = call(profile, "POST", "/__mock__/scenarios", json_body=payload)
-    assert status == 200
-    status, _, body = call(profile, "POST", "/__mock__/scenarios", json_body=payload)
-    assert status == 409
-    assert body["error"] == "scenario_exists"
-
-
-def test_a_rule_with_an_unknown_field_is_refused_and_not_installed(profile):
-    """A 200 here told the caller their 503 rule was live when the proxy would answer 200 — the
-    typo'd field was kept, ignored, and never mentioned again."""
-    (profile / "profile.json").write_text('{"hosts": []}', encoding="utf-8")
-    config.reload_profile()
-    app = control.make_app(store.Store(), _meta)
-
-    async def main():
-        async with TestClient(TestServer(app)) as client:
-            headers = {"Host": config.CONTROL_HOST_HEADER, "Content-Type": "application/json"}
-            added = await client.post(
-                "/__mock__/overrides",
-                data=json.dumps({"mode": "replace", "match": {"path": "/api/items"}, "statsu": 503}),
-                headers=headers,
-            )
-            listed = await client.get("/__mock__/overrides", headers=headers)
-            return added.status, await added.json(), await listed.json()
-
-    status, body, listed = asyncio.run(main())
-    assert status == 400
-    assert body["error"] == "invalid_payload"
-    assert "'statsu'" in body["detail"]
-    assert listed == [], "a refused rule must leave nothing behind"
-
-
 # MARK: - Answer evidence
 
 
@@ -511,40 +458,6 @@ def test_the_reset_route_stays_behind_the_guard(profile):
     status, _, body = call(profile, "POST", "/__mock__/reset", headers={"Host": "evil.example.com"}, json_body={})
     assert status == 421
     assert body["error"] == "bad_host"
-
-
-# MARK: - A profile that cannot be written
-
-
-def test_a_rule_whose_write_fails_is_reported_and_not_installed(profile, monkeypatch):
-    """A bare aiohttp 500 says "Internal Server Error" and sends the operator to the proxy log
-    rather than to the disk that is full. One client for both requests, on purpose: a fresh Store
-    would reload from disk and hide a rule left live in memory."""
-    (profile / "profile.json").write_text('{"hosts": []}', encoding="utf-8")
-    config.reload_profile()
-    app = control.make_app(store.Store(), _meta)
-
-    def refuse(path, text):
-        raise OSError(errno.ENOSPC, "No space left on device")
-
-    monkeypatch.setattr(config, "atomic_write", refuse)
-
-    async def main():
-        async with TestClient(TestServer(app)) as client:
-            headers = {"Host": config.CONTROL_HOST_HEADER, "Content-Type": "application/json"}
-            added = await client.post(
-                "/__mock__/overrides",
-                data=json.dumps({"id": "r", "mode": "replace", "match": {"path": "/a"}}),
-                headers=headers,
-            )
-            listed = await client.get("/__mock__/overrides", headers={"Host": config.CONTROL_HOST_HEADER})
-            return added.status, await added.json(), await listed.json()
-
-    status, body, overrides = asyncio.run(main())
-    assert status == 500
-    assert body["error"] == "persist_failed"
-    assert "No space left" in body["detail"]
-    assert overrides == [], "the rule was published despite the write that failed"
 
 
 # MARK: - The rules snapshot
@@ -1065,8 +978,12 @@ def test_an_inactive_rule_is_still_the_rule_a_trigger_is(profile):
 def test_clear_recent_preserves_rules_evidence_and_event_identity(profile, foreign):
     subjects = []
 
+    (profile / "scenarios" / "default.json").write_text(
+        json.dumps({"overrides": [{"id": "ovr_orders", "match": {"path": "/api/orders"}, "mode": "replace"}]}),
+        encoding="utf-8",
+    )
+
     def prepare(subject):
-        subject.add_override({"id": "ovr_orders", "match": {"path": "/api/orders"}, "mode": "replace"})
         subject.reset_runtime("ovr_orders")
         store.credit(subject.answer_slot("ovr_orders"))
         store.credit(subject.answer_slot("ovr_orders"))
@@ -1090,14 +1007,18 @@ def test_clear_recent_preserves_rules_evidence_and_event_identity(profile, forei
 # These pin the routes that carry it and the refusals that must not read as "not found".
 
 
-def _grouped(subject):
-    subject.create_scenario("checkout/orders-outage")
-    subject.create_scenario("archive/old")
-    subject.set_active("default")
+def _grouped(profile):
+    """Two grouped scenarios on disk. `call` builds its Store from the profile, so they go in
+    before it, not through a `prepare` that runs after the loading is done."""
+    for group, name in (("checkout", "orders-outage"), ("archive", "old")):
+        directory = profile / "scenarios" / group
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / f"{name}.json").write_text(json.dumps({"overrides": []}), encoding="utf-8")
 
 
 def test_listing_reports_each_scenarios_group(profile):
-    status, _, body = call(profile, "GET", "/__mock__/scenarios", prepare=_grouped)
+    _grouped(profile)
+    status, _, body = call(profile, "GET", "/__mock__/scenarios")
 
     assert status == 200
     groups = {row["name"]: row["group"] for row in body["scenarios"]}
@@ -1122,15 +1043,9 @@ def test_browsing_an_unsafe_qualified_name_is_a_400(profile, name):
     assert body["error"] == "invalid_name"
 
 
-def test_deleting_an_unsafe_qualified_name_is_a_400(profile):
-    status, _, body = call(profile, "DELETE", "/__mock__/scenarios?name=..%2Fx")
-
-    assert status == 400
-    assert body["error"] == "invalid_name"
-
-
 def test_browsing_a_grouped_scenario(profile):
-    status, _, body = call(profile, "GET", "/__mock__/rules?scenario=checkout%2Forders-outage", prepare=_grouped)
+    _grouped(profile)
+    status, _, body = call(profile, "GET", "/__mock__/rules?scenario=checkout%2Forders-outage")
 
     assert status == 200
     assert body["scenario"] == "checkout/orders-outage"
@@ -1149,25 +1064,6 @@ def test_health_keys_not_whole_by_the_qualified_name(profile):
 
     assert status == 200
     assert "checkout/partial" in (body.get("scenariosNotWhole") or {})
-
-
-# MARK: - Delete by query
-
-
-def test_deleting_by_query_removes_a_grouped_scenario(profile):
-    """The path form cannot carry this name at all — `/scenarios/checkout/x` matches no route, so
-    the CLI would report a scenario that is right there as one that is not."""
-    status, _, body = call(profile, "DELETE", "/__mock__/scenarios?name=checkout%2Forders-outage", prepare=_grouped)
-
-    assert status == 200
-    assert body["deleted"] == "checkout/orders-outage"
-
-
-def test_deleting_by_query_without_a_name_is_a_400(profile):
-    status, _, body = call(profile, "DELETE", "/__mock__/scenarios")
-
-    assert status == 400
-    assert body["error"] == "name_required"
 
 
 # MARK: - Reload
@@ -1189,8 +1085,11 @@ def test_a_refused_reload_reports_its_problems_and_keeps_serving_the_old_rules(p
     """The proxy answers from the snapshot it already has. A reload that published half a profile
     would leave it answering from one nobody wrote."""
 
+    (profile / "scenarios" / "default.json").write_text(
+        json.dumps({"overrides": [{"id": "live", "mode": "replace", "status": 200}]}), encoding="utf-8"
+    )
+
     def prepare(subject):
-        subject.add_override({"id": "live", "mode": "replace", "status": 200})
         (config.SCENARIOS_DIR / "broken.json").write_text("{not json", encoding="utf-8")
 
     status, _, body = call(profile, "POST", "/__mock__/scenarios/reload", json_body={}, prepare=prepare)
@@ -1201,12 +1100,12 @@ def test_a_refused_reload_reports_its_problems_and_keeps_serving_the_old_rules(p
 
 
 def test_reload_with_use_switches_the_active_scenario(profile):
+    _grouped(profile)
     status, _, body = call(
         profile,
         "POST",
         "/__mock__/scenarios/reload",
         json_body={"use": "checkout/orders-outage"},
-        prepare=_grouped,
     )
 
     assert status == 200
@@ -1214,8 +1113,9 @@ def test_reload_with_use_switches_the_active_scenario(profile):
 
 
 def test_reload_refusing_the_missing_active_scenario_is_a_409(profile):
+    (profile / "scenarios" / "scratch.json").write_text(json.dumps({"overrides": []}), encoding="utf-8")
+
     def prepare(subject):
-        subject.create_scenario("scratch")
         subject.set_active("scratch")
         (config.SCENARIOS_DIR / "scratch.json").unlink()
 

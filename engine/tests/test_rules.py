@@ -487,8 +487,8 @@ def test_advance_matcher_is_none_for_the_self_default():
 
 
 def test_duplicate_override_ids_are_reported_and_dropped():
-    """Ids address a rule: add replaces by id, reset names one by id, and sequence state is keyed
-    by it. Two rules sharing an id would share a cursor."""
+    """Ids address a rule: reset names one by id, evidence is filed by it, and sequence state is
+    keyed by it. Two rules sharing an id would share a cursor."""
     scenario = rules.normalise_scenario(
         {
             "overrides": [
@@ -522,9 +522,9 @@ def test_a_null_id_is_replaced_by_a_derived_one():
 
 @pytest.mark.parametrize("injected", ["bad", {"seq": {"cursor": 1, "runId": "x"}}])
 def test_internal_runtime_keys_are_stripped_from_input(injected):
-    """Underscore keys are ours. `_persistable` strips them on the way out, so nothing we wrote can
-    contain one — but a hand-edited or imported file can, and `_ruleRuntime` reaching the store
-    means either a crash inside a proxy hook or a scenario that quietly starts on step 2."""
+    """Underscore keys are ours. A hand-edited or imported file can carry one, and `_ruleRuntime`
+    reaching the store means either a crash inside a proxy hook or a scenario that quietly starts
+    on step 2."""
     scenario = rules.normalise_scenario({"_ruleRuntime": injected, "overrides": []}, "s")
     assert "_ruleRuntime" not in scenario
 
@@ -594,12 +594,6 @@ def test_a_missing_query_parameter_reads_differently_from_a_wrong_one():
     wrong = rules.explain_matcher({"query": {"kind": "alpha"}}, "GET", "/a", {"kind": "beta"}, "")
     assert absent is not None and "has no 'kind'" in absent
     assert wrong is not None and "has 'beta'" in wrong
-
-
-def test_the_matcher_help_covers_exactly_the_accepted_fields():
-    """The CLI help is generated from MATCHER_FIELD_HELP and validation from MATCHER_FIELDS. If they
-    could drift, a documented field would be rejected or a supported one stay invisible."""
-    assert tuple(rules.MATCHER_FIELD_HELP) == rules.MATCHER_FIELDS
 
 
 @pytest.mark.parametrize("match", [[], "", 0, False, "/api/items", 7])

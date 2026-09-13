@@ -1,19 +1,15 @@
-"""In-memory scenario/override store, persisted as JSON under the active profile.
+"""In-memory scenario/override store, read from JSON under the active profile.
+
+Nothing here writes into a profile: scenario files are written by whoever authors them, and
+`reload_scenarios` is the one way an edited file reaches a running proxy. A file that does not load
+whole refuses the whole reload, which is why validation lives at load and nowhere else.
 
 Single-loop safety: mitmproxy runs one asyncio loop, and the aiohttp control server runs on that
-same loop, so flow-hook reads and control-API writes are serialised — no locking required.
+same loop, so flow-hook reads and control-API calls are serialised — no locking required.
 
-Every name that becomes a path component (a scenario name) is validated
-and the resolved path is checked for containment before any read, write, listing or unlink. These
-names arrive from an unauthenticated local HTTP API, so they are treated as untrusted input.
-
-Write then publish: a mutator writes the file that records a change *before* the change becomes
-visible in memory, so a write that fails (full disk, read-only profile) leaves live state, runtime
-slots and the file exactly as they were and the OSError reaches the caller. Otherwise the proxy
-would answer with a rule no profile contains — a divergence nothing later reports. This covers
-scenario content. `delete_scenario` follows it too: the file is
-unlinked first and the scenario leaves memory only once it is gone, so a failed unlink reports
-through `_problem` and False with memory and disk still agreeing.
+Every name that becomes a path component (a scenario name) is validated and the resolved path is
+checked for containment before any read or listing. These names arrive from an unauthenticated
+local HTTP API, so they are treated as untrusted input.
 """
 
 from __future__ import annotations
@@ -52,10 +48,10 @@ class LegacyProfileLayout(RuntimeError):
 def refuse_legacy_layout(profile_dir: Path) -> None:
     """Refuse a profile whose scenarios are still under `sessions/`, naming the move that fixes it.
 
-    Raised rather than fixed up or ignored: `Store._load` creates `scenarios/` when it is missing, so
-    without this the proxy would start on an empty profile — every saved scenario silently absent and
-    only `default` in the list — which is the "created empty instead of saying so" failure the house
-    rules name. See test_store_refuses_a_legacy_sessions_layout.
+    Raised rather than reported as a directory that could not be read: an unrenamed profile is a
+    profile whose scenarios are all there, under the old name, and "cannot read scenarios/" sends
+    the operator looking for a permissions problem instead of naming the `mv` that fixes it. See
+    test_store_refuses_a_legacy_sessions_layout.
 
     Takes the profile explicitly rather than reading `config.PROFILE_DIR`, so `init PATH` can check
     the directory it is about to write into.
@@ -167,25 +163,6 @@ def _relative_label(file: Path) -> str:
         return file.relative_to(config.SCENARIOS_DIR).as_posix()
     except ValueError:
         return file.name
-
-
-def _case_sibling(directory: Path, name: str) -> str | None:
-    """The entry in `directory` differing from `name` only by case, or None.
-
-    An *exact* match is not a collision: creating a scenario over a malformed file under its exact
-    name is the documented recovery, and refusing it here would take that away — see
-    test_creating_over_a_malformed_file_under_its_exact_name_still_recovers.
-    """
-    folded = name.lower()
-    try:
-        entries = list(directory.iterdir())
-    except FileNotFoundError:
-        # The only benign answer: a group directory that does not exist yet has no siblings at all.
-        return None
-    # Every other listing failure is raised, not read as "no collision". This guards a write, so
-    # answering "nothing in the way" because the directory could not be read is the fail-open that
-    # would let a create land beside a file it cannot see.
-    return next((e.name for e in entries if e.name != name and e.name.lower() == folded), None)
 
 
 def _case_collisions(names: list[str]) -> dict[str, list[str]]:
@@ -335,19 +312,19 @@ def load_scenario_file(file: Path) -> tuple[dict | None, list[str]]:
     loaded without the rule you are looking for" send an operator to different places.
 
     A module-level function rather than a `Store` method, so a command can ask "what would the proxy
-    make of this file?" without constructing a store — which creates directories, synthesises a
-    `default` scenario, neither of which an inspection may do.
+    make of this file?" without constructing a store — which synthesises a `default` scenario and
+    reads the whole profile, neither of which an inspection of one file should do.
     `Store._load` is a loop around this function, so an offline answer cannot drift from startup's.
     """
     label = _relative_label(file)
     try:
         name = scenario_identity(file)
-        # Containment on the file about to be *read*, not only on the ones written and unlinked, and
-        # resolved through `scenario_path` so one identity cannot get two verdicts: a scenario file
-        # symlinked out of `scenarios/` loaded into the proxy while `scenario_path` refused that very
-        # scenario by name, and the permissive verdict was the one that ran. Checking `file.parent`
-        # would only prove the file sits in its own directory, which says nothing about where that
-        # directory is — see test_a_grouped_file_is_held_to_the_same_containment_as_saving_it.
+        # Containment on the file about to be read, resolved through `scenario_path` so one identity
+        # cannot get two verdicts: a scenario file symlinked out of `scenarios/` loaded into the
+        # proxy while `scenario_path` refused that very scenario by name, and the permissive verdict
+        # was the one that ran. Checking `file.parent` would only prove the file sits in its own
+        # directory, which says nothing about where that directory is — see
+        # test_the_loader_holds_a_file_to_the_containment_scenario_path_applies.
         scenario_path(name)
     except UnsafeName as error:
         return None, [f"skipped {label}: {error}"]
@@ -380,17 +357,12 @@ def _empty_scenario(name: str) -> dict:
     }
 
 
-def _persistable(scenario: dict) -> dict:
-    return {key: value for key, value in scenario.items() if not key.startswith("_")}
-
-
 # MARK: - Rule runtime
 #
 # Per-rule state that must never reach a profile: sequence cursors, and the count of requests each
-# rule has answered. It hangs off the scenario under a leading underscore, which `_persistable`
-# already strips — so it is never written to a profile, and is
-# scoped to its scenario without a second key, all from machinery that was already here for
-# `_problems`.
+# rule has answered. It hangs off the scenario under a leading underscore, which `normalise_scenario`
+# strips on the way in — so it is scoped to its scenario without a second key, all from machinery
+# that was already here for `_problems`.
 
 
 def _runtime(scenario: dict) -> dict:
@@ -400,9 +372,8 @@ def _runtime(scenario: dict) -> dict:
 def _new_run_id(previous: str | None = None) -> str:
     """A fresh run token, guaranteed different from the one it replaces.
 
-    Eight bytes rather than the three used for override ids, because this token is what stops a
-    retained event from an earlier run satisfying a `sequence wait`. The explicit inequality makes
-    "a reset always changes the run" a guarantee instead of a probability.
+    This token is what stops a retained event from an earlier run satisfying a `sequence wait`. The
+    explicit inequality makes "a reset always changes the run" a guarantee instead of a probability.
     """
     while True:
         candidate = secrets.token_hex(8)
@@ -454,10 +425,10 @@ def credit(slot: dict) -> None:
     replaced.
 
     Holding the slot rather than the id is what makes that safe. `_activate` clears the runtime
-    container, `add_override` pops from it and `reset_runtime` replaces the entry, so a slot captured
-    before any of those is orphaned: crediting it mutates a dict nothing can reach. A patch that lands after a scenario
-    switch therefore credits nobody, instead of crediting whatever rule in the new scenario happens to
-    share its id.
+    container, `reload_scenarios` builds scenarios that carry none, and `reset_runtime` replaces the
+    entry, so a slot captured before any of those is orphaned: crediting it mutates a dict nothing
+    can reach. A patch that lands after a scenario switch therefore credits nobody, instead of
+    crediting whatever rule in the new scenario happens to share its id.
     """
     slot["answers"] += 1  # `_new_slot` is the only maker of a slot, and it always seeds this
 
@@ -524,11 +495,10 @@ class Store:
         return scenarios, problems, on_disk
 
     def _load(self) -> None:
-        # Before the mkdir, which would otherwise create an empty `scenarios/` beside the profile's
-        # real `sessions/` and start the proxy carrying only `default` — see
-        # test_store_refuses_a_legacy_sessions_layout.
+        # Named as the rename it is, rather than left to `scenario_files` to report as a directory
+        # it could not read — see test_store_refuses_a_legacy_sessions_layout. Nothing creates
+        # `scenarios/`: `init` writes it, and a profile without one is a reported load problem.
         refuse_legacy_layout(config.PROFILE_DIR)
-        config.SCENARIOS_DIR.mkdir(parents=True, exist_ok=True)
         self.scenarios, problems, self._disk_names = self._read_snapshot()
         for owner, problem in problems:
             self._problem(problem, owner)
@@ -551,43 +521,14 @@ class Store:
         if scenario is not None:
             self.scenarios_not_whole.setdefault(scenario, []).append(message)
 
-    def _forget_load_problems(self, name: str) -> None:
-        """Drop what was recorded against `name`: the scenario it described is no longer there.
-
-        `scenarios_not_whole` is a claim about the scenario under a name *now*, not a history, and
-        replacing a scenario is how an operator recovers from a file that would not load — a
-        malformed `orders-outage.json`, then `scenario new orders-outage`. Keeping the entry would make
-        that recovery invisible: every rule installed, and `up --use orders-outage` still refusing
-        to launch the app over a file that no longer decides anything.
-
-        `load_problems` is untouched, because it is the other thing: a record of what startup found,
-        which stays true however the store is edited afterwards.
-        """
-        self.scenarios_not_whole.pop(name, None)
-
-    def _write_scenario(self, name: str, scenario: dict) -> None:
-        """Write the scenario someone *proposes* to store under `name`, not the one already there.
-
-        Taking the dict rather than looking it up is what lets a mutator write its candidate before
-        publishing it, so a failed write leaves nothing half-applied.
-        """
-        config.atomic_write(scenario_path(name), json.dumps(_persistable(scenario), indent=2))
-
-        # A scenario that has been written is on disk, whatever it was before. Without this a
-        # `default` first synthesised in memory stayed "never on disk" after its file existed, and
-        # `reload_scenarios` then read a deleted `default.json` as the virtual default and published
-        # an empty scenario over one full of rules — see
-        # test_reload_refuses_when_a_default_it_wrote_itself_is_deleted.
-        self._disk_names.add(name)
-
     def _activate(self, name: str) -> None:
         """The one place `active_name` changes.
 
         Switching scenarios clears the destination's cursors, so a scenario always begins at its
         first step. This is a helper rather than a line repeated at each call site because there are
         four of them — startup, the self-heal in `active_scenario`, `set_active` and
-        `delete_scenario` — and the last two are easy to miss: deleting the active scenario falls back
-        to `default` without going anywhere near `set_active`.
+        `reload_scenarios` — and the last is easy to miss: a reload reselects its target without
+        going anywhere near `set_active`.
         """
         self.active_name = name
         scenario = self.scenarios.get(name)
@@ -607,32 +548,6 @@ class Store:
 
     def find_override(self, method: str, pathname: str, query: dict[str, str], body_text: str) -> dict | None:
         return rules.find_override(self.active_overrides(), method, pathname, query, body_text)
-
-    def add_override(self, payload: dict) -> dict:
-        override = {"active": True, **rules.validate_override(payload)}
-        override["id"] = override.get("id") or f"ovr_{secrets.token_hex(3)}"  # after the spread
-        scenario = self.active_scenario()
-        overrides = self.active_overrides()
-        existing = next((i for i, o in enumerate(overrides) if o.get("id") == override["id"]), None)
-        if existing is not None:
-            candidate = [*overrides[:existing], override, *overrides[existing + 1 :]]
-        else:
-            candidate = [*overrides, override]
-        self._write_scenario(self.active_name, {**scenario, "overrides": candidate})
-        scenario["overrides"] = candidate
-        # The rule at this id is now a different rule; its old cursor describes steps that may no
-        # longer exist. Note this only fires for a caller that supplied an explicit id — an id-less
-        # `override add` mints a fresh random one and so replaces nothing. It happens after the
-        # write for the same reason the list does: if the write failed the old rule is still live,
-        # and its cursor and answer count still describe it.
-        _runtime(scenario).pop(override["id"], None)
-        return override
-
-    def clear_overrides(self) -> None:
-        scenario = self.active_scenario()
-        self._write_scenario(self.active_name, {**scenario, "overrides": []})
-        scenario["overrides"] = []
-        _runtime(scenario).clear()
 
     # MARK: - Sequences
 
@@ -813,60 +728,14 @@ class Store:
             ],
         }
 
-    def create_scenario(self, name: str) -> None:
-        group, leaf = scenario_parts(name)
-        name = f"{group}/{leaf}" if group else leaf
-        if name in self.scenarios:
-            raise FileExistsError(name)
-        # A name differing only by case is refused rather than written: on a case-insensitive
-        # filesystem the new file would *be* the old one under a second identity, and on a
-        # case-sensitive one discovery would then skip both. An exact match is not a collision — a
-        # scenario written over a malformed file under its own name is the documented recovery. See
-        # test_creating_beside_a_case_colliding_sibling_is_refused.
-        directory = config.SCENARIOS_DIR / group if group else config.SCENARIOS_DIR
-        if colliding := _case_sibling(directory, f"{leaf}.json"):
-            raise FileExistsError(f"{group}/{colliding}" if group else colliding)
-        if group and (colliding := _case_sibling(config.SCENARIOS_DIR, group)):
-            raise FileExistsError(f"{colliding}/{leaf}.json")
-        base = _empty_scenario(name)
-        self._write_scenario(name, base)
-        self.scenarios[name] = base
-        self._forget_load_problems(name)
-
     def set_active(self, name: str) -> bool:
         # Validated before the membership test, so a name that could never be one is a refusal the
         # caller can act on rather than "not found" — see
-        # test_activating_browsing_and_deleting_an_unsafe_qualified_name_is_a_400.
+        # test_activating_an_unsafe_qualified_name_is_a_400.
         scenario_parts(name)
         if name not in self.scenarios:
             return False
         self._activate(name)
-        return True
-
-    def delete_scenario(self, name: str) -> bool:
-        scenario_parts(name)
-        if name == "default" or name not in self.scenarios:
-            return False
-        path = scenario_path(name)
-        try:
-            path.unlink()
-        except FileNotFoundError:
-            pass
-        except (OSError, RuntimeError) as error:
-            # Nothing changes until the file is actually gone — neither the store nor the active
-            # scenario. Removing it from memory first made a failed unlink report False while the
-            # proxy had already stopped serving the scenario, and switching to `default` first left
-            # the active scenario changed under a `rm` that reported failure. See
-            # test_a_failed_unlink_leaves_the_scenario_in_memory_and_on_disk.
-            self._problem(f"could not delete {_relative_label(path)}: {error}", name)
-            return False
-        if self.active_name == name:
-            self._activate("default")
-        del self.scenarios[name]
-        self._disk_names.discard(name)
-        # After the unlink: an entry left behind would be inherited by the next scenario created
-        # under this name.
-        self._forget_load_problems(name)
         return True
 
     def reload_scenarios(self, use: str | None = None) -> dict:

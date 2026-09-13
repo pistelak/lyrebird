@@ -132,7 +132,8 @@ def _control(path: str, method: str = "GET", payload: Any = None, timeout: float
 
     Exists so nothing outside this function has to remember the loopback Host header, the profile
     this call means, or the JSON content-type the API requires — the first and last of which
-    otherwise fail as a bare 421 or 415, and the middle of which would mutate a stranger's profile.
+    otherwise fail as a bare 421 or 415, and the middle of which would act on a stranger's running
+    state.
     """
     headers = {"Host": config.CONTROL_HOST_HEADER, _PROFILE_HEADER: config.PROFILE_FINGERPRINT}
     data = None

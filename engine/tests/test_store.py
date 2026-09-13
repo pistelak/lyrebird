@@ -34,19 +34,6 @@ def test_reasonable_names_are_accepted(name):
 # MARK: - Scenarios
 
 
-def test_deleting_the_active_scenario_switches_to_default(profile):
-    subject = make_store(profile)
-    subject.create_scenario("scratch")
-    subject.set_active("scratch")
-    assert subject.delete_scenario("scratch") is True
-    assert subject.active_name == "default"
-
-
-def test_default_scenario_cannot_be_deleted(profile):
-    subject = make_store(profile)
-    assert subject.delete_scenario("default") is False
-
-
 def test_a_malformed_scenario_file_does_not_block_startup(profile):
     """One bad file used to raise AttributeError and stop the proxy from starting at all."""
     (profile / "scenarios" / "bad.json").write_text("[]")
@@ -101,6 +88,15 @@ def _write(profile, name, payload):
     path = profile / "scenarios" / f"{name}.json"
     path.write_text(payload if isinstance(payload, str) else json.dumps(payload))
     return path
+
+
+def _scenario(profile, name, *overrides):
+    """A scenario file holding these rules, which is the only way a rule reaches a store.
+
+    Nothing in the engine writes into a profile, so a test that needs live state writes the file an
+    agent would have written and lets the loader read it.
+    """
+    return _write(profile, name, {"name": name, "overrides": [dict(override) for override in overrides]})
 
 
 def test_load_scenario_file_keeps_the_good_rules_and_names_the_dropped_ones(profile):
@@ -183,11 +179,10 @@ def test_a_scenario_file_symlinked_out_of_the_profile_is_not_loaded(profile, tmp
     assert "sneaky" not in make_store(profile).scenarios, "and startup refuses it for the same reason"
 
 
-def test_the_loader_holds_a_file_to_the_same_containment_as_writing_it(profile, tmp_path):
+def test_the_loader_holds_a_file_to_the_containment_scenario_path_applies(profile, tmp_path):
     """The rule is `scenario_path`'s, exactly: resolve inside `scenarios/`. A link that leaves it,
-    even into the same profile, was already unwritable — `override add` on such a scenario raises
-    `UnsafeName` from `_write_scenario` — so loading it left a scenario the proxy would serve and
-    could never save."""
+    even into the same profile, is a file `scenario_path` refuses by name — so loading it anyway
+    would give one identity two verdicts, and the permissive one is the one that runs."""
     elsewhere = profile / "shared.json"
     elsewhere.write_text(json.dumps({"name": "shared", "overrides": []}))
     link = profile / "scenarios" / "kept.json"
@@ -239,36 +234,6 @@ def test_a_rule_whose_delay_is_not_a_finite_number_is_a_reported_problem(profile
 # MARK: - Overrides
 
 
-def test_add_override_tolerates_a_scenario_whose_overrides_lack_ids(profile):
-    (profile / "scenarios" / "hand.json").write_text(
-        json.dumps({"name": "hand", "overrides": [{"match": {"path": "/a"}, "mode": "replace"}]})
-    )
-    subject = make_store(profile)
-    subject.set_active("hand")
-    added = subject.add_override({"match": {"path": "/b"}, "mode": "replace"})
-    assert added["id"].startswith("ovr_")
-
-
-def test_add_override_tolerates_a_scenario_with_no_overrides_key(profile):
-    (profile / "scenarios" / "bare.json").write_text(json.dumps({"name": "bare"}))
-    subject = make_store(profile)
-    subject.set_active("bare")
-    assert subject.add_override({"match": {"path": "/b"}, "mode": "replace"})["id"]
-
-
-def test_add_override_rejects_an_invalid_rule(profile):
-    subject = make_store(profile)
-    with pytest.raises(ValueError):
-        subject.add_override({"mode": "replace", "delayMs": "1s"})
-
-
-def test_persisted_scenarios_are_private(profile):
-    subject = make_store(profile)
-    subject.create_scenario("scratch")
-    mode = (profile / "scenarios" / "scratch.json").stat().st_mode
-    assert mode & 0o077 == 0
-
-
 def test_containment_rejects_a_symlinked_scenarios_directory(profile, tmp_path):
     """Proving a path sits under scenarios/ is not enough if scenarios/ is itself a symlink out."""
     outside = tmp_path / "outside"
@@ -280,39 +245,6 @@ def test_containment_rejects_a_symlinked_scenarios_directory(profile, tmp_path):
     scenarios.symlink_to(outside, target_is_directory=True)
     with pytest.raises(store.UnsafeName):
         store._contained(config.SCENARIOS_DIR, "escaped.json")
-
-
-def test_override_id_cannot_be_nulled_by_the_payload(profile):
-    """A payload id of null used to overwrite the generated fallback (the spread came last), so the
-    override persisted with a null id and was silently dropped on the next startup."""
-    subject = make_store(profile)
-
-    # null reads as "no id given" and must produce a generated one — it used to survive as null.
-    nulled = subject.add_override({"id": None, "mode": "replace", "match": {"path": "/a"}})
-    assert nulled["id"].startswith("ovr_")
-
-    # An explicit but unusable id is a mistake worth reporting, not silently replacing.
-    for bad in ("", "   ", 123, []):
-        with pytest.raises(ValueError):
-            subject.add_override({"id": bad, "mode": "replace", "match": {"path": "/a"}})
-
-    generated = subject.add_override({"mode": "replace", "match": {"path": "/a"}})
-    assert generated["id"].startswith("ovr_")
-    kept = subject.add_override({"id": "chosen", "mode": "replace", "match": {"path": "/b"}})
-    assert kept["id"] == "chosen"
-
-
-def test_create_refuses_a_name_that_is_already_taken(profile):
-    """Silently replacing a scenario someone else may be using is a delete without a `delete`."""
-    subject = make_store(profile)
-    subject.create_scenario("taken")
-    subject.set_active("taken")
-    kept = subject.add_override({"id": "keep", "mode": "replace", "match": {"path": "/a"}})
-    with pytest.raises(FileExistsError):
-        subject.create_scenario("taken")
-    assert [o["id"] for o in subject.scenarios["taken"]["overrides"]] == [kept["id"]], (
-        "the refused create must not have touched the existing scenario"
-    )
 
 
 @pytest.mark.parametrize(
@@ -332,45 +264,6 @@ def test_a_scenario_whose_overrides_are_not_a_list_is_reported_not_emptied(profi
     scenario, problems = store.load_scenario_file(profile / "scenarios" / "broken.json")
     assert scenario is not None and scenario["overrides"] == []
     assert problems == ["broken.json: overrides must be a list"]
-
-
-def test_a_created_scenario_does_not_inherit_the_problems_of_the_file_it_replaces(profile):
-    """`scenarios_not_whole` says what is wrong with the scenario under a name *now*. A file that
-    would not load leaves no scenario, so creating one under that name is a recovery — and a stale
-    entry makes `up --use NAME` refuse to launch against rules that are all present."""
-    (profile / "scenarios" / "orders-outage.json").write_text("{ not json", encoding="utf-8")
-    subject = make_store(profile)
-    assert "orders-outage" in subject.scenarios_not_whole
-
-    subject.create_scenario("orders-outage")
-
-    assert subject.scenarios_not_whole == {}
-    assert subject.load_problems, "the record of what startup found is not rewritten"
-
-
-def test_a_recreated_scenario_does_not_inherit_the_problems_of_the_one_deleted(profile):
-    """The other order: delete the half-loaded scenario, then make a new one under its name. The
-    entry has to go with the scenario, not linger for whatever takes the name next."""
-    (profile / "scenarios" / "orders-outage.json").write_text(
-        json.dumps(
-            {
-                "name": "orders-outage",
-                "overrides": [
-                    {"match": {"path": "/a"}, "mode": "replace", "status": 200},
-                    {"match": {"path": "/b"}, "mode": "replace", "statsu": 200},
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
-    subject = make_store(profile)
-    assert "orders-outage" in subject.scenarios, "it loaded, without one of its rules"
-    assert "orders-outage" in subject.scenarios_not_whole
-
-    assert subject.delete_scenario("orders-outage")
-    assert subject.scenarios_not_whole == {}
-    subject.create_scenario("orders-outage")
-    assert subject.scenarios_not_whole == {}
 
 
 def test_starting_does_not_write_into_the_profile(profile):
@@ -413,8 +306,8 @@ def _advanced_once(subject):
 
 
 def test_a_self_triggered_sequence_advances_when_it_answers(profile):
+    _scenario(profile, "default", SEQ)
     subject = store.Store()
-    subject.add_override(dict(SEQ))
     assert subject.sequence_states()[0]["nextStep"] == 1
     _advanced_once(subject)
     assert subject.sequence_states()[0]["nextStep"] == 2
@@ -425,16 +318,18 @@ def test_a_shadowed_sequenced_rule_does_not_advance(profile):
     not be the rule that answered. Advancing it anyway would spend a step it never served — and the
     next request it *does* answer would serve the wrong one, leaving the scenario off by one for the
     rest of its run. This is why `self` means 'answered' and not 'matched'."""
-    subject = store.Store()
-    subject.add_override(
+    _scenario(
+        profile,
+        "default",
         {
             "id": "seq",
             "mode": "replace",
             "match": {"path": "/api/orders/*"},
             "sequence": {"steps": [{"status": 201}, {"status": 202}]},
-        }
+        },
+        {"id": "specific", "mode": "replace", "status": 404, "match": {"path": "/api/orders/42"}},
     )
-    subject.add_override({"id": "specific", "mode": "replace", "status": 404, "match": {"path": "/api/orders/42"}})
+    subject = store.Store()
 
     picked = subject.find_override("GET", "/api/orders/42", {}, "")
     assert picked["id"] == "specific", "the rule with fewer wildcards answers"
@@ -449,10 +344,12 @@ def test_a_shadowed_sequenced_rule_does_not_advance(profile):
 def test_an_advance_on_sequence_ignores_its_own_calls(profile):
     """The property the delete-then-refresh scenario depends on: a screen may fetch the list any
     number of times without consuming a step."""
-    subject = store.Store()
-    subject.add_override(
-        {**SEQ, "sequence": {**SEQ["sequence"], "advanceOn": {"method": "DELETE", "path": "/api/items/*"}}}
+    _scenario(
+        profile,
+        "default",
+        {**SEQ, "sequence": {**SEQ["sequence"], "advanceOn": {"method": "DELETE", "path": "/api/items/*"}}},
     )
+    subject = store.Store()
     for _ in range(3):
         _advanced_once(subject)
     assert subject.sequence_states()[0]["nextStep"] == 1
@@ -462,23 +359,27 @@ def test_an_advance_on_sequence_ignores_its_own_calls(profile):
 
 
 def test_advance_matching_ignores_a_rule_whose_matcher_does_not_fit(profile):
-    subject = store.Store()
-    subject.add_override(
-        {**SEQ, "sequence": {**SEQ["sequence"], "advanceOn": {"method": "DELETE", "path": "/api/items/*"}}}
+    _scenario(
+        profile,
+        "default",
+        {**SEQ, "sequence": {**SEQ["sequence"], "advanceOn": {"method": "DELETE", "path": "/api/items/*"}}},
     )
+    subject = store.Store()
     assert subject.advance_matching("DELETE", "/api/other/b", {}, "") == []
 
 
 def test_an_inactive_sequenced_rule_is_never_advanced(profile):
     """A disabled rule that still moved on the wire would be a rule doing something while off."""
-    subject = store.Store()
-    subject.add_override(
+    _scenario(
+        profile,
+        "default",
         {
             **SEQ,
             "active": False,
             "sequence": {**SEQ["sequence"], "advanceOn": {"method": "DELETE", "path": "/api/items/*"}},
-        }
+        },
     )
+    subject = store.Store()
     assert subject.sequenced_overrides() == []
     assert subject.advance_matching("DELETE", "/api/items/b", {}, "") == []
 
@@ -486,8 +387,8 @@ def test_an_inactive_sequenced_rule_is_never_advanced(profile):
 def test_exhausted_and_overrun_are_reported_separately(profile):
     """The clamp at n+1 exists for this: at n, a second and a third advance event land on the same
     value and the two flags collapse into one."""
+    _scenario(profile, "default", SEQ)
     subject = store.Store()
-    subject.add_override(dict(SEQ))
 
     for _ in range(2):
         _advanced_once(subject)
@@ -502,8 +403,8 @@ def test_exhausted_and_overrun_are_reported_separately(profile):
 def test_resolve_override_does_not_move_the_cursor(profile):
     """Selection and advancement are separate so a request is answered from the state it arrived
     in — you never see your own write reflected in its own response."""
+    _scenario(profile, "default", SEQ)
     subject = store.Store()
-    subject.add_override(dict(SEQ))
     override = subject.find_override("GET", "/api/items", {}, "")
     for _ in range(3):
         action, view, progress = subject.resolve_override(override)
@@ -513,57 +414,22 @@ def test_resolve_override_does_not_move_the_cursor(profile):
 # MARK: - Runtime never escapes
 
 
-def test_sequence_cursors_never_reach_the_scenario_file(profile):
-    subject = store.Store()
-    subject.add_override(dict(SEQ))
-    _advanced_once(subject)
-    subject.add_override({"id": "other", "mode": "replace", "status": 200})  # forces another write
-
-    raw = (profile / "scenarios" / "default.json").read_text(encoding="utf-8")
-    assert "_ruleRuntime" not in raw
-    assert "runId" not in raw
-
-
 def test_switching_scenarios_restarts_the_scenario(profile):
+    _scenario(profile, "default", SEQ)
+    _scenario(profile, "other")
     subject = store.Store()
-    subject.add_override(dict(SEQ))
     _advanced_once(subject)
-    subject.create_scenario("other")
     subject.set_active("other")
     subject.set_active("default")
     assert subject.sequence_states()[0]["nextStep"] == 1, "a scenario always begins at its first step"
-
-
-def test_deleting_the_active_scenario_resets_the_destination(profile):
-    """`delete_scenario` falls back to `default` without going through `set_active`, so cursor
-    cleanup hung off `set_active` alone would let a scenario resume mid-run."""
-    subject = store.Store()
-    subject.add_override(dict(SEQ))
-    _advanced_once(subject)
-    subject.create_scenario("work")
-    subject.set_active("work")
-    subject.delete_scenario("work")
-
-    assert subject.active_name == "default"
-    assert subject.sequence_states()[0]["nextStep"] == 1
-
-
-def test_replacing_a_rule_by_id_drops_its_cursor(profile):
-    """The rule at that id is now a different rule; its old cursor describes steps that may not
-    exist any more."""
-    subject = store.Store()
-    subject.add_override(dict(SEQ))
-    _advanced_once(subject)
-    subject.add_override({**SEQ, "sequence": {"steps": [{"status": 500}]}})
-    assert subject.sequence_states()[0]["nextStep"] == 1
 
 
 # MARK: - Reset
 
 
 def test_reset_rewinds_and_issues_a_new_run_id(profile):
+    _scenario(profile, "default", SEQ)
     subject = store.Store()
-    subject.add_override(dict(SEQ))
     before = subject.sequence_states()[0]["runId"]
     _advanced_once(subject)
 
@@ -577,8 +443,8 @@ def test_reset_rewinds_and_issues_a_new_run_id(profile):
 def test_resetting_an_unknown_id_is_distinguishable_from_resetting_nothing(profile):
     """None rather than an empty result: a caller that cannot tell them apart believes a typo
     worked."""
+    _scenario(profile, "default", SEQ)
     subject = store.Store()
-    subject.add_override(dict(SEQ))
     assert subject.reset_runtime("nope") is None
     assert subject.reset_runtime()["reset"] != {}
 
@@ -586,8 +452,8 @@ def test_resetting_an_unknown_id_is_distinguishable_from_resetting_nothing(profi
 def test_reset_covers_plain_rules_not_just_sequenced_ones(profile):
     """Every rule carries run state now — an answer count — so a reset that skipped plain rules
     would leave the one boundary a test can draw unavailable to exactly the rules that need it."""
+    _scenario(profile, "default", {"id": "plain", "mode": "replace", "status": 200})
     subject = store.Store()
-    subject.add_override({"id": "plain", "mode": "replace", "status": 200})
     assert list((subject.reset_runtime() or {})["reset"]) == ["plain"]
 
 
@@ -601,10 +467,12 @@ def test_a_served_overrun_is_reported_even_when_the_cursor_cannot_move(profile):
     exhausted response repeatedly with the cursor sitting still. Deriving `hasOverrun` from the
     cursor alone therefore reported false while /recent recorded the overrun — two answers to the
     same question."""
-    subject = store.Store()
-    subject.add_override(
-        {**SEQ, "sequence": {**SEQ["sequence"], "advanceOn": {"method": "DELETE", "path": "/api/items/*"}}}
+    _scenario(
+        profile,
+        "default",
+        {**SEQ, "sequence": {**SEQ["sequence"], "advanceOn": {"method": "DELETE", "path": "/api/items/*"}}},
     )
+    subject = store.Store()
     for suffix in ("a", "b"):
         subject.advance_matching("DELETE", f"/api/items/{suffix}", {}, "")
     assert subject.sequence_states()[0]["hasOverrun"] is False, "exhausted, but nothing served past it"
@@ -618,10 +486,12 @@ def test_serves_count_each_step_even_when_the_cursor_cannot_move(profile):
     """For an `advanceOn` rule the cursor stays put while it answers, and /recent is a bounded
     window — so the counter in live state is the only durable evidence a step was served.
     `sequence wait` reads it for exactly that reason."""
-    subject = store.Store()
-    subject.add_override(
-        {**SEQ, "sequence": {**SEQ["sequence"], "advanceOn": {"method": "DELETE", "path": "/api/items/*"}}}
+    _scenario(
+        profile,
+        "default",
+        {**SEQ, "sequence": {**SEQ["sequence"], "advanceOn": {"method": "DELETE", "path": "/api/items/*"}}},
     )
+    subject = store.Store()
     for _ in range(2):
         subject.resolve_override(subject.find_override("GET", "/api/items", {}, ""))
     state = subject.sequence_states()[0]
@@ -631,16 +501,16 @@ def test_serves_count_each_step_even_when_the_cursor_cannot_move(profile):
 
 def test_an_overrun_serve_is_not_counted_as_a_step(profile):
     """Past the last step there is no step being served; the overrun has its own flags."""
+    _scenario(profile, "default", SEQ)
     subject = store.Store()
-    subject.add_override(dict(SEQ))
     for _ in range(3):
         _advanced_once(subject)
     assert subject.sequence_states()[0]["serves"] == {"1": 1, "2": 1}
 
 
 def test_reset_clears_the_serve_counts(profile):
+    _scenario(profile, "default", SEQ)
     subject = store.Store()
-    subject.add_override(dict(SEQ))
     _advanced_once(subject)
     assert subject.sequence_states()[0]["serves"] == {"1": 1}
     subject.reset_runtime()
@@ -648,8 +518,8 @@ def test_reset_clears_the_serve_counts(profile):
 
 
 def test_reset_clears_a_recorded_overrun(profile):
+    _scenario(profile, "default", SEQ)
     subject = store.Store()
-    subject.add_override(dict(SEQ))
     for _ in range(3):
         _advanced_once(subject)
     assert subject.sequence_states()[0]["hasOverrun"] is True
@@ -660,8 +530,8 @@ def test_reset_clears_a_recorded_overrun(profile):
 def test_reset_always_issues_a_different_run_id(profile, monkeypatch):
     """The token is what stops a retained event from an earlier run satisfying a wait, so a reset
     reissuing the same value has to be impossible rather than merely unlikely."""
+    _scenario(profile, "default", SEQ)
     subject = store.Store()
-    subject.add_override(dict(SEQ))
     seen = {subject.sequence_states()[0]["runId"]}
     for _ in range(20):
         issued = subject.reset_runtime()["reset"]["seq"]
@@ -689,27 +559,16 @@ def test_a_captured_slot_credits_nobody_after_the_scenario_is_switched(profile):
     """A patch is selected in the request hook and only answers a round trip later, in the response
     hook. Looking the rule up by id at that point would credit whatever rule the *now* active
     scenario happens to file under that id — a different rule, in a different scenario."""
+    shared = {"id": "shared", "mode": "patch", "patch": {}}
+    _scenario(profile, "default", shared)
+    _scenario(profile, "other", shared)
     subject = store.Store()
-    subject.add_override({"id": "shared", "mode": "patch", "patch": {}})
     slot = subject.answer_slot("shared")
 
-    subject.create_scenario("other")
     subject.set_active("other")
-    subject.add_override({"id": "shared", "mode": "patch", "patch": {}})
 
     store.credit(slot)  # the in-flight patch from the previous scenario lands now
     assert subject.answer_states() == [{"id": "shared", "active": True, "count": 0, "runId": None}]
-
-
-def test_a_captured_slot_credits_nobody_after_the_rule_is_replaced(profile):
-    """Same shape, one scenario: `override add` on an existing id installs a different rule, and the
-    in-flight answer belongs to the definition that was consulted, not the one that replaced it."""
-    subject = store.Store()
-    subject.add_override({"id": "r", "mode": "patch", "patch": {}})
-    slot = subject.answer_slot("r")
-    subject.add_override({"id": "r", "mode": "replace", "status": 200})
-    store.credit(slot)
-    assert subject.answer_states() == [{"id": "r", "active": True, "count": 0, "runId": None}]
 
 
 def test_a_captured_slot_credits_nobody_after_a_reset(profile):
@@ -717,8 +576,8 @@ def test_a_captured_slot_credits_nobody_after_a_reset(profile):
     patch is in the air. The answer belongs to the run that was ended, so a reset has to hand the
     rule a *new* slot — reusing the object and clearing its fields would leave the in-flight answer
     counted into the fresh run the operator just drew a boundary around."""
+    _scenario(profile, "default", {"id": "r", "mode": "patch", "patch": {}})
     subject = store.Store()
-    subject.add_override({"id": "r", "mode": "patch", "patch": {}})
     slot = subject.answer_slot("r")
     issued = subject.reset_runtime("r")["reset"]["r"]
 
@@ -729,26 +588,27 @@ def test_a_captured_slot_credits_nobody_after_a_reset(profile):
 def test_reading_answer_states_does_not_mint_run_state(profile):
     """Asking how many answers a rule has must not create the runtime entry that a reset issues a
     run id for — a question is not an event."""
+    _scenario(profile, "default", {"id": "untouched", "mode": "replace", "status": 200})
     subject = store.Store()
-    subject.add_override({"id": "untouched", "mode": "replace", "status": 200})
     subject.answer_states()
     assert store._runtime(subject.active_scenario()) == {}
 
 
 def test_switching_scenario_clears_answer_counts(profile):
+    _scenario(profile, "default", {"id": "a", "mode": "replace", "status": 200})
+    _scenario(profile, "scratch")
     subject = store.Store()
-    subject.add_override({"id": "a", "mode": "replace", "status": 200})
     store.credit(subject.answer_slot("a"))
-    subject.create_scenario("scratch")
     subject.set_active("scratch")
     subject.set_active("default")
     assert subject.answer_states() == [{"id": "a", "active": True, "count": 0, "runId": None}]
 
 
 def test_reset_clears_one_rules_answer_count_and_leaves_the_others(profile):
+    _scenario(
+        profile, "default", {"id": "a", "mode": "replace", "status": 200}, {"id": "b", "mode": "replace", "status": 200}
+    )
     subject = store.Store()
-    subject.add_override({"id": "a", "mode": "replace", "status": 200})
-    subject.add_override({"id": "b", "mode": "replace", "status": 200})
     store.credit(subject.answer_slot("a"))
     store.credit(subject.answer_slot("b"))
     subject.reset_runtime("a")
@@ -758,8 +618,8 @@ def test_reset_clears_one_rules_answer_count_and_leaves_the_others(profile):
 def test_answer_states_report_an_inactive_rule_as_inactive(profile):
     """A rule that is switched off can never answer, so a wait on it should fail at once rather
     than burn its timeout."""
+    _scenario(profile, "default", {"id": "off", "active": False, "mode": "replace", "status": 200})
     subject = store.Store()
-    subject.add_override({"id": "off", "active": False, "mode": "replace", "status": 200})
     assert subject.answer_states() == [{"id": "off", "active": False, "count": 0, "runId": None}]
 
 
@@ -773,8 +633,8 @@ def test_answer_states_report_an_inactive_rule_as_inactive(profile):
 def test_reset_issues_the_run_id_the_following_answers_are_counted_under(profile):
     """The whole flow in one place: reset hands back a token, and what the rule answers afterwards
     is reported under exactly that token. Without this, a caller has nothing to compare against."""
+    _scenario(profile, "default", {"id": "a", "mode": "replace", "status": 200})
     subject = store.Store()
-    subject.add_override({"id": "a", "mode": "replace", "status": 200})
     issued = subject.reset_runtime("a")["reset"]["a"]
     store.credit(subject.answer_slot("a"))
     assert subject.answer_states() == [{"id": "a", "active": True, "count": 1, "runId": issued}]
@@ -783,8 +643,8 @@ def test_reset_issues_the_run_id_the_following_answers_are_counted_under(profile
 def test_a_reset_leaves_the_previous_run_id_unclaimable(profile):
     """A count is only ever evidence about the run it was taken in, so the run that produced it has
     to be nameable — and a reset has to make the previous name stop matching."""
+    _scenario(profile, "default", {"id": "a", "mode": "replace", "status": 200})
     subject = store.Store()
-    subject.add_override({"id": "a", "mode": "replace", "status": 200})
     store.credit(subject.answer_slot("a"))
     before = subject.answer_states()[0]["runId"]
     subject.reset_runtime("a")
@@ -794,28 +654,15 @@ def test_a_reset_leaves_the_previous_run_id_unclaimable(profile):
     assert after["runId"] != before, "and cannot be mistaken for the run before it"
 
 
-def test_a_rule_replaced_under_the_same_id_answers_in_a_different_run(profile):
-    """Rule ids are reused — `override add` on an existing id is the documented way to change a
-    rule. The id therefore cannot carry the identity a caller holds; only the run token can."""
-    subject = store.Store()
-    subject.add_override({"id": "a", "mode": "replace", "status": 200})
-    issued = subject.reset_runtime("a")["reset"]["a"]
-    subject.add_override({"id": "a", "mode": "replace", "status": 500})
-    store.credit(subject.answer_slot("a"))
-    state = subject.answer_states()[0]
-    assert state["count"] == 1, "the new definition really did answer"
-    assert state["runId"] != issued, "but not in the run the caller was told about"
-
-
 def test_a_scenario_switch_answers_in_a_different_run_under_the_same_id(profile):
     """Two scenarios can file a rule under one id. Reading a count from the second while holding the
     first's run token is the substitution this field exists to make visible."""
+    shared = {"id": "shared", "mode": "replace", "status": 200}
+    _scenario(profile, "default", shared)
+    _scenario(profile, "other", shared)
     subject = store.Store()
-    subject.add_override({"id": "shared", "mode": "replace", "status": 200})
     issued = subject.reset_runtime("shared")["reset"]["shared"]
-    subject.create_scenario("other")
     subject.set_active("other")
-    subject.add_override({"id": "shared", "mode": "replace", "status": 200})
     store.credit(subject.answer_slot("shared"))
     assert subject.answer_states()[0]["runId"] != issued
 
@@ -824,119 +671,19 @@ def test_a_rule_that_has_no_run_reports_none_rather_than_a_run_with_no_answers(p
     """`null` says "there is no run here"; a count of zero says "there was a run and nothing
     answered". Collapsing the first into the second is how a caller believes a boundary it never
     drew — the reading-does-not-mint rule is what makes the distinction possible."""
+    _scenario(profile, "default", {"id": "untouched", "mode": "replace", "status": 200})
     subject = store.Store()
-    subject.add_override({"id": "untouched", "mode": "replace", "status": 200})
     assert subject.answer_states() == [{"id": "untouched", "active": True, "count": 0, "runId": None}]
 
 
 def test_answer_and_sequence_states_report_one_run_not_two(profile):
     """One identity per rule, reported by both views. Two tokens for the same boundary would let a
     caller bind a wait and an assertion to different things and never find out."""
+    _scenario(profile, "default", SEQ)
     subject = store.Store()
-    subject.add_override(dict(SEQ))
     subject.reset_runtime("seq")
     answers = {state["id"]: state["runId"] for state in subject.answer_states()}
     assert answers["seq"] == subject.sequence_states()[0]["runId"]
-
-
-# MARK: - Write then publish
-#
-# Every mutator writes the file that records its change before the change becomes visible in
-# memory. These tests inject a failing write and assert the three things that used to drift apart:
-# the exception reaches the caller, live state is untouched, and the file is untouched. Before the
-# fix each one left the proxy answering with a rule no profile contained.
-
-
-def _refuse_writes(monkeypatch):
-    """Make every profile write fail the way a full disk does.
-
-    Monkeypatched rather than chmodded: a read-only directory does not stop root, which is how CI
-    containers run, and chmod on a tmp_path is flaky on macOS.
-    """
-
-    def refuse(path, text):
-        raise OSError(errno.ENOSPC, "No space left on device")
-
-    monkeypatch.setattr(config, "atomic_write", refuse)
-
-
-def test_a_rule_whose_write_fails_is_not_added(profile, monkeypatch):
-    subject = store.Store()
-    subject.add_override({"id": "kept", "mode": "replace", "status": 200})
-    before = (profile / "scenarios" / "default.json").read_bytes()
-
-    _refuse_writes(monkeypatch)
-    with pytest.raises(OSError):
-        subject.add_override({"id": "new", "mode": "replace", "status": 500})
-
-    assert [o["id"] for o in subject.active_overrides()] == ["kept"]
-    assert (profile / "scenarios" / "default.json").read_bytes() == before
-
-
-def test_a_replacement_whose_write_fails_leaves_the_old_rule_live_with_its_cursor(profile, monkeypatch):
-    """The cursor belongs to the rule that is still answering. Dropping it for a replacement that
-    never reached the disk would rewind a scenario mid-run."""
-    subject = store.Store()
-    subject.add_override(dict(SEQ))
-    _advanced_once(subject)
-    before = (profile / "scenarios" / "default.json").read_bytes()
-
-    _refuse_writes(monkeypatch)
-    with pytest.raises(OSError):
-        subject.add_override({**SEQ, "sequence": {"steps": [{"status": 500}]}})
-
-    state = subject.sequence_states()[0]
-    assert state["stepCount"] == 2, "the two-step rule must still be the live one"
-    assert state["nextStep"] == 2, "its cursor must survive a replacement that did not happen"
-    assert (profile / "scenarios" / "default.json").read_bytes() == before
-
-
-def test_a_replacement_whose_write_fails_leaves_a_captured_slot_crediting_the_live_rule(profile, monkeypatch):
-    """A captured slot is orphaned by a successful replacement, on purpose. If the replacement did
-    not happen, the rule that handed the slot out is still the live one, so its answers must still
-    land — otherwise a patch in flight during a failed write is silently uncounted."""
-    subject = store.Store()
-    subject.add_override({"id": "r", "mode": "patch", "patch": {}})
-    slot = subject.answer_slot("r")
-    store.credit(slot)
-    run_id = slot["runId"]
-
-    _refuse_writes(monkeypatch)
-    with pytest.raises(OSError):
-        subject.add_override({"id": "r", "mode": "replace", "status": 200})
-
-    assert subject.answer_slot("r") is slot, "the live rule kept its runtime entry"
-    assert slot["answers"] == 1 and slot["runId"] == run_id, "and the entry itself is untouched"
-    store.credit(slot)
-    assert subject.answer_states() == [{"id": "r", "active": True, "count": 2, "runId": run_id}], (
-        "and the run the caller was told about is still the one being counted"
-    )
-
-
-def test_overrides_stay_live_when_the_clear_cannot_be_written(profile, monkeypatch):
-    subject = store.Store()
-    subject.add_override(dict(SEQ))
-    _advanced_once(subject)
-    before = (profile / "scenarios" / "default.json").read_bytes()
-
-    _refuse_writes(monkeypatch)
-    with pytest.raises(OSError):
-        subject.clear_overrides()
-
-    assert [o["id"] for o in subject.active_overrides()] == ["seq"]
-    assert subject.sequence_states()[0]["nextStep"] == 2
-    assert (profile / "scenarios" / "default.json").read_bytes() == before
-
-
-def test_a_scenario_whose_write_fails_does_not_exist(profile, monkeypatch):
-    subject = store.Store()
-
-    _refuse_writes(monkeypatch)
-    with pytest.raises(OSError):
-        subject.create_scenario("scratch")
-
-    assert "scratch" not in subject.scenarios
-    assert not (profile / "scenarios" / "scratch.json").exists()
 
 
 # MARK: - The profile layout from before the rename
@@ -960,18 +707,17 @@ def make_legacy_profile(profile, *, with_scenarios=False):
 
 
 def test_store_refuses_a_legacy_sessions_layout(profile):
-    """`sessions/` was renamed to `scenarios/` before the first release, and `Store._load` creates
-    the directory it reads when it is missing. So an unrenamed profile would have started the proxy
-    on an empty `scenarios/` it had just made: every saved scenario absent, only the synthesised
-    `default` in the list, and nothing anywhere saying why. The refusal names both paths and the
-    `mv` that fixes it."""
+    """`sessions/` was renamed to `scenarios/` before the first release, and an unrenamed profile has
+    every scenario it ever had, under the old name. Read as an ordinary unreadable directory it would
+    be a load problem about permissions, and the operator would go looking for one; the refusal names
+    both paths and the `mv` that fixes it."""
     legacy = make_legacy_profile(profile)
 
     with pytest.raises(store.LegacyProfileLayout) as raised:
         store.Store()
 
     assert f"mv {legacy / 'sessions'} {legacy / 'scenarios'}" in str(raised.value)
-    assert not (legacy / "scenarios").exists(), "the refusal must not leave the empty directory behind"
+    assert not (legacy / "scenarios").exists(), "the refusal must not leave the directory behind"
 
 
 def test_a_profile_with_both_directories_loads_from_scenarios(profile):
@@ -1255,7 +1001,7 @@ def test_an_unreadable_scenarios_directory_is_reported_rather_than_read_as_empty
 
 
 @pytest.mark.parametrize("target", ["same-group", "other-group", "root", "outside"])
-def test_a_grouped_file_is_held_to_the_same_containment_as_saving_it(profile, target, tmp_path):
+def test_a_grouped_file_is_held_to_the_containment_scenario_path_applies(profile, target, tmp_path):
     """One identity, one verdict. Checking the file against its own parent would only prove it sits
     in the directory it sits in; the rule that matters is where that directory is. A grouped file
     linked out of the profile used to load while `scenario_path` refused the very same name."""
@@ -1281,68 +1027,9 @@ def test_a_grouped_file_is_held_to_the_same_containment_as_saving_it(profile, ta
     except store.UnsafeName:
         refused_by_path = True
 
-    assert (scenario is None) == refused_by_path, "load and save must agree about one identity"
+    assert (scenario is None) == refused_by_path, "loading and naming must agree about one identity"
     if refused_by_path:
         assert problems and "checkout/link.json" in problems[0]
-
-
-# MARK: - Creating and deleting in a group
-
-
-def test_creating_in_a_group_writes_one_level_down(profile):
-    subject = make_store(profile)
-    subject.create_scenario("checkout/scratch")
-
-    assert (profile / "scenarios" / "checkout" / "scratch.json").is_file()
-    assert "checkout/scratch" in subject.scenarios
-    assert subject.list_scenarios()["scenarios"][-1]["group"] == "checkout"
-
-
-def test_creating_beside_a_case_colliding_sibling_is_refused(profile):
-    """The new file would either *be* the old one under a second identity, or make a pair discovery
-    then skips — a create that took a profile from one working scenario to none."""
-    if _folds_case(profile):
-        pytest.skip("the filesystem folds case, so the write would land on the same file")
-    _write(profile, "Scratch", {"overrides": []})
-    subject = make_store(profile)
-
-    with pytest.raises(FileExistsError):
-        subject.create_scenario("scratch")
-    assert not (profile / "scenarios" / "scratch.json").exists()
-
-
-def test_creating_over_a_malformed_file_under_its_exact_name_still_recovers(profile):
-    """The documented way out of a file that will not load. An exact name is not a case collision,
-    and refusing it here would take the recovery away."""
-    _write(profile, "broken", "{not json")
-    subject = make_store(profile)
-
-    subject.create_scenario("broken")
-
-    assert "broken" in subject.scenarios
-    assert subject.scenarios_not_whole.get("broken") is None
-
-
-def test_a_failed_unlink_leaves_the_scenario_in_memory_and_on_disk(profile, monkeypatch):
-    """Memory and disk must agree after a refusal. Dropping the scenario first reported False while
-    the proxy had already stopped serving a scenario whose file was still there — and the next
-    `create` under that name would then land on it."""
-    subject = make_store(profile)
-    subject.create_scenario("scratch")
-    subject.set_active("scratch")
-
-    def refuse(self, missing_ok=False):
-        raise PermissionError(errno.EACCES, "Permission denied")
-
-    monkeypatch.setattr(store.Path, "unlink", refuse)
-
-    assert subject.delete_scenario("scratch") is False
-    assert "scratch" in subject.scenarios
-    assert (profile / "scenarios" / "scratch.json").is_file()
-    # And still the active one: switching to `default` before the unlink left the active scenario
-    # changed under a `rm` that reported failure.
-    assert subject.active_name == "scratch"
-    assert any("could not delete" in problem for problem in subject.load_problems)
 
 
 # MARK: - Reloading
@@ -1362,8 +1049,8 @@ def test_reload_picks_up_a_hand_added_group(profile):
 def test_reload_keeps_the_old_snapshot_on_any_problem(profile, breakage):
     """All or nothing. A reload that silently dropped the one file somebody had just edited would be
     indistinguishable from one that worked, and the proxy would answer from a profile nobody has."""
+    _scenario(profile, "keeper")
     subject = make_store(profile)
-    subject.create_scenario("keeper")
     subject.set_active("keeper")
     before = dict(subject.scenarios)
 
@@ -1439,8 +1126,8 @@ def test_reload_with_use_selects_the_replacement_and_writes_the_pointer(profile)
 def test_reload_invalidates_prior_run_evidence(profile):
     """The scenarios are new objects with no runtime slots, so a slot captured before the reload
     credits nobody — the same rule `reset_runtime` relies on."""
+    _scenario(profile, "default", {"id": "rule", "mode": "replace", "status": 200})
     subject = make_store(profile)
-    subject.add_override({"id": "rule", "mode": "replace", "status": 200})
     slot = store._rule_runtime(subject.active_scenario(), "rule")
     before = slot["runId"]
 
@@ -1455,21 +1142,6 @@ def test_reload_invalidates_prior_run_evidence(profile):
     # `credit` counts into `answers`; asserting on `serves` passed whatever the reload did.
     assert after["answers"] == 0, "a slot captured before the reload credits nobody"
     assert slot["answers"] == 2, "the orphaned slot is mutated, and nothing can reach it"
-
-
-def test_reload_refuses_when_a_default_it_wrote_itself_is_deleted(profile):
-    """`default` starts virtual, and the first rule added to it writes the file. Once that has
-    happened a missing `default.json` is a deletion like any other — treated as "there never was
-    one", the reload published an empty scenario over one full of rules and reported success."""
-    subject = make_store(profile)
-    subject.add_override({"id": "rule", "mode": "replace", "status": 200})
-    assert (profile / "scenarios" / "default.json").is_file()
-    (profile / "scenarios" / "default.json").unlink()
-
-    with pytest.raises(store.ReloadRefused):
-        subject.reload_scenarios()
-
-    assert [o["id"] for o in subject.active_overrides()] == ["rule"]
 
 
 def test_a_directory_named_like_a_scenario_file_is_reported_against_that_name(profile):
@@ -1492,20 +1164,3 @@ def test_a_dangling_symlink_in_scenarios_is_reported_rather_than_vanishing(profi
     subject = make_store(profile)
 
     assert any("symlink pointing at nothing" in problem for problem in subject.load_problems)
-
-
-def test_a_case_check_that_cannot_list_the_directory_refuses_rather_than_allowing_the_write(profile, monkeypatch):
-    """The check guards a write. Reading a failed listing as "nothing in the way" is the fail-open
-    that lets a create land beside a file it could not see."""
-    subject = make_store(profile)
-    real = store.Path.iterdir
-
-    def refuse(self):
-        if self.name == "scenarios":
-            raise PermissionError(errno.EACCES, "Permission denied")
-        return real(self)
-
-    monkeypatch.setattr(store.Path, "iterdir", refuse)
-
-    with pytest.raises(OSError):
-        subject.create_scenario("scratch")

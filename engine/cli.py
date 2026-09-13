@@ -6,15 +6,12 @@
     lyrebird down                         stop proxy and restore the previous proxy settings
     lyrebird use <scenario>               switch active scenario
     lyrebird recent [--json]              what came through, and which overrides answered
-    lyrebird override add <json>          add a rule to the active scenario, no restart
     lyrebird validate [scenario]          check saved scenario files offline; non-zero if any is
                                           not loadable whole
     lyrebird explain-match <method> <path>  which rule would be selected, and why the rest were not
                                           (--scenario NAME reads a file instead of the proxy)
     lyrebird assert-answered <id> [--run R]  exit non-zero unless that rule answered in that run
-    lyrebird scenario list [--json]       list scenarios, by folder
-    lyrebird scenario new <name>          create an empty scratch scenario
-    lyrebird scenario reload [--use N]    re-read the scenario files after editing them by hand
+    lyrebird scenario reload [--use N]    re-read the scenario files after writing or editing them
     lyrebird reset [id] [--json]          start a fresh run: rewind sequences, clear answer counts
     lyrebird sequence wait <id> --step N  block until a sequence serves a given step
     lyrebird status [--json]              show intercept state (honest about PAC on/off)
@@ -62,7 +59,6 @@ cli.add_command(supervisor.down)
 cli.add_command(supervisor.status)
 cli.add_command(scenario.use)
 cli.add_command(scenario.recent)
-cli.add_command(scenario.override)
 cli.add_command(scenario.scenario_group)
 cli.add_command(evidence.sequence)
 cli.add_command(evidence.reset)

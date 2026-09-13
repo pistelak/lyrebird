@@ -23,7 +23,7 @@ An *override* is a plain dict mirroring the on-disk JSON schema:
     }
 
 Those fields plus `notes` — free text for the author, which the engine never reads — are the whole
-vocabulary; `OVERRIDE_FIELD_HELP` below is the list, and anything outside it is rejected rather than
+vocabulary; `OVERRIDE_FIELDS` below is the list, and anything outside it is rejected rather than
 kept, because a field the engine ignores is a rule that answers with something its author did not
 write.
 
@@ -72,37 +72,29 @@ BODYLESS_STATUSES = (204, 304)
 STEP_FIELDS = ("status", "headers", "body")
 SEQUENCE_FIELDS = ("steps", "advanceOn", "onExhausted")
 
-# The matcher vocabulary, with what each field means. One dict rather than a tuple and a docstring
-# somewhere else, because three things are generated from it — validation, the "unknown field" error,
-# and the CLI help — and a capability nobody can discover is reported as a missing feature.
-MATCHER_FIELD_HELP = {
-    "method": "HTTP method, compared case-insensitively. Omit to match any method.",
-    "path": "Path without the query string. '*' is the only wildcard; everything else is literal.",
-    "query": "Query parameters that must all be present with these exact values. Others are ignored.",
-    "bodyContains": "A substring that must appear in the request body.",
-}
-MATCHER_FIELDS = tuple(MATCHER_FIELD_HELP)
+# The matcher vocabulary. Validation and the "unknown field" error are both generated from it; what
+# each field means is documented in engine/README.md's matcher table.
+MATCHER_FIELDS = ("method", "path", "query", "bodyContains")
 
-# The top-level vocabulary, for the same three consumers and the same reason. `notes` is the one
+# The top-level vocabulary, for the same consumers and the same reason. `notes` is the one
 # field the engine never reads: JSON has no comments and scenarios are written by hand, so an author
 # needs somewhere to say why a rule exists. Everything outside this table is a typo — including
 # `nots` — and a typo'd field is not a harmless extra: `statsu` leaves the rule answering with a
 # default status, which is a different response from the one its author wrote.
-OVERRIDE_FIELD_HELP = {
-    "id": "Stable name for the rule. Generated when omitted; derived from the rule's content for scenario files.",
-    "active": "false switches the rule off without deleting it. Default true.",
-    "match": "Which requests this rule answers (see the matcher fields).",
-    "mode": "'replace' answers locally; 'patch' merges into the real response.",
-    "delayMs": "Delay the matched response by this many milliseconds.",
-    "status": "HTTP status of the answer (replace) or forced onto the real response (patch).",
-    "headers": "Response headers (replace).",
-    "body": "Response body, JSON or string (replace).",
-    "patch": "JSON deep-merged into the real response (patch).",
-    "patchStrategy": "'appendToArray' appends to arrays instead of replacing them (patch).",
-    "sequence": "Answer differently as a scenario progresses (replace only).",
-    "notes": "Free text for the author. Ignored by the engine.",
-}
-OVERRIDE_FIELDS = tuple(OVERRIDE_FIELD_HELP)
+OVERRIDE_FIELDS = (
+    "id",
+    "active",
+    "match",
+    "mode",
+    "delayMs",
+    "status",
+    "headers",
+    "body",
+    "patch",
+    "patchStrategy",
+    "sequence",
+    "notes",
+)
 
 # The two outcomes of resolving a rule against its cursor. A discriminated action rather than an
 # "effective override" the caller reinterprets: exhaustion under `error` has no override to hand
@@ -794,9 +786,8 @@ def normalise_scenario(scenario: Any, name: str) -> dict:
         raise ValidationError("scenario must be a JSON object")
 
     # Underscore keys are ours: `_problems` below, and the sequence cursors the store hangs off the
-    # scenario. `_persistable` strips them on the way out, so nothing we wrote can contain one — but
-    # a hand-edited or imported file can, and `_ruleRuntime` reaching the store means either a
-    # crash inside a proxy hook or a scenario that quietly starts on step 2.
+    # scenario. A hand-edited or imported file can carry one, and `_ruleRuntime` reaching the store
+    # means either a crash inside a proxy hook or a scenario that quietly starts on step 2.
     result = {key: value for key, value in scenario.items() if not key.startswith("_")}
     result["name"] = name
     result.setdefault("schemaVersion", 1)
@@ -838,7 +829,8 @@ def normalise_scenario(scenario: Any, name: str) -> dict:
         # `matched: null`, which reads as "nothing answered".
         if validated.get("id") is None:
             validated["id"] = derived_id(validated)
-        # Ids address a rule: `add_override` replaces by id, and sequence state is keyed by it. Two
+        # Ids address a rule: `reset` and `assert-answered` take one, and sequence state is keyed by
+        # it. Two
         # rules sharing an id would share a cursor and could not be replaced independently — so the
         # duplicate is reported and dropped rather than loaded into a scenario where it would
         # misbehave quietly.

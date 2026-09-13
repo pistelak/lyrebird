@@ -145,8 +145,8 @@ earned. A rule that answered is counted where the answer is produced, so the evi
 entry in `recent` and can never come from a rule that merely matched and lost.
 
 **Keep the run id and pass it.** `reset` issues a fresh run id per rule, and every answer the rule
-then gathers is reported under that id. A second reset, a rule replaced under the same id
-(`override add`), or a scenario switch ends that run and starts another — and the rule id is
+then gathers is reported under that id. A second reset, a reload, or a scenario switch ends that
+run and starts another — and the rule id is
 identical on the other side, so without `--run` a count belonging to the new run reads exactly like
 the one your test earned. `--run` refuses that substitution instead of reporting it as success. The
 run is re-checked on every poll, so a boundary destroyed while `--timeout` is waiting — the rule
@@ -252,11 +252,12 @@ relaunch`.
 
 ## Making a scenario
 
-Two options, and the second is usually the right one for an agent.
+**Write the file.** That is the whole of it: nothing in Lyrebird writes into a profile, so a
+scenario is a file you author and `scenario reload` is how it reaches a running proxy.
 
-**Edit a scenario file.** Scenarios are JSON in `<profile>/scenarios/`, either there or in one
+Scenarios are JSON in `<profile>/scenarios/`, either there or in one
 folder below it — `scenarios/checkout/cart-empty.json` is the scenario `checkout/cart-empty`, and
-that qualified name is what `use`, `up --use`, `validate` and `scenario rm` take. The `name` inside
+that qualified name is what `use`, `up --use` and `validate` take. The `name` inside
 the file is derived from the path and ignored. `id` and `active` are optional — `id` is derived from
 the rule when omitted — so the minimum is:
 
@@ -362,13 +363,6 @@ the winner it names is the one that would be picked; what is *not* true is that 
 the rules you wrote — yours may be missing rather than out-ranked, which is usually the thing you
 ran the command to find out. `validate` is where you read those problems in full.
 
-**Or add one from the CLI,** which takes effect immediately with no restart:
-
-```bash
-lyrebird override add '{"match":{"method":"GET","path":"/api/v1/orders/*"},"mode":"replace","status":500}'
-lyrebird override add -   # or read the JSON from stdin
-```
-
 And to see what happened:
 
 ```bash
@@ -448,7 +442,8 @@ cp PATH/scenarios/orders-outage.json PATH/scenarios/agent-scratch.json   # start
 lyrebird scenario reload --use agent-scratch            # re-read the files, and activate it
 # …work…
 lyrebird use orders-outage                              # put back what you found
-lyrebird scenario rm agent-scratch
+rm PATH/scenarios/agent-scratch.json                    # and take the copy away again
+lyrebird scenario reload
 ```
 
 `scenario reload` refuses on any problem and publishes nothing, so a copy that did not land is a
@@ -459,15 +454,11 @@ same reason: a typo and a rule that never fired need completely different fixes.
 
 ## The destructive operations
 
-`lyrebird override clear --force` (and `DELETE /__mock__/overrides`) deletes every override in the
-**active scenario** and rewrites the file on disk. There is no undo.
-
-It is not the only thing that writes: `scenario rm` deletes a file, and `override add` replaces a
-rule with the same id. But it is the only one that discards everything at once, which is why it
-is the only one behind a flag — `clear` is easy to reach for while meaning "clear the traffic
-list", which is not what it does. Creating a scenario that already exists is refused rather than
-silently replacing it. If the profile is under version control that is your safety net; if not,
-take a copy before touching someone else's scenarios.
+There are none in Lyrebird: nothing it runs writes into a profile, so every change to a scenario is
+one you make to a file yourself, with whatever undo your editor and your version control give you.
+`lyrebird down` restores the network settings and touches nothing else. If the profile is under
+version control that is your safety net; if not, take a copy before editing someone else's
+scenarios.
 
 ## When it does not work
 

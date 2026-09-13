@@ -83,13 +83,14 @@ def test_control_surfaces_the_apis_detail_not_just_its_slug(profile, runner, mon
     import urllib.error
 
     def raise_http(*_args, **_kwargs):
-        body = io.BytesIO(json.dumps({"error": "invalid_payload", "detail": "match: unknown field 'kind'"}).encode())
-        raise urllib.error.HTTPError("http://example.test", 400, "Bad Request", {}, body)
+        detail = "skipped broken.json: Expecting value: line 1 column 1"
+        body = io.BytesIO(json.dumps({"error": "reload_refused", "detail": detail}).encode())
+        raise urllib.error.HTTPError("http://example.test", 409, "Conflict", {}, body)
 
     monkeypatch.setattr(api, "_open", raise_http)
-    result = runner.invoke(cli.cli, ["override", "add", '{"mode":"replace"}'])
+    result = runner.invoke(cli.cli, ["scenario", "reload"])
     assert result.exit_code == 1
-    assert "unknown field 'kind'" in result.output
+    assert "skipped broken.json" in result.output
 
 
 # MARK: - Offline inspection: `validate` and `explain-match --scenario`
