@@ -104,7 +104,9 @@ def _require_same_profile(health: dict, *, unproven_exit: int = 1) -> None:
     `/health` is deliberately unscoped at the API — that is how `down` recovers across profiles —
     so a command that goes on to *interpret* a health reading has to make the comparison itself,
     or it reports another profile's scenarios, counters and traffic as this profile's. A reading
-    with no fingerprint is accepted, as `up` accepts one: an older engine cannot say.
+    with no fingerprint is refused too: a proxy that cannot say whose it is predates the guard, and
+    reading it as ours let this CLI and the app act on a stranger's profile — see
+    test_a_health_reading_without_a_fingerprint_is_refused. Run that engine's own `down` first.
 
     A command that polls makes the comparison on every reading, not only the first: the proxy that
     answered the first read can be stopped and another profile's started on the port mid-wait, so
@@ -116,8 +118,8 @@ def _require_same_profile(health: dict, *, unproven_exit: int = 1) -> None:
     one refusal a command cannot see coming, since the reading it is about looks perfectly healthy.
     """
     running = health.get("profileFingerprint")
-    if running and running != config.PROFILE_FINGERPRINT:
-        click.echo(_profile_mismatch(running), err=True)
+    if running != config.PROFILE_FINGERPRINT:
+        click.echo(_profile_mismatch(running or "none reported"), err=True)
         raise SystemExit(unproven_exit)
 
 

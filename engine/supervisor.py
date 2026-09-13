@@ -487,8 +487,11 @@ def _final_look(record: SessionRecord, startup: dict, failures: list[str]) -> No
             _red(f"the proxy reports the session journal unreadable: {health['journalError']}")
             failures.append("the session journal is unreadable")
         running = health.get("profileFingerprint")
-        if running and running != record.owner.profile_fingerprint:
-            _red(f"the proxy on port {port} runs profile {running}, not {record.owner.profile_fingerprint}")
+        if running != record.owner.profile_fingerprint:
+            _red(
+                f"the proxy on port {port} runs profile {running or 'none reported'}, "
+                f"not {record.owner.profile_fingerprint}"
+            )
             failures.append("another profile answers on the control port")
     try:
         pac: Pac | None = netproxy.pac_status(record.service.name)
@@ -769,7 +772,9 @@ def status(as_json: bool) -> None:
     # proxy answered — see test_status_output_and_exit_code_come_from_one_reading.
     raw = api._health(config.CONTROL_PORT)
     running = (raw or {}).get("profileFingerprint")
-    foreign = bool(running) and running != config.PROFILE_FINGERPRINT
+    # A proxy that reports no fingerprint is not ours either: it predates the guard, and reading it
+    # as ours had the app mutate a stranger's profile — see test_status_treats_a_proxy_without_a_fingerprint_as_foreign.
+    foreign = raw is not None and running != config.PROFILE_FINGERPRINT
 
     # Lock-free: `status` writes nothing, and waiting on the lock behind a slow `up` would turn a
     # question into a hang.

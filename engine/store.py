@@ -234,7 +234,11 @@ def scenario_files() -> tuple[list[Path], list[tuple[str | None, str]]]:
     """
     entries, failure = _entries(config.SCENARIOS_DIR)
     if failure is not None:
-        return [], [(None, failure)]
+        # Filed under `default`, the one scenario that will exist when nothing was read: under no
+        # name, the synthesised default read as whole and `up --use default` relaunched the app
+        # against a scenario invented from a directory it could not list — see
+        # test_an_unreadable_scenarios_directory_makes_default_not_whole.
+        return [], [("default", failure)]
 
     files, directories, problems = _classify(entries)
 

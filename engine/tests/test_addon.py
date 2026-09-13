@@ -520,6 +520,24 @@ def test_the_error_hook_ignores_flows_with_no_sequence(hosts, profile):
     assert subject.store.recent_list() == []
 
 
+def test_a_patch_whose_upstream_fails_leaves_an_entry_with_the_reason(hosts, profile):
+    """A patch was selected and the connection died before any response: nothing applied, nothing
+    credited — and, until now, nothing in /recent either, which read as "the request never
+    arrived" when it had."""
+    subject = subject_with(
+        profile, {"id": "p", "mode": "patch", "match": {"path": "/api/v1/orders/*"}, "patch": {"a": 1}}
+    )
+    flow = _flow()
+    run_request(subject, flow)
+    assert flow.metadata.get("mock_patch"), "the patch was selected"
+
+    subject.error(flow)
+
+    (entry,) = subject.store.recent_list()
+    assert entry["matched"] is None and entry["patchSkipped"] == "upstream_failed"
+    assert subject.store.answer_states()[0]["count"] == 0, "and it is not credited"
+
+
 # MARK: - The rules can move while a delayed request sleeps
 #
 # The delay is awaited before the step is chosen, which keeps selection and the response one
@@ -930,7 +948,8 @@ def test_health_reads_the_journals_service_by_device_not_by_its_old_name(monkeyp
     monkeypatch.setattr(procs, "psutil", table)
     proxy = table.spawn_ref(config.CONTROL_PORT)
     ours = ownership.Pac(ownership.our_url(config.CONTROL_PORT), True)
-    FakeNetwork({"Office Wi-Fi": ("en0", ours), "Wi-Fi": ("en1", ownership.Pac("", False))}, route="en1").install(
+    # The route stays on en0: this is a rename, not a move (a move is the next test's case).
+    FakeNetwork({"Office Wi-Fi": ("en0", ours), "Wi-Fi": ("en1", ownership.Pac("", False))}, route="en0").install(
         monkeypatch
     )
     write_journal(record(proxy, service=ownership.ServiceRef("Wi-Fi", "en0")))
@@ -939,6 +958,28 @@ def test_health_reads_the_journals_service_by_device_not_by_its_old_name(monkeyp
 
     assert (service, intercepting) == ("Office Wi-Fi", True)
     assert (pac_error, journal_error) == (None, None)
+
+
+def test_health_stops_claiming_interception_when_the_route_moved(monkeypatch, hosts):
+    """Our PAC is still enabled on the journalled Wi-Fi; the default route now leaves over Ethernet,
+    so nothing reaches the proxy. `intercepting: true` here was the app's one false claim after an
+    undock, and `pacError` says where the route went."""
+    import procs
+    from cli_doubles import FakeNetwork, FakePsutil, record, write_journal
+
+    table = FakePsutil()
+    monkeypatch.setattr(procs, "psutil", table)
+    proxy = table.spawn_ref(config.CONTROL_PORT)
+    ours = ownership.Pac(ownership.our_url(config.CONTROL_PORT), True)
+    FakeNetwork({"Wi-Fi": ("en0", ours), "Ethernet": ("en1", ownership.Pac("", False))}, route="en1").install(
+        monkeypatch
+    )
+    write_journal(record(proxy, service=ownership.ServiceRef("Wi-Fi", "en0")))
+
+    service, intercepting, pac_error, journal_error = addon.Lyrebird()._observe()
+
+    assert service == "Wi-Fi" and intercepting is False and journal_error is None
+    assert pac_error and "route moved to 'Ethernet'" in pac_error and "lyrebird down && lyrebird up" in pac_error
 
 
 def test_health_reports_a_journalled_service_that_is_gone_as_unproven(monkeypatch, hosts):

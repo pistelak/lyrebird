@@ -225,7 +225,8 @@ asked about, and everything that describes a profile's state (`activeScenario`, 
 `scenarios`, `sequences`, `answers`, `simBundleId`) is `null` — it is the other profile's, not
 yours. The fix is `lyrebird down`; there is one session per user, so `up` refuses while that one
 exists, whatever port or profile you ask for. A proxy too old to report `profileFingerprint` is
-taken at face value, exactly as `up` takes it.
+another profile too — it predates the guard, so nothing can vouch for whose it is; stop it with
+that version's own `lyrebird down`.
 
 **4. Relaunch the app after `up`, every time.**
 

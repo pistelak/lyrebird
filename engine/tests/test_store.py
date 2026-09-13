@@ -877,6 +877,26 @@ def test_an_unreadable_scenarios_directory_is_reported_rather_than_read_as_empty
     assert problems and "cannot read" in problems[0][1]
 
 
+def test_an_unreadable_scenarios_directory_makes_default_not_whole(profile, monkeypatch):
+    """The synthesised `default` is the only scenario a directory nobody could list produces, and
+    filed under no name its problem let `up --use default` relaunch the app against an invented
+    empty scenario and exit 0."""
+    real = store.Path.iterdir
+
+    def refuse(self):
+        if self.name == "scenarios":
+            raise PermissionError(errno.EACCES, "Permission denied")
+        return real(self)
+
+    monkeypatch.setattr(store.Path, "iterdir", refuse)
+
+    subject = make_store(profile)
+
+    assert "default" in subject.scenarios, "still served, so the proxy starts"
+    assert subject.scenarios_not_whole.get("default"), "but not whole: `up --use default` refuses"
+    assert any("cannot read" in problem for problem in subject.scenarios_not_whole["default"])
+
+
 @pytest.mark.parametrize("target", ["same-group", "other-group", "root", "outside"])
 def test_a_grouped_file_is_held_to_the_containment_scenario_path_applies(profile, target, tmp_path):
     """One identity, one verdict. Checking the file against its own parent would only prove it sits

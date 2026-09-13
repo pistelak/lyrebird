@@ -196,6 +196,18 @@ def test_status_exits_1_when_the_route_moved_off_the_journalled_device(profile, 
     assert json.loads(as_json.output)["intercepting"] is False
 
 
+def test_status_treats_a_proxy_without_a_fingerprint_as_foreign(profile, runner, monkeypatch):
+    """A proxy that cannot say whose it is predates the guard; read as ours it let the app act on a
+    stranger's profile. It is another profile until it says otherwise."""
+    _healthy(monkeypatch, profileFingerprint=None)
+
+    result = runner.invoke(cli.cli, ["status", "--json"])
+
+    assert result.exit_code == 1
+    state = json.loads(result.output)
+    assert state["profileMismatch"] is True and state["intercepting"] is False
+
+
 def test_status_exits_1_when_the_pac_is_not_this_sessions(profile, runner, monkeypatch):
     world = _healthy(monkeypatch)
     world["network"].set_pac("Wi-Fi", CORPORATE)
