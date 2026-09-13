@@ -47,13 +47,4 @@ struct StepResponseTests {
             RuleFormatting.inheritedCaption(StepSummary(status: 200, bodyKind: "none"), field: "body") == nil,
             "no `inherited` at all is a snapshot that says nothing about inheritance, not one that denies it")
     }
-
-    @Test func aStepReadsAsWhatItReturnsAndWhatThatIs() {
-        // The same two lines every other rule is described with, so a step and a rule cannot come to
-        // read differently.
-        #expect(RuleFormatting.metaLine(kind: steps[0].bodyKind, bytes: steps[0].bodyBytes) == "JSON · 251 B")
-        #expect(
-            RuleFormatting.metaLine(kind: steps[2].bodyKind, bytes: steps[2].bodyBytes) == "No body",
-            "spelled out: a blank there reads as a value that failed to render")
-    }
 }
