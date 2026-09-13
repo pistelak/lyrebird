@@ -323,73 +323,8 @@ def assert_answered(override_id: str, required_run: str | None, timeout: int) ->
             break
         time.sleep(1)
 
-    # The diagnostic read, and the last chance for the port to change hands: a 409 here must not
-    # exit under the code that means "your run was checked and nothing answered".
-    entries = api._get_json("/__mock__/recent", timeout=2, unproven_exit=unproven) or []
     waited = f" within {timeout}s" if timeout else ""
     scope = f"in run {required_run}" if required_run else "this run"
     click.echo(f"{ui.RED}✗ '{override_id}' has not answered any request {scope}{waited}.{ui.R}")
-    if not entries:
-        click.echo(
-            "   Nothing has reached the proxy at all — relaunch the app, and check the host is listed in your profile."
-        )
-    else:
-        # The distinct paths, not the count: a count cannot tell "the app went somewhere else"
-        # from "the path pattern is wrong", and those have completely different fixes.
-        seen = list(dict.fromkeys(f"{entry.get('method', '?'):6} {entry.get('path', '?')}" for entry in entries))
-        click.echo(f"   {len(entries)} request(s) in the recent buffer, on these paths:")
-        for line in seen[:5]:
-            click.echo(f"     {ui.DIM}{line}{ui.R}")
-        if len(seen) > 5:
-            click.echo(f"     {ui.DIM}… and {len(seen) - 5} more{ui.R}")
-        # The buffer is not scoped to the run, so these may predate the reset. Enough to tell
-        # "the app is not reaching us" from "it is, on other paths"; not enough to blame the rule.
-        click.echo(
-            "   `lyrebird explain-match <method> <path>` says which rule one of those "
-            "would select, and why yours was not it."
-        )
+    click.echo("   `lyrebird recent` shows what did reach the proxy, and on which paths.")
     raise SystemExit(_ANSWERED_NONE)
-
-
-@click.command(name="wait-ready")
-@click.option("--timeout", default=30, help="Seconds to wait.")
-@click.option(
-    "--match", "want_match", is_flag=True, help="Wait for a request an override actually matched, not just any traffic."
-)
-def wait_ready(timeout: int, want_match: bool) -> None:
-    """Block until the app's traffic reaches the proxy (avoids cold-launch flakiness).
-
-    With --match, wait until an override actually fires. Traffic arriving proves the PAC works;
-    it does not prove your rule matched, which is usually the thing you are waiting to confirm.
-    """
-
-    def newest(entries: list) -> str:
-        return entries[0].get("time", "") if entries else ""
-
-    # Only traffic that arrives from now on counts. Without this the retained buffer could
-    # satisfy the wait instantly with a request made before the scenario was even switched.
-    baseline = newest(api._get_json("/__mock__/recent", timeout=2) or [])
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        recent = [e for e in (api._get_json("/__mock__/recent", timeout=2) or []) if e.get("time", "") > baseline]
-        matched = [entry for entry in recent if entry.get("matched")]
-        if matched if want_match else recent:
-            if want_match:
-                hit = matched[0]
-                click.echo(f"✓ override {hit['matched']} matched {hit['method']} {hit['path']} → {hit['status']}")
-            else:
-                click.echo(f"✓ app is live ({len(recent)} proxied request(s) seen)")
-            return
-        time.sleep(1)
-    if want_match:
-        seen = len([e for e in (api._get_json("/__mock__/recent", timeout=2) or []) if e.get("time", "") > baseline])
-        click.echo(
-            f"{ui.RED}✗ no override matched within {timeout}s ({seen} request(s) reached the "
-            f"proxy). Check the path in your rule against `lyrebird logs`.{ui.R}"
-        )
-    else:
-        click.echo(
-            f"{ui.RED}✗ no proxied requests within {timeout}s — is the app relaunched, and is it "
-            f"calling a host listed in your profile?{ui.R}"
-        )
-    raise SystemExit(1)

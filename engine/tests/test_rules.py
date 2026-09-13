@@ -448,7 +448,6 @@ def test_resolve_step_selects_by_cursor(cursor, expected):
     [
         ("error", 2, rules.EXHAUSTED_ERROR),
         ("error", 3, rules.EXHAUSTED_ERROR),
-        ("passThrough", 2, rules.PASS_THROUGH),
         ("repeatLast", 2, rules.APPLY),
     ],
 )

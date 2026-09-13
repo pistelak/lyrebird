@@ -15,7 +15,6 @@ module.
 """
 
 import json
-import os
 import subprocess
 import urllib.error
 import urllib.parse
@@ -39,7 +38,7 @@ from ownership import Pac, ServiceRef
 class FakeProc:
     """One process as the fake table knows it.
 
-    `errors` raises on a named call (`status`, `create_time`, `cmdline`, `uids`, `terminate`,
+    `errors` raises on a named call (`status`, `create_time`, `cmdline`, `terminate`,
     `kill`, `wait`), `waits` is the sequence `wait()` answers with, and `on_terminate`/`on_kill`
     let a test say what the signal did — the real psutil exception classes throughout, because
     `procs` catches those and nothing else.
@@ -50,7 +49,6 @@ class FakeProc:
         *,
         create_time=1000.5,
         cmdline=(),
-        uid=None,
         status=psutil.STATUS_RUNNING,
         errors=None,
         waits=(),
@@ -61,7 +59,6 @@ class FakeProc:
     ):
         self.create_time = create_time
         self.cmdline = list(cmdline)
-        self.uid = os.getuid() if uid is None else uid
         self.status = status
         self.errors = dict(errors or {})
         self.waits = list(waits)
@@ -763,10 +760,9 @@ def _fake_proxy(
         if payload["name"] not in state["scenarios"]:  # the API's 404, with the detail it sends
             click.echo(f"✗ no scenario named '{payload['name']}' in this profile")
             raise SystemExit(1)
-        previous = state["active"]
         state["active"] = payload["name"]
         state["steps"][payload["name"]] = 1  # activating a scenario rewinds its sequences
-        return {"active": state["active"], "previous": {"name": previous, "overrideCount": 0}}
+        return {"active": state["active"]}
 
     def relaunch(bundle_id, simulator):
         state["events"].append(("relaunch", bundle_id))

@@ -54,7 +54,6 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-import simstate
 
 import ownership
 import session
@@ -230,7 +229,9 @@ def _interruptible() -> Iterator[None]:
             signal.signal(signum, handler)
 
 
-def _fail(what: str, result: subprocess.CompletedProcess) -> None:
+def _fail(what: str, result: subprocess.CompletedProcess | None) -> None:
+    if result is None:
+        pytest.fail(f"{what}\n  simctl did not run at all")
     pytest.fail(
         f"{what}\n  command: {' '.join(result.args)}\n"
         f"  exit: {result.returncode}\n  stdout:\n{result.stdout}\n  stderr:\n{result.stderr}"
@@ -385,13 +386,7 @@ def simulator() -> Iterator[str]:
             with _uninterrupted():
                 stopped = _try_run(["xcrun", "simctl", "shutdown", udid], timeout=BOOT_TIMEOUT)
             if stopped is None or stopped.returncode != 0:
-                pytest.fail(
-                    simstate.cleanup_failure(
-                        f"this run booted {device['name']} ({udid}) and could not shut it down again",
-                        stopped,
-                        udid,
-                    )
-                )
+                _fail(f"this run booted {device['name']} ({udid}) and could not shut it down again", stopped)
 
 
 def _documents(udid: str) -> Path:
@@ -468,9 +463,7 @@ def fixture_app(simulator: str) -> Iterator[Path]:
         with _uninterrupted():
             removed = _try_run(["xcrun", "simctl", "uninstall", simulator, BUNDLE_ID])
         if removed is None or removed.returncode != 0:
-            pytest.fail(
-                simstate.cleanup_failure(f"could not uninstall {BUNDLE_ID} from {simulator}", removed, simulator)
-            )
+            _fail(f"could not uninstall {BUNDLE_ID} from {simulator}", removed)
 
 
 def describe_pac(pac: ownership.Pac | None) -> str:

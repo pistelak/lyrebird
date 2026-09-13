@@ -250,32 +250,6 @@ def test_assert_answered_fails_at_once_for_an_inactive_rule(profile, runner, mon
     assert "never answer" in result.output
 
 
-def test_assert_answered_lists_the_paths_that_did_arrive(profile, runner, monkeypatch):
-    """A count cannot tell "the app went somewhere else" from "the path pattern is wrong"; the
-    paths can."""
-    monkeypatch.setattr(api, "_health", _answers_over({"count": 0}))
-    monkeypatch.setattr(
-        api,
-        "_get_json",
-        lambda *a, **k: [
-            {"method": "GET", "path": "/api/v2/items"},
-            {"method": "GET", "path": "/api/v2/items"},
-        ],
-    )
-    result = runner.invoke(cli.cli, ["assert-answered", "ovr_a"])
-    assert result.exit_code == 1
-    assert "/api/v2/items" in result.output
-    assert "explain-match" in result.output
-
-
-def test_assert_answered_names_an_empty_proxy_as_a_routing_problem(profile, runner, monkeypatch):
-    monkeypatch.setattr(api, "_health", _answers_over({"count": 0}))
-    monkeypatch.setattr(api, "_get_json", lambda *a, **k: [])
-    result = runner.invoke(cli.cli, ["assert-answered", "ovr_a"])
-    assert result.exit_code == 1
-    assert "relaunch the app" in result.output
-
-
 def test_assert_answered_succeeds_on_an_answer_that_lands_mid_wait(profile, runner, monkeypatch):
     monkeypatch.setattr(api, "_health", _answers_over({"count": 0}, {"count": 0}, {"count": 2}))
     monkeypatch.setattr(time, "sleep", lambda _seconds: None)

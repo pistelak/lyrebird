@@ -121,8 +121,8 @@ def launch_traffic_is_answered_by_the_scenario_up_selected(harness):
 def a_sequence_moves_to_its_second_step_on_the_next_launch(harness):
     """Step 1 to step 2 across two launches, checked from both ends.
 
-    `sequence wait` is what proves the transition rather than `wait-ready --match`, which returns
-    on the first rule to fire and cannot express "step 1, then step 2".
+    `sequence wait` is what proves the transition rather than `assert-answered`, which proves the
+    rule answered but not which step it served, and so cannot express "step 1, then step 2".
     """
     harness.phase("a sequence moves to its second step on the next launch")
     before = len(harness.results())

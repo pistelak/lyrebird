@@ -18,7 +18,7 @@ An *override* is a plain dict mirroring the on-disk JSON schema:
       "sequence": {
         "steps": [{"status": ..., "headers": ..., "body": ...}, ...],
         "advanceOn": {<matcher>}?,          # omitted means `self`: advance when this rule answers
-        "onExhausted": "error" | "repeatLast" | "passThrough"?
+        "onExhausted": "error" | "repeatLast"?
       }
     }
 
@@ -58,7 +58,7 @@ MAX_DELAY_MS = 60_000
 MAX_DESCRIBED_BODY_BYTES = 256 * 1024
 VALID_MODES = ("replace", "patch")
 VALID_PATCH_STRATEGIES = ("appendToArray",)
-VALID_EXHAUSTION_POLICIES = ("error", "repeatLast", "passThrough")
+VALID_EXHAUSTION_POLICIES = ("error", "repeatLast")
 # Statuses that must not carry a body or a Content-Length. Here rather than in `addon` because
 # both the wire and the summary of what a rule answers with have to agree about them: a rule
 # described as sending 8 bytes with a 204 describes a response no request receives — see
@@ -104,11 +104,10 @@ OVERRIDE_FIELD_HELP = {
 }
 OVERRIDE_FIELDS = tuple(OVERRIDE_FIELD_HELP)
 
-# The three outcomes of resolving a rule against its cursor. A discriminated action rather than an
-# "effective override" the caller reinterprets: exhaustion under `error` and `passThrough` has no
-# override to hand back, and disguising that as one is how a caller ends up guessing.
+# The two outcomes of resolving a rule against its cursor. A discriminated action rather than an
+# "effective override" the caller reinterprets: exhaustion under `error` has no override to hand
+# back, and disguising that as one is how a caller ends up guessing.
 APPLY = "apply"
-PASS_THROUGH = "passThrough"
 EXHAUSTED_ERROR = "error"
 
 
@@ -369,7 +368,7 @@ def step_view(override: Mapping[str, Any], step: Mapping[str, Any]) -> dict:
 def resolve_step(override: Mapping[str, Any], cursor: int) -> tuple[str, dict | None]:
     """What this rule should do for a request, given how many advance events it has seen.
 
-    Returns (APPLY, effective override) | (PASS_THROUGH, None) | (EXHAUSTED_ERROR, None).
+    Returns (APPLY, effective override) | (EXHAUSTED_ERROR, None).
     """
     steps = sequence_steps(override)
     if steps is None:
@@ -381,8 +380,6 @@ def resolve_step(override: Mapping[str, Any], cursor: int) -> tuple[str, dict | 
     policy = exhaustion_policy(override)
     if policy == "repeatLast":
         return APPLY, step_view(override, steps[-1])
-    if policy == "passThrough":
-        return PASS_THROUGH, None
     return EXHAUSTED_ERROR, None
 
 

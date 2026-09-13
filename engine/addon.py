@@ -250,8 +250,6 @@ class Lyrebird:
         or an `override add` may have replaced the rule this id names — and a flow that dies before
         its response hook never reaches `_record` at all, though the override certainly answered it.
         """
-        if action == rules.PASS_THROUGH:
-            return  # sequence exhausted and told to stand aside: the real upstream answers, not us
         if action == rules.EXHAUSTED_ERROR:
             flow.response = self._exhausted_response(flow, override)
             flow.metadata["mock_matched"] = override["id"]  # an override did answer, with a 500
@@ -300,8 +298,7 @@ class Lyrebird:
                 "message": (
                     f"Lyrebird: sequence '{override['id']}' defines {steps} step(s) and has seen "
                     f"{progress.get('advanceEvents', steps)} advance event(s). Set "
-                    f"sequence.onExhausted to 'repeatLast' or 'passThrough' if more requests are "
-                    f"expected."
+                    f"sequence.onExhausted to 'repeatLast' if more requests are expected."
                 ),
             }
         }
@@ -353,10 +350,9 @@ class Lyrebird:
         """Record a sequence flow that failed before there was any response to record.
 
         `_record` is otherwise reachable only from `response()`, so a request that never got one
-        leaves no trace. That matters most for an exhausted `passThrough`: it stands aside and sends
-        the request to the real upstream — which is frequently the very thing that is down, since
-        being down is why you were mocking it. Without this the overrun would be invisible in
-        `/recent`, and the operator would be looking for a rule that appeared never to fire.
+        leaves no trace. Without this a request that moved a sequence and then died upstream would
+        be invisible in `/recent`, and the operator would be looking for a rule that appeared
+        never to fire.
 
         Scoped to flows Lyrebird did something to. Recording *every* failed flow is a worthwhile
         change, but a separate one: it would alter what `/recent` means for everybody.
@@ -427,9 +423,7 @@ class Lyrebird:
         sequence = flow.metadata.get("mock_sequence")
         if sequence:
             # `sequenceId` is kept separate from `matched`, which means "an override answered this
-            # request". An exhausted passThrough answers nothing, so it has no `matched` — and
-            # `recent --matched` filters on that, which would hide the overrun from exactly the
-            # command used to check the scenario.
+            # request": a request that only advanced a cursor has one and not the other.
             entry["sequenceId"] = sequence["sequenceId"]
             entry["runId"] = sequence["runId"]
             entry["selectedStep"] = sequence["selectedStep"]

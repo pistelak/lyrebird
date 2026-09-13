@@ -32,10 +32,9 @@ that scenario in the loop.
 ```bash
 lyrebird --profile PATH validate NAME   # offline: non-zero unless that scenario loads whole
 lyrebird --profile PATH up --use NAME   # start, activate the scenario, then relaunch the app
-lyrebird --profile PATH wait-ready --match --timeout 30
 RUN=$(lyrebird --profile PATH reset ovr_x --json | jq -r .reset.ovr_x)   # a fresh run, and its id — immediately before the action under test
 # …do the work you came to do…
-lyrebird --profile PATH assert-answered ovr_x --run "$RUN"   # non-zero unless it answered in it
+lyrebird --profile PATH assert-answered ovr_x --run "$RUN" --timeout 30   # non-zero unless it answered in it
 lyrebird --profile PATH down        # restores the proxy settings that were there before
 ```
 
@@ -50,9 +49,8 @@ The contract:
 - **Simulator** — more than one booted → `up --simulator <udid>`. That picks the device for the CA
   and the relaunch only: interception still covers the profile's hosts across the Mac and every
   simulator.
-- **Proof** — `wait-ready --match` proves an override matched. Only
-  `assert-answered <id> --run "$RUN"` proves the named rule answered in your run, so keep the id
-  `reset --json` prints.
+- **Proof** — only `assert-answered <id> --run "$RUN"` proves the named rule answered in your run,
+  so keep the id `reset --json` prints. `--timeout N` waits for it instead of sleeping and hoping.
 
 Do not:
 
@@ -64,7 +62,7 @@ Do not:
 The rest:
 
 - Scenarios → [Making a scenario](#making-a-scenario), [Sequences](#scenarios-that-move-between-states)
-- State and proof → [Six things](#six-things-worth-knowing-before-you-start)
+- State and proof → [Five things](#five-things-worth-knowing-before-you-start)
 - Deleting → [Destructive operations](#the-destructive-operations)
 - Failures → [TROUBLESHOOTING.md](TROUBLESHOOTING.md)
 
@@ -95,7 +93,7 @@ another `up --use NAME`.
 
 ### Which simulator
 
-`up` and `trust-ca` take `--simulator UDID-OR-NAME`. That device is where the CA is trusted and
+`up` takes `--simulator UDID-OR-NAME`. That device is where the CA is trusted and
 where `--relaunch` / `simBundleId` relaunches the app, so a UI-test run should pass the same UDID
 it drives:
 
@@ -103,8 +101,8 @@ it drives:
 lyrebird --profile PATH up --use NAME --simulator <udid>   # `xcrun simctl list devices booted`
 ```
 
-With exactly one iOS simulator booted you can leave it out. With several booted and no choice
-made, `up` and `trust-ca` **refuse and list the booted devices** rather than let simctl pick one
+With exactly one simulator booted you can leave it out. With several booted and no choice
+made, `up` **refuses and lists the booted devices** rather than let simctl pick one
 for you. `status` reports the device the session recorded (`simulator` in `--json`), and
 `lyrebird relaunch [BUNDLEID]` relaunches the app on that same device — use it instead of
 `xcrun simctl launch booted <bundleid>` mid-run.
@@ -115,10 +113,10 @@ so every simulator on the Mac — and the Mac itself — routes the profile's ho
 selection as a way to run two scenarios side by side.
 
 [engine/README.md — Which simulator](engine/README.md#which-simulator) has the rest: how names and
-UDIDs are matched, which devices count as candidates, and what happens on a device that does or
+UDIDs are matched, and what happens on a device that does or
 does not trust the CA.
 
-## Six things worth knowing before you start
+## Five things worth knowing before you start
 
 **1. Exit codes mean the postcondition, not "the command ran."**
 
@@ -128,25 +126,11 @@ running but you are *not* mocking anything.
 It refuses outright, before starting anything, when the profile lists no hosts.
 Do not treat a zero exit from `up` as optional to check.
 
-**2. `wait-ready` alone does not prove your rule works.**
+**2. A green assertion is not proof your mock was in play.**
 
-Without `--match` it returns as soon as *any* request reaches the proxy. That proves routing works.
-It does not prove your override matched — which is usually the thing you actually want to know.
-
-```bash
-lyrebird --profile PATH wait-ready --match --timeout 30
-# ✓ override ovr_9a99bd matched GET /api/v1/orders/42 → 500
-```
-
-If it times out, it tells you how many requests *did* arrive, which distinguishes "the app isn't
-talking to us" from "your path pattern is wrong".
-
-**3. A green assertion is not proof your mock was in play.**
-
-`wait-ready --match` returns on the *first* rule to fire, which may not be yours. And a negative
-assertion — "this section is not shown" — passes identically whether your override applied or never
-matched, because the real backend usually produces the same screen. A suite like that can be testing
-nothing, and it stays green when a rule quietly stops matching.
+A negative assertion — "this section is not shown" — passes identically whether your override
+applied or never matched, because the real backend usually produces the same screen. A suite like
+that can be testing nothing, and it stays green when a rule quietly stops matching.
 
 ```bash
 RUN=$(lyrebird --profile PATH reset ovr_x --json | jq -r .reset.ovr_x)   # draw the boundary…
@@ -192,7 +176,7 @@ scenarios.
 describes what the proxy reports underneath: the `answers[]` entries, the three `runId` states, and
 where in the request the count is taken.
 
-**4. `status --json` is the state query.**
+**3. `status --json` is the state query.**
 
 ```bash
 lyrebird --profile PATH status --json
@@ -239,11 +223,11 @@ intercepting, but not for you, so `status` exits non-zero and says so: `profileM
 with `intercepting` `false`, the two fingerprints name which proxy answered and which profile you
 asked about, and everything that describes a profile's state (`activeScenario`, `overrideCount`,
 `scenarios`, `sequences`, `answers`, `simBundleId`) is `null` — it is the other profile's, not
-yours. The fix is `lyrebird down`, or a different `--profile` / `LYREBIRD_CONTROL_PORT`; `up` will
-refuse until then. A proxy too old to report `profileFingerprint` is taken at face value, exactly
-as `up` takes it.
+yours. The fix is `lyrebird down`; there is one session per user, so `up` refuses while that one
+exists, whatever port or profile you ask for. A proxy too old to report `profileFingerprint` is
+taken at face value, exactly as `up` takes it.
 
-**5. Relaunch the app after `up`, every time.**
+**4. Relaunch the app after `up`, every time.**
 
 `URLSession` caches the proxy configuration it saw at launch. An app that was already running will
 ignore Lyrebird completely, with no error anywhere — it will just quietly talk to the real backend.
@@ -251,7 +235,7 @@ Set `simBundleId` in the profile and `up` handles it — and name the scenario i
 `up --use NAME`, so the launch that follows meets it. Where something else owns the launch,
 `up --no-relaunch` says so and nothing is started for you.
 
-**6. `down` is not optional.**
+**5. `down` is not optional.**
 
 It restores the proxy settings that were there before. Run it even on your failure paths. Nothing
 else does it: a proxy that dies leaves the Mac routed at a dead port until `lyrebird down` runs.
@@ -388,7 +372,7 @@ lyrebird override add -   # or read the JSON from stdin
 And to see what happened:
 
 ```bash
-lyrebird recent --json --matched     # only requests an override answered
+lyrebird recent --json               # machine-readable; filter it for `matched` yourself
 lyrebird recent                      # all of it, human-readable
 ```
 
@@ -425,9 +409,8 @@ lyrebird --profile PATH sequence wait ovr_items_list --step 2 --timeout 30
 `reset` with no id rewinds every rule in the active scenario. It is the same boundary
 `assert-answered` reads, so one reset serves both.
 
-**`wait-ready --match` cannot verify a sequence.** It returns on the *first* override to match and
-takes its baseline when the command starts, so it cannot express "step 1, then step 2", and it
-misses a transition when both steps land inside one poll. `sequence wait` waits for a named rule to
+**`assert-answered` cannot verify a sequence.** It proves the rule answered, not which step it
+served, so it cannot express "step 1, then step 2". `sequence wait` waits for a named rule to
 serve a named step in the current run, and never burns its timeout on a question live state can
 already answer: a step already served in this run **succeeds immediately** (the serve counter is
 scoped to the run, so anything in it happened after your reset), and a run already past the step
@@ -461,14 +444,15 @@ A profile is shared state. If it belongs to a person or a team, do not edit thei
 
 ```bash
 lyrebird status --json                                  # note activeScenario before you touch anything
-lyrebird scenario new agent-scratch --clone-from orders-outage   # creates and activates
+cp PATH/scenarios/orders-outage.json PATH/scenarios/agent-scratch.json   # start from a copy
+lyrebird scenario reload --use agent-scratch            # re-read the files, and activate it
 # …work…
 lyrebird use orders-outage                              # put back what you found
 lyrebird scenario rm agent-scratch
 ```
 
-`--clone-from` fails if the source does not exist rather than quietly giving you an empty scenario,
-so a typo surfaces immediately instead of as a scenario that mysteriously does nothing.
+`scenario reload` refuses on any problem and publishes nothing, so a copy that did not land is a
+refusal rather than a scenario that mysteriously does nothing.
 
 `assert-answered` refuses an id it cannot find rather than reporting zero answers for it, for the
 same reason: a typo and a rule that never fired need completely different fixes.

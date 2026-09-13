@@ -9,7 +9,6 @@ import json
 
 import api
 import cli
-import config
 import store
 
 _RULES = [
@@ -236,7 +235,7 @@ def test_validate_checks_every_scenario_when_none_is_named(profile, runner, offl
 
 def test_validate_refuses_a_scenario_that_does_not_exist(profile, runner, offline):
     """A typo and a scenario with no rules need different fixes. Reporting an empty scenario for a
-    name nobody wrote is the same false success `--clone-from` was fixed for."""
+    name nobody wrote is a false success the caller cannot see."""
     write_scenario(profile, "whole", _WHOLE)
     result = runner.invoke(cli.cli, ["validate", "whol"])
     assert result.exit_code == 1
@@ -299,14 +298,13 @@ def test_validate_does_not_bless_a_scenario_symlinked_out_of_the_profile(profile
 
 def test_validate_writes_nothing_to_the_profile(profile, runner, offline):
     """Inspection must not rewrite the profile or change the active scenario — no synthesised
-    `default.json`, no re-indented file, no active-scenario pointer."""
+    `default.json`, no re-indented file."""
     path = write_scenario(profile, "whole", _WHOLE)
     original = path.read_bytes()
     before = sorted(p.name for p in (profile / "scenarios").iterdir())
     assert runner.invoke(cli.cli, ["validate"]).exit_code == 0
     assert path.read_bytes() == original
     assert sorted(p.name for p in (profile / "scenarios").iterdir()) == before
-    assert not config.STATE_FILE.exists()
 
 
 def test_explain_match_against_a_file_never_asks_the_proxy(profile, runner, offline):

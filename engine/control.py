@@ -26,9 +26,8 @@ from aiohttp.typedefs import Handler
 
 import config
 import rules
-from store import ReloadRefused, ScenarioRefused, Store, UnsafeName, scenario_parts
+from store import ReloadRefused, Store, UnsafeName, scenario_parts
 
-_CSP = "default-src 'none'; frame-ancestors 'none'"
 _BODY_METHODS = ("POST", "PUT", "PATCH", "DELETE")
 
 # The header a caller uses to say which profile it means, and the two routes that must answer
@@ -91,9 +90,6 @@ async def _guard(request: web.Request, handler: Handler) -> web.StreamResponse:
         # the operator to the proxy log instead of to the disk that is full.
         return web.json_response({"error": "persist_failed", "detail": str(error)}, status=500)
 
-    response.headers.setdefault("X-Content-Type-Options", "nosniff")
-    response.headers.setdefault("Content-Security-Policy", _CSP)
-    response.headers.setdefault("Referrer-Policy", "no-referrer")
     return response
 
 
@@ -326,9 +322,7 @@ def make_app(store: Store, meta_provider: MetaProvider) -> web.Application:
         if not body.get("name"):
             return web.json_response({"error": "name_required"}, status=400)
         try:
-            store.create_scenario(body["name"], body.get("cloneFrom"))
-        except KeyError as error:
-            return web.json_response({"error": "unknown_scenario", "cloneFrom": str(error)}, status=404)
+            store.create_scenario(body["name"])
         except FileExistsError:
             return web.json_response({"error": "scenario_exists", "name": body["name"]}, status=409)
         return web.json_response({"created": body["name"]})
@@ -339,21 +333,14 @@ def make_app(store: Store, meta_provider: MetaProvider) -> web.Application:
         name = body.get("name")
         if not isinstance(name, str) or not name:
             return web.json_response({"error": "name_required"}, status=400)
-        previous = store.set_active(name)
-        if previous is None:
+        if not store.set_active(name):
             # `detail` as well as the slug: the CLI prints `detail` when there is one, and
             # "unknown_scenario" on its own names the category without naming the mistake.
             return web.json_response(
                 {"error": "unknown_scenario", "name": name, "detail": f"no scenario named '{name}' in this profile"},
                 status=404,
             )
-        return web.json_response({"active": store.active_name, "previous": previous})
-
-    def _delete(name: str) -> web.StreamResponse:
-        """One implementation for both delete routes, so they cannot answer differently."""
-        if not store.delete_scenario(name):
-            return web.json_response({"error": "cannot_delete", "name": name}, status=400)
-        return web.json_response({"deleted": name})
+        return web.json_response({"active": store.active_name})
 
     @routes.delete("/__mock__/scenarios")
     async def scenarios_delete_by_query(request: web.Request) -> web.StreamResponse:
@@ -363,33 +350,9 @@ def make_app(store: Store, meta_provider: MetaProvider) -> web.Application:
         name = request.query.get("name")
         if not name:
             return web.json_response({"error": "name_required"}, status=400)
-        return _delete(name)
-
-    @routes.delete("/__mock__/scenarios/{name}")
-    async def scenarios_delete(request: web.Request) -> web.StreamResponse:
-        # Kept for clients that predate the query form; a root name still works through it.
-        return _delete(request.match_info["name"])
-
-    @routes.post("/__mock__/scenarios/move")
-    async def scenarios_move(request: web.Request) -> web.StreamResponse:
-        body = await _safe_json(request)
-        name, to = body.get("name"), body.get("to")
-        if not isinstance(name, str) or not name:
-            return web.json_response({"error": "name_required"}, status=400)
-        if not isinstance(to, str) or not to:
-            return web.json_response({"error": "to_required"}, status=400)
-        try:
-            store.move_scenario(name, to)
-        except KeyError:
-            return web.json_response(
-                {"error": "unknown_scenario", "name": name, "detail": f"no scenario named '{name}' in this profile"},
-                status=404,
-            )
-        except FileExistsError as error:
-            return web.json_response({"error": "scenario_exists", "name": str(error)}, status=409)
-        except ScenarioRefused as error:
-            return web.json_response({"error": "cannot_move", "detail": str(error)}, status=409)
-        return web.json_response({"moved": name, "to": to})
+        if not store.delete_scenario(name):
+            return web.json_response({"error": "cannot_delete", "name": name}, status=400)
+        return web.json_response({"deleted": name})
 
     @routes.post("/__mock__/scenarios/reload")
     async def scenarios_reload(request: web.Request) -> web.StreamResponse:

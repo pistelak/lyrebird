@@ -120,14 +120,8 @@ def test_pac_advertises_the_proxy_host_not_the_control_host(hosts):
 # what may destroy them: state and the CA must survive, the log is for a person to read.
 
 
-def test_default_profile_lives_in_config_home(monkeypatch):
-    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+def test_default_profile_lives_in_config_home():
     assert config._default_profile() == Path.home() / ".config" / "lyrebird"
-
-
-def test_default_profile_honours_xdg_config_home(monkeypatch):
-    monkeypatch.setenv("XDG_CONFIG_HOME", "/tmp/xdg")
-    assert config._default_profile() == Path("/tmp/xdg") / "lyrebird"
 
 
 def test_each_default_root_is_the_macos_directory_for_its_lifetime():
@@ -148,7 +142,7 @@ def test_configure_wires_each_path_to_its_own_root(monkeypatch, tmp_path):
     monkeypatch.delenv("LYREBIRD_STATE_DIR", raising=False)
     config.configure(str(tmp_path / "profile"))
 
-    assert config.STATE_FILE.is_relative_to(config._default_state_root())
+    assert config.mitmproxy_confdir().is_relative_to(config._default_state_root())
     assert config.LOG_FILE.is_relative_to(config._default_log_root())
 
 
@@ -157,7 +151,7 @@ def test_state_dir_override_collapses_both(monkeypatch, tmp_path):
     monkeypatch.setenv("LYREBIRD_STATE_DIR", str(tmp_path / "elsewhere"))
     config.configure()
 
-    for path in (config.STATE_FILE, config.LOG_FILE, config.mitmproxy_confdir()):
+    for path in (config.LOG_FILE, config.mitmproxy_confdir()):
         assert config.STATE_ROOT in path.parents, f"{path} escaped the override"
 
 
@@ -175,7 +169,7 @@ def test_the_session_root_stays_outside_the_state_dir_override(monkeypatch, tmp_
 
 def test_state_paths_stay_out_of_the_profile(profile):
     """A profile kept in git must never have tool-owned files written into it."""
-    for path in (config.STATE_FILE, config.LOG_FILE, config.mitmproxy_confdir(), session.default_root()):
+    for path in (config.LOG_FILE, config.mitmproxy_confdir(), session.default_root()):
         assert config.PROFILE_DIR not in path.parents, f"{path} is inside the profile"
 
 
@@ -208,18 +202,18 @@ def test_all_three_matchers_agree_on_case(hosts):
 
 def test_the_same_profile_gets_one_fingerprint_however_it_is_named(monkeypatch, tmp_path):
     """State is keyed by a hash of the profile path, so two spellings of one directory would mean
-    two active-scenario pointers and two logs for the same profile."""
+    two logs for the same profile."""
     real = tmp_path / "real"
     real.mkdir()
     link = tmp_path / "link"
     link.symlink_to(real)
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(link))
+    monkeypatch.setattr(config, "_default_profile", lambda: link / "lyrebird")
     monkeypatch.setenv("LYREBIRD_STATE_DIR", str(tmp_path / "state"))
     # conftest sets LYREBIRD_PROFILE for the whole scenario, which would make the "implicit" call
     # below take the explicit branch and quietly test nothing.
     monkeypatch.delenv("LYREBIRD_PROFILE", raising=False)
 
-    config.configure()  # implicit: XDG_CONFIG_HOME/lyrebird
+    config.configure()  # implicit: the default profile path
     implicit = config.PROFILE_FINGERPRINT
     config.configure(str(link / "lyrebird"))  # explicit: the same directory, named
     assert config.PROFILE_FINGERPRINT == implicit
@@ -258,70 +252,6 @@ def test_atomic_write_leaves_the_finished_file_private(tmp_path):
 
     assert target.stat().st_mode & 0o777 == 0o600
     assert target.read_text(encoding="utf-8") == '{"token": "value"}'
-
-
-def test_atomic_write_closes_the_descriptor_when_the_wrapper_cannot_be_built(tmp_path, monkeypatch):
-    """The failure path must close the descriptor exactly once and surface the original error.
-
-    Two assertions, because neither alone is enough. Counting closes catches a cleanup that never
-    happens — unlinking the temporary hides the leaked descriptor, so nothing else would notice.
-    The sentinel catches the opposite error, a cleanup that closes a descriptor it no longer owns:
-    both `closefd` settings end with the descriptor closed, the LookupError preserved and the
-    temporary gone, and the EBADF a double close would raise is suppressed, so what separates them
-    is *when* the number is released. Under `closefd=True` the real `open` frees it as it fails,
-    the sentinel claimed immediately afterwards is handed that same number, and cleanup closes it.
-    """
-    owned, sentinel, closes = {}, {}, []
-    real_open, real_close = builtins.open, os.close
-
-    def record_close(descriptor):
-        closes.append(descriptor)
-        real_close(descriptor)
-
-    def unusable_encoding(file, *args, **kwargs):
-        if not isinstance(file, int):
-            return real_open(file, *args, **kwargs)
-        owned["fd"] = file
-        kwargs["encoding"] = "definitely-not-a-codec"
-        try:
-            return real_open(file, *args, **kwargs)
-        except LookupError:
-            sentinel["fd"] = os.open(os.devnull, os.O_RDONLY)
-            raise
-
-    monkeypatch.setattr(builtins, "open", unusable_encoding)
-    monkeypatch.setattr(os, "close", record_close)
-    with pytest.raises(LookupError):
-        config.atomic_write(tmp_path / "secret.json", "payload")
-    monkeypatch.undo()
-
-    survived = True
-    try:
-        os.fstat(sentinel["fd"])
-    except OSError:
-        survived = False
-    else:
-        os.close(sentinel["fd"])
-
-    assert closes.count(owned["fd"]) == 1, f"owned descriptor closed {closes.count(owned['fd'])}x"
-    assert survived, "cleanup closed a descriptor it no longer owned"
-    assert not list(tmp_path.iterdir()), "a temporary file was left behind"
-
-
-def test_atomic_write_reports_the_write_failure_not_the_cleanup_failure(tmp_path, monkeypatch):
-    """If tidying up also fails, the caller still needs to know why the write did."""
-
-    def refuse_replace(self, target):
-        raise OSError("replace failed")
-
-    def refuse_unlink(self, missing_ok=False):
-        raise OSError("unlink failed")
-
-    monkeypatch.setattr(Path, "replace", refuse_replace)
-    monkeypatch.setattr(Path, "unlink", refuse_unlink)
-
-    with pytest.raises(OSError, match="replace failed"):
-        config.atomic_write(tmp_path / "out.json", "payload")
 
 
 def test_atomic_write_refuses_to_write_through_a_planted_symlink(tmp_path):
@@ -372,61 +302,3 @@ def test_atomic_write_mode_does_not_depend_on_the_umask(tmp_path, mask):
 
     assert target.stat().st_mode & 0o777 == 0o600
     assert target.read_text() == "payload"
-
-
-def test_atomic_write_reports_the_write_failure_not_a_failing_close(tmp_path, monkeypatch):
-    """A close that fails while unwinding must not become the error the caller sees."""
-    real_open = builtins.open
-
-    closes = []
-
-    class FailsBothWays:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc_info):
-            raise OSError("close failed")
-
-        def close(self):
-            closes.append(True)
-            raise OSError("close failed")
-
-        def write(self, _text):
-            raise OSError("write failed")
-
-    def hand_back_a_broken_wrapper(file, *args, **kwargs):
-        if isinstance(file, int):
-            return FailsBothWays()
-        return real_open(file, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "open", hand_back_a_broken_wrapper)
-    with pytest.raises(OSError, match="write failed"):
-        config.atomic_write(tmp_path / "out.json", "payload")
-
-    assert closes == [True], "the wrapper was not closed while unwinding"
-
-
-def test_atomic_write_aborts_if_the_descriptor_will_not_close(tmp_path, monkeypatch):
-    """The descriptor is closed before the rename, so a close failure must stop the write there.
-
-    That ordering is the point: a close is where buffered data finally reports failure, and the
-    destination must still be untouched when it does.
-    """
-    target = tmp_path / "out.json"
-    target.write_text("previous")
-
-    attempts = []
-    real_close = os.close
-
-    def close_then_report_failure(descriptor):
-        attempts.append(descriptor)
-        real_close(descriptor)  # released, as a real close is even when it reports an error
-        raise OSError("descriptor close failed")
-
-    monkeypatch.setattr(os, "close", close_then_report_failure)
-    with pytest.raises(OSError, match="descriptor close failed"):
-        config.atomic_write(target, "payload")
-    monkeypatch.undo()
-
-    assert len(attempts) == 1, f"closed {len(attempts)} times; the second may hit someone else's fd"
-    assert target.read_text() == "previous", "the destination was replaced despite a failed write"

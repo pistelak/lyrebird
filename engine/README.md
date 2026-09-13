@@ -38,13 +38,13 @@ the folder is part of the name every command takes: `lyrebird use checkout/cart-
 from the path and ignored, so moving a file in Finder renames the scenario with nothing left to
 contradict it. Two folders may each hold a `retry.json`; they are two scenarios.
 
-Grouping stops at one level. A file deeper than that, a folder that is a symlink, sibling names
+Grouping stops at one level. A file deeper than that, sibling names
 differing only by case, and a folder that cannot be listed are all **reported** rather than skipped
 quietly — they appear in `loadProblems`, in `validate`, and against the scenario they belong to in
 `scenariosNotWhole`, which is what `up --use NAME` reads before it launches anything.
 
 Select one with `--profile PATH` (wins) or `LYREBIRD_PROFILE`; the default is
-`~/.config/lyrebird` (honouring `XDG_CONFIG_HOME`). `lyrebird init PATH` creates one from
+`~/.config/lyrebird`. `lyrebird init PATH` creates one from
 `examples/`.
 
 `hosts` are **exact hostnames** — `api.example.com` does not imply `sub.api.example.com`. An empty
@@ -74,7 +74,7 @@ deserves to live:
 
 | | |
 |---|---|
-| `~/Library/Application Support/Lyrebird/` | must survive: the active-scenario pointer and the CA |
+| `~/Library/Application Support/Lyrebird/` | must survive: the CA |
 | `~/Library/Application Support/Lyrebird/session/` | who holds the PAC: the session journal and its lock |
 | `~/Library/Logs/Lyrebird/` | for a person to read: the proxy log — this is where the Console app looks |
 
@@ -91,13 +91,10 @@ move `session/`: a PAC belongs to the Mac's network service, so who holds it is 
 user and not about a state directory, and two state directories that each recorded an owner of
 their own is exactly how a Mac ended up routed at a dead port.
 
-The active-scenario pointer and the log file are keyed by the **profile fingerprint** instead — the
-first 12 hex characters of a sha256 of the resolved profile path — so relocating a profile selects
-a different pointer and a different log. The state saved for the old path stays where it is, and at
-a path with no pointer of its own the active scenario starts as `default`; a path used before is
-remembered again. Nothing in the profile itself changes. The pointer is honoured only if the
-scenario it names is still there, and each `up` that starts the proxy replaces the log at the
-selected path.
+The log file is keyed by the **profile fingerprint** instead — the first 12 hex characters of a
+sha256 of the resolved profile path — so relocating a profile selects a different log. Nothing in
+the profile itself changes. The proxy starts on `default`; `up --use NAME` names the scenario each
+time. Each `up` that starts the proxy replaces the log at the selected path.
 
 The split is not cosmetic. `tmutil isexcluded` reports Logs as excluded from Time Machine and
 Application Support as included, so a log left in the wrong directory gets backed up forever to no
@@ -141,23 +138,22 @@ relaunching the app are one command, and what to do when something else owns the
 
 > **First run:** `up` generates Lyrebird's CA under
 > `~/Library/Application Support/Lyrebird/mitmproxy/` and trusts it in the booted simulator.
-> Boot the simulator first. Re-run `lyrebird trust-ca` after erasing one.
+> Boot the simulator first. Run `up --simulator X` again after erasing one.
 
 ### Which simulator
 
-`up` and `trust-ca` take `--simulator UDID-OR-NAME`, and that device gets the CA and the relaunch.
-Without it, the single booted **iOS** simulator is used; with several booted and no choice made,
-both commands **refuse and list them** rather than pass simctl's `booted` keyword, which — per
+`up` takes `--simulator UDID-OR-NAME`, and that device gets the CA and the relaunch.
+Without it, the single booted simulator is used; with several booted and no choice made,
+`up` **refuses and lists them** rather than pass simctl's `booted` keyword, which — per
 `simctl help` — "will choose one of them" without saying which. A UI-test runner that already
 picked a device should pass the same UDID here. `status` reports the device the last `up` used,
 in the text output and as `simulator` in `--json`, and `lyrebird relaunch [BUNDLEID]` relaunches
 the app on it (`--simulator` overrides; that is the command the menu-bar app's Relaunch runs).
 
-Candidates are booted iOS simulators simctl calls available, so a paired Apple Watch booting
-alongside its phone does not make the choice ambiguous, and a lone booted watch is not selected
-by default. Names must match in full (`iPhone 17 Pro`, not `iPhone 17`); UDIDs are matched
-case-insensitively. A device that is absent, shut down, unavailable, or not an iOS simulator is
-reported as such and the command exits non-zero — nothing falls back to another device.
+Names and UDIDs must match exactly and in full (`iPhone 17 Pro`, not `iPhone 17`). A device that
+is absent or shut down is reported as such and the command exits non-zero — nothing falls back to
+another device. Name a usable iOS simulator: a device that cannot serve one fails at CA trust or
+at the launch, and either unwinds `up`.
 
 **This is not traffic isolation.** The PAC is installed on a *network service* and scoped by
 *hostname*, so every simulator on the Mac, and the Mac itself, routes the profile's hosts through
@@ -241,10 +237,8 @@ and what the PAC advertises — those are deliberately separate settings.
   - Each listed scenario carries `group` — its folder, or `""` at the root of `scenarios/`. It is
     derived from the name, never stored: the folder a file sits in *is* the group.
   - Delete takes the name in the **query**, percent-encoded, because a grouped name contains `/` and
-    no path segment can carry one. `DELETE /scenarios/{name}` still works for a root name.
-- `POST /scenarios/move` `{"name": …, "to": …}` — move a scenario, file and all. Refuses (**409**
-  `cannot_move`) the active scenario, `default`, a symlinked source, and a source whose file changed
-  since it was loaded; an occupied destination is **409** `scenario_exists`.
+    no path segment can carry one.
+- To move a scenario, move its file and then `POST /scenarios/reload` `{"use": …}`.
 - `POST /scenarios/reload` `{"use": …}` (optional) — re-read every scenario file, for a profile
   edited outside the engine. All or nothing: any problem is **409**
   `{"error": "reload_refused", "problems": [...]}` and the proxy goes on serving what it already
@@ -399,7 +393,6 @@ inherited field. `delayMs` belongs on the rule, not the step, so one delay appli
 |---|---|
 | `error` *(default)* | Lyrebird answers `500` naming the rule and the counts |
 | `repeatLast` | the last step answers again |
-| `passThrough` | the rule stands aside and the real upstream answers |
 
 The default is `error` on purpose: repeating the last step would let a request the scenario never
 planned for pass for a successful one.
@@ -409,7 +402,7 @@ scenario, editing the rule, or `lyrebird reset`. `GET /__mock__/health` reports
 `sequences[]` with `nextStep`, `stepCount`, `exhausted`, `hasOverrun`, `serves` (how many times
 each step has been served this run, keyed by step number) and an opaque `runId` that changes on
 every reset. `/recent` records `sequenceId`, `selectedStep` and `advanced` per request —
-separately from `matched`, so an exhausted `passThrough` (which answers nothing) is still visible.
+separately from `matched`, so a request that only advanced a cursor is still visible.
 
 ## Proving a rule was in play
 
@@ -427,16 +420,15 @@ Only the last is evidence about the boundary you drew.
 The count is taken where the answer is produced — when a `replace` writes its response, and when a
 `patch` has actually merged into a JSON upstream — not when the request is recorded. That is what
 makes it trustworthy as a test assertion: a rule that matched but lost to a more specific one is
-never credited, a patch dropped for a non-JSON upstream is never credited, an exhausted
-`passThrough` is never credited, and a `replace` whose flow dies on the way back to the client still
-is, because it did answer. The evidence also outlives the request's entry in the bounded `/recent`
+never credited, a patch dropped for a non-JSON upstream is never credited, and a `replace` whose
+flow dies on the way back to the client still is, because it did answer. The evidence also outlives the request's entry in the bounded `/recent`
 buffer.
 
 `lyrebird assert-answered ID` reads `answers[]` and exits non-zero unless the rule has answered
 since the reset; `--run RUNID`, the token `lyrebird reset ID --json` hands back, additionally
 requires the count to belong to that run, so a boundary that moved under the test fails rather than
 passing on someone else's count.
-[Six things worth knowing before you start](../AGENTS.md#six-things-worth-knowing-before-you-start),
+[Five things worth knowing before you start](../AGENTS.md#five-things-worth-knowing-before-you-start),
 item 3, has the exit-code table — 1 for an assertion made and failed, 3 for one that could not be
 made — and how a harness should act on each.
 

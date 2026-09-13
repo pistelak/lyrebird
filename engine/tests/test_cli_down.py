@@ -14,7 +14,6 @@ import pytest
 
 import cli
 import config
-import netproxy
 import session
 from cli_doubles import CORPORATE, WIFI, FakeNetwork, FakeProc, FakePsutil, ours, ours_off, owner, record, world
 from ownership import Absent, Pac, ServiceRef, SessionRecord
@@ -416,22 +415,6 @@ def test_down_reports_a_journal_it_could_not_remove(runner, monkeypatch):
     assert result.exit_code == 1
     assert "could not be removed" in result.output
     assert place.pac() == CORPORATE
-
-
-def test_down_hands_no_descriptor_to_networksetup(runner, monkeypatch):
-    """The lock is `O_CLOEXEC` and no command is given a descriptor of its own: a `networksetup`
-    that inherited the lock would hold it past this command's exit."""
-    place = _up(monkeypatch, baseline=CORPORATE)
-    extra = []
-
-    def recording(args, check=False, **kwargs):
-        extra.append(kwargs)
-        return place.network._run(args, check=check)
-
-    monkeypatch.setattr(netproxy, "_run", recording)
-
-    assert runner.invoke(cli.cli, ["down"]).exit_code == 0
-    assert extra and all(kwargs == {} for kwargs in extra)
 
 
 def test_a_process_that_is_not_a_proxy_on_our_port_is_never_signalled(runner, monkeypatch):
