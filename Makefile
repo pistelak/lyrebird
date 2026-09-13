@@ -104,7 +104,7 @@ test-app:
 	cd menubar && xcodebuild -quiet -project Lyrebird.xcodeproj -scheme Lyrebird \
 		-configuration Debug -derivedDataPath .build -destination 'platform=macOS' \
 		-resultBundlePath $(APP_RESULTS) \
-		$(APP_TEST_SKIP) $(if $(TEST),-only-testing:$(TEST),) build test
+		$(APP_TEST_SKIP) $(if $(TEST),"-only-testing:$(TEST)",) build test
 	bash scripts/check-app-test-count.sh menubar/$(APP_RESULTS) "$(TEST)"
 
 # APP_INSTALL_DIR=/path/to/dir to install somewhere other than /Applications.
