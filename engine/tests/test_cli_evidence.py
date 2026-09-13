@@ -10,6 +10,7 @@ import time
 
 import api
 import cli
+import config
 from cli_doubles import _BASE_SEQ, _answers_over, _health_payload, _polling
 
 
@@ -56,7 +57,7 @@ def test_reset_says_so_when_there_is_nothing_to_rewind(profile, runner, monkeypa
 
 
 def test_sequence_wait_rejects_an_unknown_sequence(profile, runner, monkeypatch):
-    monkeypatch.setattr(api, "_health", lambda: {"sequences": []})
+    monkeypatch.setattr(api, "_health", lambda: {"sequences": [], "profileFingerprint": config.PROFILE_FINGERPRINT})
     result = runner.invoke(cli.cli, ["sequence", "wait", "nope", "--step", "1"])
     assert result.exit_code == 1
     assert "no sequence" in result.output
@@ -236,7 +237,11 @@ def test_assert_answered_says_so_when_the_control_api_is_unreachable(profile, ru
 def test_assert_answered_refuses_a_proxy_that_cannot_report_counts(profile, runner, monkeypatch):
     """An engine too old to report counts must not be read as a rule that answered nothing — that
     turns a restart into a debugging session."""
-    monkeypatch.setattr(api, "_health", lambda: {"activeScenario": "default", "sequences": []})
+    monkeypatch.setattr(
+        api,
+        "_health",
+        lambda: {"activeScenario": "default", "sequences": [], "profileFingerprint": config.PROFILE_FINGERPRINT},
+    )
     result = runner.invoke(cli.cli, ["assert-answered", "ovr_a"])
     assert result.exit_code == 1
     assert "does not report answer counts" in result.output
@@ -376,7 +381,11 @@ def test_assert_answered_cannot_prove_a_run_against_a_proxy_that_counts_but_cann
     """Version skew in the other field. An engine that cannot count at all certainly cannot say
     which run its counts are in, so under --run both refusals have to arrive as the same code — a
     harness branching on 3 must not have to learn which flavour of skew it hit."""
-    monkeypatch.setattr(api, "_health", lambda: {"activeScenario": "default", "sequences": []})
+    monkeypatch.setattr(
+        api,
+        "_health",
+        lambda: {"activeScenario": "default", "sequences": [], "profileFingerprint": config.PROFILE_FINGERPRINT},
+    )
     result = runner.invoke(cli.cli, ["assert-answered", "ovr_a", "--run", "run1"])
     assert result.exit_code == 3
     assert "does not report answer counts" in result.output

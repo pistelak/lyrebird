@@ -177,6 +177,14 @@ def test_validate_override_accepts_notes_as_a_string(notes):
     assert loaded["overrides"][0]["notes"] == notes
 
 
+@pytest.mark.parametrize("patch", [[], False, 0, "", "x", 7])
+def test_validate_override_rejects_a_falsy_non_object_patch(patch):
+    """`[]`, `false` and `0` used to pass as "no patch" and were then credited as a patch that
+    applied nothing; a value that is not an object is refused whether or not it is falsy."""
+    with pytest.raises(rules.ValidationError, match="patch must be a JSON object"):
+        rules.validate_override({"mode": "patch", "match": {"path": "/api/items"}, "patch": patch})
+
+
 @pytest.mark.parametrize("notes", [None, 7, True, {"why": "x"}, ["x"]])
 def test_validate_override_rejects_non_string_notes(notes):
     """Text or nothing. An explicit `null` is a mistake worth naming here, unlike the other optional

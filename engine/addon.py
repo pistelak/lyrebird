@@ -174,7 +174,21 @@ class Lyrebird:
             # the same `pacError` a failed PAC read makes — see
             # test_health_reports_an_unreadable_journal_without_denying_the_route.
             service = self._service(journal)
-            return service, netproxy.intercepting(service, config.CONTROL_PORT), None, journal_error
+            intercepting = netproxy.intercepting(service, config.CONTROL_PORT)
+            if intercepting and isinstance(journal, ownership.SessionRecord):
+                # Our PAC on the journalled service routes nothing once the default route has moved
+                # to another one; `intercepting: true` there sent the app's reader looking at the
+                # wrong screen — see test_health_stops_claiming_interception_when_the_route_moved.
+                route = netproxy.active_service()
+                if route is None or route.device != journal.service.device:
+                    where = f"'{route.name}'" if route is not None else "no service"
+                    return (
+                        service,
+                        False,
+                        f"the default route moved to {where}; `lyrebird down && lyrebird up`",
+                        journal_error,
+                    )
+            return service, intercepting, None, journal_error
         except netproxy.NetworkSetupError as error:
             # Health must keep answering. The CLI reads "no health" as "no proxy": `up` would start
             # a second proxy. So a PAC that could not be read is reported as such, next to an
@@ -345,6 +359,10 @@ class Lyrebird:
                 flow.metadata["mock_patch_skipped"] = "body_unavailable_or_not_json"
 
         self._record(flow, status, matched)
+        # mitmproxy runs `error` after `response` for a flow that dies on its way to the client; a
+        # flow recorded here is not recorded again there — see
+        # test_a_flow_that_errors_after_its_response_is_recorded_once.
+        flow.metadata["mock_recorded"] = True
 
     def error(self, flow: http.HTTPFlow) -> None:
         """Record a sequence flow that failed before there was any response to record.
@@ -363,14 +381,23 @@ class Lyrebird:
         # `mock_advanced` counts too: a request no override answered can still have moved a
         # sequence, and if its upstream then fails the cursor has changed with nothing in /recent
         # to explain why.
+        if flow.metadata.get("mock_recorded"):
+            return
+        pending = flow.metadata.get("mock_patch")
         if not (
             flow.metadata.get("mock_sequence")
             or flow.metadata.get("mock_advanced")
             or flow.metadata.get("mock_matched")
+            or pending
         ):
             return
         if not config.is_intercepted_host(flow.request.pretty_host):
             return
+        if pending:
+            # A patch was selected and its upstream never answered: nothing was applied and nothing
+            # is credited, but the request happened, and without this entry it looked like one that
+            # never arrived — see test_a_patch_whose_upstream_fails_leaves_an_entry_with_the_reason.
+            flow.metadata["mock_patch_skipped"] = "upstream_failed"
         # 0 is already how `response` reports "no status". `matched` is read from metadata the same
         # way `response` reads it: an override that set a response before the flow died (a client
         # that hung up mid-write) did answer, and recording None here would say nothing did.

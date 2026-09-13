@@ -745,7 +745,10 @@ def validate_override(override: Any) -> dict:
     _validate_response_fields(result, "")
 
     if mode == "patch":
-        if not is_plain_object(result.get("patch") or {}):
+        # `in`, not `.get(...) or {}`: `[]`, `false` and `0` passed as "no patch" and were later
+        # credited as an applied patch that changed nothing — see
+        # test_validate_override_rejects_a_falsy_non_object_patch.
+        if "patch" in result and not is_plain_object(result["patch"]):
             raise ValidationError("patch must be a JSON object")
         strategy = result.get("patchStrategy")
         if strategy is not None and strategy not in VALID_PATCH_STRATEGIES:

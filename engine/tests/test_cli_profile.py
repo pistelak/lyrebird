@@ -194,16 +194,18 @@ def test_a_bound_assertion_refuses_a_profile_that_changes_under_the_poll(profile
     assert FOREIGN_FINGERPRINT in result.output
 
 
-def test_a_health_reading_without_a_fingerprint_is_still_accepted(profile, runner, monkeypatch):
-    """An engine that predates the field cannot say which profile it runs. Refusing it would turn
-    an upgrade into a breakage, so — exactly as `up` does — a missing fingerprint is allowed."""
+def test_a_health_reading_without_a_fingerprint_is_refused(profile, runner, monkeypatch):
+    """An engine that predates the field cannot say which profile it runs, and accepting it as ours
+    let a current CLI and app read, activate and reset a stranger's profile behind a daemon that
+    enforces no guard. Refused, naming the remedy: that engine's own `down`."""
     health = _health_payload(answers=[{"id": "ovr_a", "active": True, "count": 1}])
     del health["profileFingerprint"]
     monkeypatch.setattr(api, "_health", lambda: health)
 
     result = runner.invoke(cli.cli, ["assert-answered", "ovr_a"])
 
-    assert result.exit_code == 0
+    assert result.exit_code != 0
+    assert "none reported" in result.output and "lyrebird down" in result.output
 
 
 def test_down_still_stops_a_proxy_that_belongs_to_another_profile(profile, runner, monkeypatch):
