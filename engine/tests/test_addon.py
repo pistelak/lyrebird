@@ -18,7 +18,9 @@ from mitmproxy.test import taddons, tflow, tutils
 import addon
 import config
 import netproxy
+import ownership
 import rules
+import session
 
 
 def test_proxy_options_are_accepted_by_mitmproxy(hosts):
@@ -783,7 +785,7 @@ def test_a_repeated_last_step_is_credited_like_any_other_answer(hosts, profile):
 
 
 def test_health_reports_an_unreadable_pac_instead_of_dying(profile, monkeypatch):
-    """The CLI reads "no health" as "no proxy": the watchdog would restore the network over a live
+    """The CLI reads "no health" as "no proxy": `up` would start a second proxy over a live
     proxy and `up` would start a second one. So `/health` must answer, saying the PAC is unproven
     rather than off."""
     import netproxy
@@ -791,7 +793,7 @@ def test_health_reports_an_unreadable_pac_instead_of_dying(profile, monkeypatch)
     def boom(service):
         raise netproxy.NetworkSetupError("`networksetup -getautoproxyurl Wi-Fi` failed: 1")
 
-    monkeypatch.setattr(netproxy, "active_service", lambda: "Wi-Fi")
+    monkeypatch.setattr(netproxy, "active_service", lambda: ownership.ServiceRef("Wi-Fi", "en0"))
     monkeypatch.setattr(netproxy, "pac_status", boom)
     meta = asyncio.run(addon.Lyrebird()._meta())
     assert meta["proxyUp"] is True
@@ -830,9 +832,9 @@ def blocking_pac_status(monkeypatch, entered, release):
         state["entries"] += 1
         entered.set()
         state["expired"] = not release.wait(5)
-        return netproxy.PacStatus(url=netproxy.pac_url(), enabled=True, ours=True)
+        return ownership.Pac(url=ownership.our_url(config.CONTROL_PORT), enabled=True)
 
-    monkeypatch.setattr(netproxy, "active_service", lambda: "Wi-Fi")
+    monkeypatch.setattr(netproxy, "active_service", lambda: ownership.ServiceRef("Wi-Fi", "en0"))
     monkeypatch.setattr(netproxy, "pac_status", blocked)
     return state
 
@@ -873,7 +875,7 @@ def test_concurrent_health_polls_share_one_bounded_observation(hosts, monkeypatc
     """Two facts in one run, because they are the same mechanism. The menu bar polls every 2s and
     the CLI every 1s, so a wedged `networksetup` must neither strand a worker thread per poll nor
     hold an answer back: the CLI reads a slow `/health` exactly as it reads a dead proxy, and the
-    watchdog restores the network over a live one."""
+    `up` starts a second proxy over a live one."""
     import control
 
     entered, release = threading.Event(), threading.Event()
@@ -912,42 +914,107 @@ def test_the_addon_refuses_to_load_on_a_malformed_profile(profile):
         addon.Lyrebird()
 
 
-def test_health_reports_an_unreadable_record_without_denying_the_route(monkeypatch, hosts):
-    """Where packets go is one fact and whether `down` can restore is another. A corrupt record
-    used to read as absent and vanish from health; falsifying `intercepting` over it would be the
-    opposite mistake. The record's state gets its own field."""
-    config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
-    config.runtime_file().write_bytes(b"not json at all\xff")
-    monkeypatch.setattr(netproxy, "active_service", lambda: "Wi-Fi")
-    monkeypatch.setattr(netproxy, "intercepting", lambda service: service == "Wi-Fi")
+def _corrupt_journal():
+    store = session.Session()
+    store.ensure_root()
+    store.journal_path.write_bytes(b"not json at all\xff")
+    return store
 
-    service, intercepting, pac_error, runtime_error = addon.Lyrebird()._observe()
+
+def test_health_reports_an_unreadable_journal_without_denying_the_route(monkeypatch, hosts):
+    """Where packets go is one fact and whether `down` can restore is another. A corrupt journal
+    used to read as absent and vanish from health; falsifying `intercepting` over it would be the
+    opposite mistake. The journal's state gets its own field."""
+    _corrupt_journal()
+    monkeypatch.setattr(netproxy, "active_service", lambda: ownership.ServiceRef("Wi-Fi", "en0"))
+    monkeypatch.setattr(netproxy, "intercepting", lambda service, port: service == "Wi-Fi")
+
+    service, intercepting, pac_error, journal_error = addon.Lyrebird()._observe()
 
     assert (service, intercepting, pac_error) == ("Wi-Fi", True, None)
-    assert "cannot be read" in runtime_error
+    assert journal_error is not None
     meta = asyncio.run(_meta_of(addon.Lyrebird()))
-    assert "cannot be read" in meta["runtimeError"]
+    assert meta["journalError"] == journal_error
     assert meta["intercepting"] is True
+    assert "session" not in meta
 
 
 async def _meta_of(subject):
     return await subject._meta()
 
 
-def test_health_forgets_a_runtime_error_once_the_record_is_fixed(monkeypatch, hosts):
+def test_health_forgets_a_journal_error_once_the_journal_is_fixed(monkeypatch, hosts):
     """Kept on the object, the error outlived the record it described: a later observation that
     failed on the PAC read repeated it. It is part of each observation instead."""
-    config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
-    config.runtime_file().write_bytes(b"not json at all\xff")
-    monkeypatch.setattr(netproxy, "active_service", lambda: "Wi-Fi")
-    monkeypatch.setattr(netproxy, "intercepting", lambda service: True)
+    store = _corrupt_journal()
+    monkeypatch.setattr(netproxy, "active_service", lambda: ownership.ServiceRef("Wi-Fi", "en0"))
+    monkeypatch.setattr(netproxy, "intercepting", lambda service, port: True)
     subject = addon.Lyrebird()
     assert subject._observe()[3] is not None
 
-    config.runtime_file().unlink()
+    store.journal_path.unlink()
     monkeypatch.setattr(
-        netproxy, "intercepting", lambda service: (_ for _ in ()).throw(netproxy.NetworkSetupError("x"))
+        netproxy, "intercepting", lambda service, port: (_ for _ in ()).throw(netproxy.NetworkSetupError("x"))
     )
 
-    service, intercepting, pac_error, runtime_error = subject._observe()
-    assert (intercepting, pac_error, runtime_error) == (False, "x", None)
+    service, intercepting, pac_error, journal_error = subject._observe()
+    assert (intercepting, pac_error, journal_error) == (False, "x", None)
+
+
+def test_health_reads_the_journals_service_by_device_not_by_its_old_name(monkeypatch, hosts):
+    """A rename that hands the old name to another device must not have this session's
+    interception read off *that* device. The journal records name and device; the device is what
+    survives, so resolution goes through it."""
+    import procs
+    from cli_doubles import FakeNetwork, FakePsutil, record, write_journal
+
+    table = FakePsutil()
+    monkeypatch.setattr(procs, "psutil", table)
+    proxy = table.spawn_ref(config.CONTROL_PORT)
+    ours = ownership.Pac(ownership.our_url(config.CONTROL_PORT), True)
+    FakeNetwork({"Office Wi-Fi": ("en0", ours), "Wi-Fi": ("en1", ownership.Pac("", False))}, route="en1").install(
+        monkeypatch
+    )
+    write_journal(record(proxy, service=ownership.ServiceRef("Wi-Fi", "en0")))
+
+    service, intercepting, pac_error, journal_error = addon.Lyrebird()._observe()
+
+    assert (service, intercepting) == ("Office Wi-Fi", True)
+    assert (pac_error, journal_error) == (None, None)
+
+
+def test_health_reports_a_journalled_service_that_is_gone_as_unproven(monkeypatch, hosts):
+    """Not "not intercepting": nobody read the PAC, and the field that says so is `pacError`."""
+    import procs
+    from cli_doubles import FakeNetwork, FakePsutil, record, write_journal
+
+    table = FakePsutil()
+    monkeypatch.setattr(procs, "psutil", table)
+    proxy = table.spawn_ref(config.CONTROL_PORT)
+    FakeNetwork({"Wi-Fi": ("en1", ownership.Pac("", False))}, route="en1").install(monkeypatch)
+    write_journal(record(proxy, service=ownership.ServiceRef("Wi-Fi", "en0")))
+
+    service, intercepting, pac_error, journal_error = addon.Lyrebird()._observe()
+
+    assert intercepting is False and pac_error is not None and journal_error is None
+    assert service is None, "the last known name, and there has never been one"
+
+
+def test_health_reports_an_observation_that_overran_as_an_unread_pac(monkeypatch, hosts):
+    """The CLI reads "no health" as "no proxy", so `/health` answers late-or-not-at-all only about
+    the PAC: unproven, never seen to be off."""
+    import procs
+    from cli_doubles import FakeNetwork, FakePsutil
+
+    monkeypatch.setattr(procs, "psutil", FakePsutil())
+    FakeNetwork().install(monkeypatch)
+    monkeypatch.setattr(addon, "_OBSERVE_DEADLINE", 0.001)
+
+    def never(service):
+        time.sleep(5)
+        raise AssertionError("unreachable")
+
+    monkeypatch.setattr(netproxy, "pac_status", never)
+    meta = asyncio.run(addon.Lyrebird()._meta())
+    assert meta["intercepting"] is False
+    assert "did not finish" in meta["pacError"]

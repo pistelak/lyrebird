@@ -12,17 +12,26 @@ import pytest
 import api
 import cli
 import config
+import ownership
+import session
 import supervisor
-from cli_doubles import _PHONE, _answers_with_a_conflict, _fake_proxy, _up_with_a_proxy
+from cli_doubles import (
+    _PHONE,
+    SILENT,
+    FakeHealth,
+    _answers_with_a_conflict,
+    _fake_proxy,
+    _up_with_a_proxy,
+    spawning_proxy,
+)
 
 
-@pytest.mark.parametrize("adopt", [False, True], ids=["fresh start", "adopting a running proxy"])
-def test_up_selects_the_scenario_before_it_relaunches_the_app(profile, runner, monkeypatch, adopt):
+def test_up_selects_the_scenario_before_it_relaunches_the_app(profile, runner, monkeypatch):
     """The bug: `up` relaunched the app and only the documented `use` afterwards selected the
     scenario, so the launch was answered by whatever scenario happened to be active — and an app
     that cached that response kept the wrong state on screen for the rest of the run."""
     state = _fake_proxy(monkeypatch)
-    _up_with_a_proxy(profile, monkeypatch, state, adopt=adopt)
+    _up_with_a_proxy(profile, monkeypatch, state)
 
     result = runner.invoke(cli.cli, ["up", "--use", "orders-outage"])
 
@@ -39,7 +48,7 @@ def test_up_rewinds_the_scenario_it_selects_so_the_launch_starts_at_step_one(pro
     sequences, and without it the relaunch resumes mid-scenario at whatever step the last run
     left behind."""
     state = _fake_proxy(monkeypatch, active="orders-outage", steps={"orders-outage": 3})
-    _up_with_a_proxy(profile, monkeypatch, state, adopt=True)
+    _up_with_a_proxy(profile, monkeypatch, state)
 
     result = runner.invoke(cli.cli, ["up", "--use", "orders-outage"])
 
@@ -60,7 +69,10 @@ def test_up_does_not_relaunch_under_a_fallback_when_the_scenario_is_unknown(prof
     assert "no scenario named 'nope'" in result.output
     assert "default, orders-outage" in result.output, "say which scenarios there are"
     assert "NOT relaunched" in result.output
-    assert "lyrebird down" in result.output
+    # A fresh acquisition that could not achieve its postcondition unwinds: the PAC goes back and
+    # the journal is released, rather than leaving a proxy the operator must remember to stop.
+    assert "direct networking restored" in result.output
+    assert session.Session().read() == ownership.Absent()
 
 
 def test_up_does_not_relaunch_a_scenario_whose_overrides_were_dropped(profile, runner, monkeypatch):
@@ -123,7 +135,7 @@ def test_up_does_not_relaunch_when_the_proxy_cannot_say_what_loaded(profile, run
     whole": reading it as an empty list relaunches the app against a scenario nothing checked, and
     prints exactly what a checked one prints."""
     state = _fake_proxy(monkeypatch, not_whole=None)
-    _up_with_a_proxy(profile, monkeypatch, state, adopt=True)
+    _up_with_a_proxy(profile, monkeypatch, state)
 
     result = runner.invoke(cli.cli, ["up", "--use", "orders-outage"])
 
@@ -137,11 +149,10 @@ def test_up_does_not_relaunch_when_the_proxy_cannot_say_what_loaded(profile, run
 def test_up_does_not_relaunch_when_the_activation_call_fails(profile, runner, monkeypatch, bundle_id):
     """The proxy stopped answering between the PAC install and the switch. Launching now would put
     the app in front of exactly the scenario the caller was trying to replace — and asking for the
-    launch by hand is that same wrong launch, typed by a person. The final look still runs: the
-    proxy is up and the PAC is installed, and an operator not told so walks away believing the
-    network was left alone."""
+    launch by hand is that same wrong launch, typed by a person. The acquisition then unwinds, so
+    the operator is left with the network as they had it rather than a proxy to remember."""
     state = _fake_proxy(monkeypatch, unreachable=True)
-    _up_with_a_proxy(profile, monkeypatch, state, bundle_id=bundle_id)
+    world = _up_with_a_proxy(profile, monkeypatch, state, bundle_id=bundle_id)
 
     result = runner.invoke(cli.cli, ["up", "--use", "orders-outage"])
 
@@ -151,7 +162,10 @@ def test_up_does_not_relaunch_when_the_activation_call_fails(profile, runner, mo
     assert "proxy not reachable" in result.output, "the API's own detail is kept"
     assert "NOT relaunched" in result.output
     assert "RELAUNCH THE APP NOW" not in result.output
-    assert "INTERCEPT ACTIVE" in result.output
+    # Off, not empty: macOS rejects an empty PAC URL, so "there was nothing before" is restored as
+    # the flag — the disabled residue every `down` leaves.
+    assert world["network"].pac("Wi-Fi").enabled is False
+    assert session.Session().read() == ownership.Absent()
 
 
 def test_up_use_accepts_a_grouped_name(profile, runner, monkeypatch):
@@ -177,7 +191,9 @@ def test_up_prints_both_fingerprints_when_the_activation_is_refused_for_another_
     state = _fake_proxy(monkeypatch)
     _up_with_a_proxy(profile, monkeypatch, state)
     monkeypatch.setattr(api, "_control", real_control)
-    _answers_with_a_conflict(monkeypatch, {"error": "profile_mismatch", "running": "a1b2c3", "requested": "d4e5f6"})
+    # Installed *after* `up`'s startup health reading has been decided on, because both go through
+    # the one transport: the refusal is what the activation PUT meets.
+    monkeypatch.setattr(supervisor, "_activate_scenario", _refusing(monkeypatch, real_control))
 
     result = runner.invoke(cli.cli, ["up", "--use", "orders-outage"])
 
@@ -186,6 +202,16 @@ def test_up_prints_both_fingerprints_when_the_activation_is_refused_for_another_
     assert "a1b2c3" in result.output, "say which profile actually holds the port"
     assert config.PROFILE_FINGERPRINT in result.output, "and which one was asked for"
     assert "NOT relaunched" in result.output
+
+
+def _refusing(monkeypatch, real_control):
+    """`_activate_scenario` against a control port the API answers 409 on."""
+
+    def activate(name):
+        _answers_with_a_conflict(monkeypatch, {"error": "profile_mismatch", "running": "a1b2c3", "requested": "d4e5f6"})
+        real_control("/__mock__/scenarios/active", "PUT", {"name": name})
+
+    return activate
 
 
 @pytest.mark.parametrize("bundle_id", ["com.example.Store", None], ids=["simBundleId set", "unset"])
@@ -251,9 +277,10 @@ def test_up_prints_the_startup_refusal_the_proxy_died_of(profile, runner, monkey
     proxy that "exited on startup" and nothing about the one-line `mv` that fixes it.
     """
     state = _fake_proxy(monkeypatch)
-    _up_with_a_proxy(profile, monkeypatch, state)
-    monkeypatch.setattr(api, "_health", lambda: None)
-    monkeypatch.setattr(supervisor, "_pid_alive", lambda pid: False)
+    world = _up_with_a_proxy(profile, monkeypatch, state)
+    # The child exits the instant it is started, and nothing ever answers on the port.
+    FakeHealth(sequence=[SILENT]).install(monkeypatch)
+    spawning_proxy(monkeypatch, world["table"], dead=True)
     remedy = f"mv {profile / 'sessions'} {profile / 'scenarios'}"
     config.LOG_FILE.write_text(f"store.LegacyProfileLayout: ...\n  rename it:  {remedy}\n", encoding="utf-8")
 

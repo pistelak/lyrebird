@@ -105,7 +105,7 @@ lyrebird --profile PATH up --use NAME --simulator <udid>   # `xcrun simctl list 
 
 With exactly one iOS simulator booted you can leave it out. With several booted and no choice
 made, `up` and `trust-ca` **refuse and list the booted devices** rather than let simctl pick one
-for you. `status` reports the device the last `up` used (`simulator` in `--json`), and
+for you. `status` reports the device the session recorded (`simulator` in `--json`), and
 `lyrebird relaunch [BUNDLEID]` relaunches the app on that same device — use it instead of
 `xcrun simctl launch booted <bundleid>` mid-run.
 
@@ -212,7 +212,9 @@ lyrebird --profile PATH status --json
   "simBundleId": "com.example.Store",
   "profile": "/path/to/profile",
   "service": "Wi-Fi",
-  "pac": { "url": "http://127.0.0.1:8088/proxy.pac", "enabled": true, "ours": true }
+  "pac": { "url": "http://127.0.0.1:8088/proxy.pac", "enabled": true, "ours": true },
+  "journalError": null,
+  "simulator": { "udid": "…", "name": "iPhone 17 Pro" }
 }
 ```
 
@@ -220,6 +222,17 @@ Exit code is 0 only when the proxy is up **and** intercepting **for the profile 
 `lyrebird status > /dev/null` works as a readiness check on its own. `--json` selects the output
 format and nothing else — both forms exit the same way, so `lyrebird status && …` is safe to
 write either way round.
+
+`service`, `simulator` and the `pac` reading describe this Mac's one PAC-owning session, taken
+from the journal rather than from the proxy, so they answer whether or not anything is running.
+`journalError` is non-null when the journal could not be read at all — by this command or by the
+proxy, which reads it too — and that means `down` cannot restore from it.
+
+Exit 1 with the reason printed covers every way the postcondition is not met: no session, another
+session's, a proxy that is not the one recorded, a PAC that is not routing here, and a default
+route that has moved off the service the session took.
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md#the-proxy-is-gone-but-the-network-still-points-at-it) has
+what to do with each.
 
 The control port can be held by a proxy started for a *different* profile. That proxy is
 intercepting, but not for you, so `status` exits non-zero and says so: `profileMismatch` is `true`
@@ -240,9 +253,18 @@ Set `simBundleId` in the profile and `up` handles it — and name the scenario i
 
 **6. `down` is not optional.**
 
-It restores the proxy settings that were there before. Run it even on your failure paths. If your
-process is killed before it can, a watchdog restores them within a couple of seconds — but do not
-rely on that as the normal path.
+It restores the proxy settings that were there before. Run it even on your failure paths. Nothing
+else does it: a proxy that dies leaves the Mac routed at a dead port until `lyrebird down` runs.
+
+`down` is also the only recovery command, and it needs nothing to find the session: no `--profile`,
+no port, no directory. It reads this user's one session journal, which is what the run recorded the
+settings in. Exit 0 means they are back; exit 1 means they are not, and it says what is in the way —
+including a PAC somebody set by hand since, which it never writes over: it prints the settings it
+recorded at `up` for you to put back yourself.
+
+There is one such session per user, so `up` refuses while one exists — even this profile's. To put
+a different scenario in front of the app on a running session: `lyrebird use NAME && lyrebird
+relaunch`.
 
 ## Making a scenario
 

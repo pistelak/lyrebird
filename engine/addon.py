@@ -19,16 +19,22 @@ from mitmproxy.addonmanager import Loader
 
 import config
 import netproxy
+import ownership
 import rules
+import session
 from store import Store, credit
+
+# The service name, whether it intercepts, the PAC read's failure and the journal's — one tuple,
+# because it is one worker-thread observation.
+_Observation = tuple[str | None, bool, str | None, str | None]
 
 # mitmproxy's ctx.log is deprecated (it warns and delegates); mitmproxy 12 routes stdlib logging
 # into its own event log, so this reaches the same place without polluting the log with warnings.
 _log = logging.getLogger("lyrebird")
 
 # How long `/health` waits for the PAC observation before answering without it. Well under the
-# CLI's 1.5s read timeout (`cli._get_json`), because two silent health reads are what the watchdog
-# takes for a dead proxy — so health answering late is the same failure as health not answering.
+# CLI's 1.5s read timeout (`api._get_json`), because the CLI reads a silent health as a dead proxy —
+# so health answering late is the same failure as health not answering.
 _OBSERVE_DEADLINE = 1.0
 # mitmproxy's stream_large_bodies option is a size *string* ("Understands k/m/g"), not an int.
 STREAM_LARGE_BODIES = "512k"
@@ -67,18 +73,17 @@ class Lyrebird:
         # health reports when the observation overruns: the service is discovered once and rarely
         # changes, so the last known name is a better answer than None — and None is what a fresh
         # proxy honestly has.
-        self._observation: asyncio.Future[tuple[str | None, bool, str | None, str | None]] | None = None
+        self._observation: asyncio.Future[_Observation] | None = None
         self._last_service: str | None = None
 
     # MARK: - Lifecycle
 
     def load(self, loader: Loader) -> None:
         # Not read by anything: the option exists so `up` can pass `--set lyrebird_control_port=N`
-        # and the port appears in `ps`, which is how `supervisor._pid_is_ours` tells this
-        # instance's proxy from another Lyrebird's after a pid is reused. The port itself still
-        # arrives by environment.
+        # and the port appears in the process table, which is how `procs.is_proxy_on` tells a
+        # Lyrebird proxy — and which session's — from anything else. The port itself still arrives
+        # by environment.
         loader.add_option("lyrebird_control_port", int, 0, "the control port this proxy was started for")
-        loader.add_option("lyrebird_state_root_id", str, "", "the state directory this proxy was started from")
 
     async def running(self) -> None:
         if self._control_started:
@@ -106,9 +111,9 @@ class Lyrebird:
         `_observe` shells out to `networksetup` (and possibly `route`), which mitmproxy's loop also
         uses to serve traffic — so it runs in a worker thread, and health waits on it for at most
         `_OBSERVE_DEADLINE`. Both bounds exist for the same reason: the CLI reads "no health" as
-        "no proxy", so a `/health` that blocks is a `/health` that gets a live proxy's network
-        restored out from under it by the watchdog. An observation that overruns is reported as a
-        `pacError`, which is what any other unreadable PAC looks like.
+        "no proxy", so a `/health` that blocks is a live proxy reported as dead. An observation
+        that overruns is reported as a `pacError`, which is what any other unreadable PAC looks
+        like.
         """
         observation = self._observation
         if observation is None or observation.done():
@@ -120,11 +125,11 @@ class Lyrebird:
         try:
             # Shielded: the deadline gives up on *this* answer, not on the observation — cancelling
             # it would leave the next poll starting another thread against the same stuck command.
-            service, intercepting, pac_error, runtime_error = await asyncio.wait_for(
+            service, intercepting, pac_error, journal_error = await asyncio.wait_for(
                 asyncio.shield(observation), timeout=_OBSERVE_DEADLINE
             )
         except TimeoutError:
-            service, intercepting, runtime_error = self._last_service, False, None
+            service, intercepting, journal_error = self._last_service, False, None
             pac_error = f"PAC read did not finish within {_OBSERVE_DEADLINE}s"
         else:
             self._last_service = service
@@ -144,50 +149,54 @@ class Lyrebird:
         }
         if pac_error:
             meta["pacError"] = pac_error
-        if runtime_error:
-            meta["runtimeError"] = runtime_error
+        if journal_error:
+            meta["journalError"] = journal_error
         return meta
 
     def _forget_observation(self, task: asyncio.Future) -> None:
         if self._observation is task:
             self._observation = None
 
-    def _observe(self) -> tuple[str | None, bool, str | None, str | None]:
+    def _observe(self) -> _Observation:
         """Everything in `_meta` that touches the OS, run on a worker thread: the service, whether
-        it intercepts, the PAC read's failure if any, and the runtime record's if any.
+        it intercepts, the PAC read's failure if any, and the session journal's if any.
 
         Touches no `Store`: the store is only safe on the loop, and nothing here needs it.
-        Discovery is inside the `try` too — `_service` may shell out to `route` and
-        `networksetup` via `netproxy.active_service`, so it can time out exactly as the PAC read
+        Discovery is inside the `try` too — `_service` may shell out to `route` and `networksetup`
+        via `netproxy.resolve`/`netproxy.active_service`, so it can time out exactly as the PAC read
         can, and a failure there is the same unproven answer.
         """
         service = self._last_service  # kept if discovery itself is what fails
-        runtime_error = None
+        journal = session.Session().read()
+        journal_error = journal.reason if isinstance(journal, ownership.Unreadable) else None
         try:
-            try:
-                service = self._service()
-            except config.RuntimeRecordUnreadable as error:
-                # What the OS says about the route is still a fact, and `intercepting` reports
-                # it; that `down` cannot restore from this record is a different fact, carried
-                # in its own field rather than by falsifying the first. See
-                # test_health_reports_an_unreadable_record_without_denying_the_route.
-                runtime_error = str(error)
-                service = netproxy.active_service()
-            return service, netproxy.intercepting(service), None, runtime_error
+            # Unproven, not off: a service that could not be resolved raises, and is reported as
+            # the same `pacError` a failed PAC read makes — see
+            # test_health_reports_an_unreadable_journal_without_denying_the_route.
+            service = self._service(journal)
+            return service, netproxy.intercepting(service, config.CONTROL_PORT), None, journal_error
         except netproxy.NetworkSetupError as error:
-            # Health must keep answering. The CLI reads "no health" as "no proxy": the watchdog
-            # would restore the network over a live proxy, and `up` would start a second one. So
-            # a PAC that could not be read is reported as such, next to an `intercepting` that
-            # is false because it is unproven — not because the PAC was seen to be off.
-            return service, False, str(error), runtime_error
+            # Health must keep answering. The CLI reads "no health" as "no proxy": `up` would start
+            # a second proxy. So a PAC that could not be read is reported as such, next to an
+            # `intercepting` that is false because it is unproven — not because the PAC was seen
+            # to be off.
+            return service, False, str(error), journal_error
         except OSError as error:
             # `networksetup` or `route` could not be launched at all. Same claim as above — the
             # PAC is unread, not off — and the same field says so.
-            return service, False, f"could not run networksetup: {error}", runtime_error
+            return service, False, f"could not run networksetup: {error}", journal_error
 
     @staticmethod
-    def _service() -> str | None:
-        return config.read_runtime().get("service") or netproxy.active_service()
+    def _service(journal: ownership.Journal) -> str | None:
+        """The service whose PAC this proxy's interception is judged on: the journal's, resolved by
+        *device* — a renamed Wi-Fi must not have its state read off whatever now carries the old
+        name (test_health_reads_the_journals_service_by_device_not_by_its_old_name) — and the
+        route's only when no record names one.
+        """
+        if isinstance(journal, ownership.SessionRecord):
+            return netproxy.resolve(journal.service)
+        found = netproxy.active_service()
+        return None if found is None else found.name
 
     # MARK: - Interception
 

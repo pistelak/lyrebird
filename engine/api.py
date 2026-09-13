@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import http.client
 import json
 import urllib.error
 import urllib.request
@@ -14,19 +15,36 @@ import ui
 
 CONTROL = config.CONTROL_ORIGIN
 _PROFILE_HEADER = "X-Lyrebird-Profile"  # says which profile this call means; see `_profile_mismatch`
+_HEALTH_PATH = "/__mock__/health"
+
+# The one transport. `ProxyHandler({})` because an `http_proxy` in the environment — or a macOS
+# proxy setting, ours included — must not route a loopback control request through a proxy whose
+# failure would read as "the port is silent": see test_health_ignores_a_configured_http_proxy.
+_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def _open(request: urllib.request.Request, timeout: float) -> Any:
+    """Every request in this module goes through here — which is also the seam the test suite
+    guards, so no test can reach a real control port by accident."""
+    return _OPENER.open(request, timeout=timeout)
 
 
 def _profile_mismatch(running: str) -> str:
     """The one sentence for "the port is held by someone else's proxy", wherever we learn it.
 
-    It names both fingerprints and both remedies: "a different profile" without them leaves the
-    operator no way to tell which one they are looking at.
+    It names both fingerprints: "a different profile" without them leaves the operator no way to
+    tell which one they are looking at.
+
+    It does *not* offer another control port. There is one PAC-owning session per user, so
+    `LYREBIRD_CONTROL_PORT=…` only changes the owner this run would request while the journal that
+    refused it stays exactly where it is — and the next `up` refuses again, with the operator now
+    believing the port was the problem. `lyrebird down` first is the remedy that works.
     """
     return (
         f"{ui.RED}a different profile is already running on port {config.CONTROL_PORT}{ui.R}\n"
         f"  running: {running}   requested: {config.PROFILE_FINGERPRINT}\n"
-        f"  stop it first (`lyrebird down`) or use a different --profile, or another port via\n"
-        f"  LYREBIRD_CONTROL_PORT."
+        f"  stop it first (`lyrebird down`), then start this profile — or point at the profile\n"
+        f"  that is running with --profile."
     )
 
 
@@ -52,18 +70,31 @@ def _refuse_a_foreign_profile(error: urllib.error.HTTPError, body: dict, unprove
         raise SystemExit(unproven_exit)
 
 
-def _get_json(path: str, timeout: float = 1.5, *, unproven_exit: int = 1) -> Any:
+def _get_json(path: str, timeout: float = 1.5, *, port: int | None = None, unproven_exit: int = 1) -> Any:
+    """The proxy's answer, or None for "nothing usable answered".
+
+    Both the URL and the `Host` header follow `port`: the control guard answers 421 to any other
+    Host, so a request to another session's port carrying this process's configured header would
+    read as unreachable — see test_health_on_a_port_answers_a_real_control_server.
+    """
+    origin = CONTROL if port is None else f"http://{config.CONTROL_HOST}:{port}"
+    host = config.CONTROL_HOST_HEADER if port is None else f"{config.CONTROL_HOST}:{port}"
     request = urllib.request.Request(
-        f"{CONTROL}{path}", headers={"Host": config.CONTROL_HOST_HEADER, _PROFILE_HEADER: config.PROFILE_FINGERPRINT}
+        f"{origin}{path}", headers={"Host": host, _PROFILE_HEADER: config.PROFILE_FINGERPRINT}
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with _open(request, timeout) as response:
             return json.loads(response.read().decode())
     except urllib.error.HTTPError as error:
         # A mismatch is an answer, not an outage: returning None would point at a dead port.
         _refuse_a_foreign_profile(error, _error_body(error), unproven_exit)
         return None
-    except Exception:  # any other failure means 'not reachable', which is the answer
+    except (OSError, http.client.HTTPException, ValueError, RecursionError):
+        # 'not reachable', which is the answer. `HTTPException` covers a response cut short
+        # (`IncompleteRead`), which is not an `OSError` and used to escape `up`'s final look with the
+        # PAC installed. Named rather than a bare `except Exception`: that also swallowed the test
+        # suite's transport guard, so a test that reached the network passed quietly — see
+        # test_an_unstubbed_health_reading_fails_before_any_network_access.
         return None
 
 
@@ -90,8 +121,10 @@ def _require_same_profile(health: dict, *, unproven_exit: int = 1) -> None:
         raise SystemExit(unproven_exit)
 
 
-def _health() -> dict | None:
-    return _get_json("/__mock__/health")
+def _health(port: int | None = None, *, unproven_exit: int = 1) -> dict | None:
+    """The health payload of the proxy on `port` (this profile's port when None), or None."""
+    payload = _get_json(_HEALTH_PATH, port=port, unproven_exit=unproven_exit)
+    return payload if isinstance(payload, dict) else None
 
 
 def _control(path: str, method: str = "GET", payload: Any = None, timeout: float = 3.0) -> Any:
@@ -108,7 +141,7 @@ def _control(path: str, method: str = "GET", payload: Any = None, timeout: float
         headers["content-type"] = "application/json"
     request = urllib.request.Request(f"{CONTROL}{path}", data=data, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with _open(request, timeout) as response:
             return json.loads(response.read().decode())
     except urllib.error.HTTPError as error:
         body = _error_body(error)

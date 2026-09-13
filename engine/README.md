@@ -4,9 +4,8 @@ Transparent MITM mock proxy for iOS-simulator development. **No app rebuild** �
 simulator's traffic through a local [mitmproxy](https://mitmproxy.org) via a host-scoped PAC and a
 CA trusted in the simulator, then applies per-endpoint overrides from a saved **scenario**.
 
-One `mitmdump` process with an embedded control server does the work, plus a small watchdog that
-restores your proxy settings if it dies. Rules live in memory, so a change made through the API
-takes effect instantly. Only the hosts listed in your profile are routed through the proxy — all
+One `mitmdump` process with an embedded control server does the work. Rules live in memory, so a
+change made through the API takes effect instantly. Only the hosts listed in your profile are routed through the proxy — all
 other Mac traffic stays DIRECT.
 
 ## Install (once)
@@ -75,12 +74,22 @@ deserves to live:
 
 | | |
 |---|---|
-| `~/Library/Application Support/Lyrebird/` | must survive: the active-scenario pointer, per-port runtime and lock files, and the CA |
+| `~/Library/Application Support/Lyrebird/` | must survive: the active-scenario pointer and the CA |
+| `~/Library/Application Support/Lyrebird/session/` | who holds the PAC: the session journal and its lock |
 | `~/Library/Logs/Lyrebird/` | for a person to read: the proxy log — this is where the Console app looks |
 
-Runtime files are keyed by **control port**, not profile, so `lyrebird down` finds the running
-instance from any directory. `LYREBIRD_STATE_DIR` collapses both underneath one directory,
-which is how the tests keep their writes in a temp tree and how you get a single thing to delete.
+There is **one PAC-owning session per user**, and `session/` is where it is written down:
+`session.json` names the owner, the network service it took, the proxy settings that were there
+before, and the proxy it started; `session.lock` is held for the whole of `up` and `down`, so two
+runs cannot both snapshot the PAC and both install. Because the journal — not a control port — is
+the authority, `lyrebird down` finds the running session from any profile, any port and any
+directory.
+
+`LYREBIRD_STATE_DIR` collapses the state and log directories underneath one directory, which is how
+the tests keep their writes in a temp tree and how you get a single thing to delete. It does **not**
+move `session/`: a PAC belongs to the Mac's network service, so who holds it is a fact about the
+user and not about a state directory, and two state directories that each recorded an owner of
+their own is exactly how a Mac ended up routed at a dead port.
 
 The active-scenario pointer and the log file are keyed by the **profile fingerprint** instead — the
 first 12 hex characters of a sha256 of the resolved profile path — so relocating a profile selects
@@ -106,10 +115,18 @@ is why it lives in `~/.config` and neither of the above does.
 ../bin/lyrebird logs                                          # last 60 lines; path on stderr
 ```
 
-`up` prints a **🔴 INTERCEPT ACTIVE** banner and starts a watchdog that notices within a couple of
-seconds if the proxy dies and makes a best-effort attempt to put your previous proxy settings
-back, so a crash is unlikely to strand the Mac pointing at a dead port. There is no idle
-self-shutdown.
+`up` prints a **🔴 INTERCEPT ACTIVE** banner only when one final observation says so: this proxy
+answering on the port, this PAC routing to it, on the service the default route still carries.
+Anything less unwinds — the settings go back, the journal goes away, the child is stopped — and it
+exits 1. Nothing restores the settings afterwards: a proxy that dies leaves the Mac pointing at a
+dead port until `lyrebird down` runs. `down` restores only what it can still prove is this
+session's: a PAC somebody else has since set is never overwritten — it prints the recorded settings,
+keeps the journal and exits 1. There is no idle self-shutdown.
+
+There is one session per user, so a second `up` is refused while a journal exists — even this
+profile's. To put a different scenario in front of the app on a running session:
+`lyrebird use NAME && lyrebird relaunch`. A default route that has moved to another network service
+is `lyrebird down && lyrebird up`, which restores the old service before anything takes the new one.
 
 After `up`, **relaunch the simulator app** — URLSession caches the proxy config it saw at launch —
 or set `simBundleId` in the profile and Lyrebird relaunches it for you. `up --use NAME` selects the
@@ -166,7 +183,8 @@ and what the PAC advertises — those are deliberately separate settings.
   are preserved. New traffic appears normally and event IDs are not reused.
 - `GET /health` (reports `intercepting` / `proxyUp` / `pacEnabled` / `simBundleId` / `scenarios` /
   `sequences` / `answers` / `loadProblems` / `scenariosNotWhole`, and `pacError` when the PAC could
-  not be read — `intercepting` is then unproven, not off) · `GET /recent`
+  not be read — `intercepting` is then unproven, not off — and `journalError` when the session
+  journal could not be read) · `GET /recent`
   - Each `/recent` entry carries an engine-assigned `id` (`evt-1`, `evt-2`, …) so a client polling
     the list can keep a selection on the row the user picked, including across repeats of the same
     request. Ids replace any caller-supplied value, stay unique across the list's rollover, and
@@ -463,13 +481,16 @@ opinion about it.
 ## Files
 
 `../bin/lyrebird` (launcher) → `cli.py`, which holds the `lyrebird` group and registers the
-commands its siblings define: `supervisor.py` (start, stop, PAC, watchdog) · `simulator.py` (which
+commands its siblings define: `supervisor.py` (start, stop, PAC, status) · `simulator.py` (which
 device, CA trust, relaunch) · `scenario.py` (scenarios and rules on the running proxy) ·
 `evidence.py` (runs, sequences, answer counts) · `offline.py` (`validate`, `explain-match` — reads
 files; the live `explain-match` only reads the proxy) · `api.py` (control-API calls and their profile scoping) · `ui.py`
 (colours, banner, log tail). Behind them: `addon.py` (mitmproxy addon) · `rules.py`
-(match/patch/validate, unit-tested) · `control.py` (aiohttp API) · `store.py` · `netproxy.py` ·
-`config.py` (paths, ports, host scoping) · `examples/`.
+(match/patch/validate, unit-tested) · `ownership.py` (the record types, the journal's codec and the
+classifier `up` and `down` act on) · `session.py` (the journal: root, lock, read, write) ·
+`procs.py` (the psutil adapter — is the process this journal names still that process?) ·
+`control.py` (aiohttp API) · `store.py` · `netproxy.py` · `config.py` (paths, ports, host scoping) ·
+`examples/`.
 
 ## Tests
 
@@ -484,16 +505,21 @@ addon, mitmproxy's `allow_hosts` and the generated PAC, with `test_addon.py`, `t
 and `test_launcher.py` covering the mitmproxy options, the `networksetup` parsers and how
 `bin/lyrebird` finds its engine.
 
-The largest of them is the CLI suite, split by concern the way the commands are:
-`test_cli_supervisor.py` (`up`, `down`, the watchdog, `status`, the lock) · `test_cli_evidence.py`
-(`sequence`, `reset`, `assert-answered`) · `test_cli_offline.py` (`explain-match` and `validate`) ·
-`test_cli_profile.py` (which profile a control call means) · `test_cli_launch.py` (selecting the
-scenario before the app is launched) · `test_cli_simulator.py` (which device the CA and the
-relaunch land on), over the doubles they share in `cli_doubles.py`. It is almost entirely failure
-paths — an unreadable runtime file, a foreign PAC, nothing to stop, a proxy running someone else's
-profile, a proxy that is alive but silent. Underneath it, `test_supervisor_process.py` covers the
-three process helpers `up` and `down` decide with (`_pid_alive`, `_pid_is_ours`, `_terminate`) at
-the `os.kill` and `ps` seams, including one real process that ignores SIGTERM.
+`test_ownership.py` pins the classifier every PAC decision goes through — the overlaps between
+"ours", "the baseline" and "already restored" — and the strictness of the journal's decoder.
+`test_session.py` covers the journal itself: what reads as unreadable rather than absent, and that a
+real process holding the lock makes the next command refuse rather than proceed. `test_procs.py`
+covers the psutil adapter at the process seam, with real children for the reuse and escalation
+paths.
+
+The largest of them is the CLI suite, split by concern the way the commands are: `test_cli_up.py` ·
+`test_cli_down.py` · `test_cli_status.py` (one file per command) ·
+`test_cli_evidence.py` (`sequence`, `reset`, `assert-answered`) · `test_cli_offline.py`
+(`explain-match` and `validate`) · `test_cli_profile.py` (which profile a control call means) ·
+`test_cli_launch.py` (selecting the scenario before the app is launched) · `test_cli_simulator.py`
+(which device the CA and the relaunch land on), over the doubles they share in `cli_doubles.py`. It
+is almost entirely failure paths — an unreadable journal, a foreign PAC, nothing to stop, a proxy
+running someone else's profile, a proxy that is alive but silent.
 
 All of it is hermetic — the simulator, the network and the proxy are replaced with doubles — so it
 checks the orchestration but cannot prove that CA trust, relaunch, PAC routing or teardown work

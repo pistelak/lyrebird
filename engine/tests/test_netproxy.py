@@ -10,6 +10,7 @@ import subprocess
 import pytest
 
 import netproxy
+import ownership as own
 
 
 def fake_run(monkeypatch, stdout="", returncode=0, stderr=""):
@@ -32,11 +33,11 @@ def fake_run(monkeypatch, stdout="", returncode=0, stderr=""):
 
 
 def test_pac_status_reads_url_and_enabled(monkeypatch, hosts):
+    """Verbatim, and nothing else: whether the URL is *ours* is relative to a port and a baseline,
+    which `ownership.classify` decides — a `ours` field here could only be relative to this
+    process's configured port, which is not the question `down` asks."""
     fake_run(monkeypatch, stdout=f"URL: {netproxy.pac_url()}\nEnabled: Yes\n")
-    status = netproxy.pac_status("Wi-Fi")
-    assert status.url == netproxy.pac_url()
-    assert status.enabled is True
-    assert status.ours is True
+    assert netproxy.pac_status("Wi-Fi") == own.Pac(url=netproxy.pac_url(), enabled=True)
 
 
 def test_pac_status_raises_when_networksetup_fails(monkeypatch):
@@ -51,23 +52,29 @@ def test_pac_status_treats_null_as_no_url(monkeypatch):
     """macOS prints `(null)` for an unset PAC. Read literally it would look like a foreign PAC,
     and `down` would decline to clear it."""
     fake_run(monkeypatch, stdout="URL: (null)\nEnabled: No\n")
-    status = netproxy.pac_status("Wi-Fi")
-    assert status.url == ""
-    assert status.enabled is False
+    assert netproxy.pac_status("Wi-Fi") == own.Pac(url="", enabled=False)
 
 
 # MARK: - intercepting()
 
 
 def test_intercepting_requires_both_enabled_and_ours(monkeypatch):
-    fake_run(monkeypatch, stdout=f"URL: {netproxy.pac_url()}\nEnabled: No\n")
-    assert netproxy.intercepting("Wi-Fi") is False
+    fake_run(monkeypatch, stdout=f"URL: {own.our_url(8088)}\nEnabled: No\n")
+    assert netproxy.intercepting("Wi-Fi", 8088) is False
 
     fake_run(monkeypatch, stdout="URL: http://proxy.example.com/corp.pac\nEnabled: Yes\n")
-    assert netproxy.intercepting("Wi-Fi") is False
+    assert netproxy.intercepting("Wi-Fi", 8088) is False
 
-    fake_run(monkeypatch, stdout=f"URL: {netproxy.pac_url()}\nEnabled: Yes\n")
-    assert netproxy.intercepting("Wi-Fi") is True
+    fake_run(monkeypatch, stdout=f"URL: {own.our_url(8088)}\nEnabled: Yes\n")
+    assert netproxy.intercepting("Wi-Fi", 8088) is True
+
+
+def test_intercepting_is_relative_to_the_port_it_was_asked_about(monkeypatch):
+    """ "Ours" is a claim about one session. A PAC pointing at port 9099 is not this session's
+    interception, and reading it as one is how `status` reported a stranger's proxy as its own."""
+    fake_run(monkeypatch, stdout=f"URL: {own.our_url(9099)}\nEnabled: Yes\n")
+    assert netproxy.intercepting("Wi-Fi", 8088) is False
+    assert netproxy.intercepting("Wi-Fi", 9099) is True
 
 
 # MARK: - active_service parsing
@@ -89,7 +96,7 @@ def test_active_service_maps_the_default_route_to_a_service_name(monkeypatch):
         return subprocess.CompletedProcess(args, 0, next(outputs), "")
 
     monkeypatch.setattr(netproxy.subprocess, "run", _subprocess_run)
-    assert netproxy.active_service() == "Wi-Fi"
+    assert netproxy.active_service() == own.ServiceRef(name="Wi-Fi", device="en0")
 
 
 @pytest.mark.parametrize("returncode", [0, 1], ids=["as macOS does", "if a release ever exits 1"])
@@ -111,94 +118,19 @@ def test_active_service_is_none_when_no_service_matches(monkeypatch):
     assert netproxy.active_service() is None
 
 
-# MARK: - Failures are raised, not swallowed
-
-
-def test_set_pac_raises_when_the_setting_does_not_take(monkeypatch):
-    """networksetup can exit 0 and not apply the change; the read-back is what catches that."""
-    fake_run(monkeypatch, stdout="URL: (null)\nEnabled: No\n", returncode=0)
-    with pytest.raises(netproxy.NetworkSetupError):
-        netproxy.set_pac("Wi-Fi")
-
-
-def fake_networksetup(monkeypatch, url="", enabled=False, *, fail=(), inert=()):
-    """A `networksetup` with state: `-set…` calls change what `-getautoproxyurl` reports next.
-
-    `fail` names verbs that exit non-zero; `inert` names verbs that exit 0 without applying —
-    the behaviour `set_pac`'s read-back exists for. Records the argv of every call.
-    """
-    state = {"url": url, "enabled": enabled}
-    calls = []
+def test_active_service_refuses_two_services_on_the_route_device(monkeypatch):
+    """Which of them holds the PAC is not something this Mac can be asked. Answering with the
+    first — as a `findall` over the listing did — records a session against a service whose PAC it
+    may never have installed."""
+    shared = SERVICE_ORDER.replace("Device: bridge0", "Device: en0")
+    outputs = iter(["  interface: en0\n", shared])
 
     def _subprocess_run(args, *rest, **kwargs):
-        calls.append(args)
-        verb = args[1]
-        if verb in fail:
-            return subprocess.CompletedProcess(args, 1, "", "failed")
-        if verb == "-getautoproxyurl":
-            out = f"URL: {state['url'] or '(null)'}\nEnabled: {'Yes' if state['enabled'] else 'No'}\n"
-            return subprocess.CompletedProcess(args, 0, out, "")
-        if verb not in inert:
-            if verb == "-setautoproxyurl":
-                state["url"] = args[3]
-                state["enabled"] = True  # as macOS does: setting the URL switches the PAC on
-            elif verb == "-setautoproxystate":
-                state["enabled"] = args[3] == "on"
-        return subprocess.CompletedProcess(args, 0, "", "")
+        return subprocess.CompletedProcess(args, 0, next(outputs), "")
 
     monkeypatch.setattr(netproxy.subprocess, "run", _subprocess_run)
-    return calls, state
-
-
-def test_restore_pac_reinstates_a_previous_url(monkeypatch, hosts):
-    calls, state = fake_networksetup(monkeypatch, netproxy.pac_url(), True)
-    netproxy.restore_pac("Wi-Fi", "http://proxy.example.com/corp.pac", enabled=True)
-    assert ["networksetup", "-setautoproxyurl", "Wi-Fi", "http://proxy.example.com/corp.pac"] in calls
-    assert ["networksetup", "-setautoproxystate", "Wi-Fi", "on"] in calls
-    assert state == {"url": "http://proxy.example.com/corp.pac", "enabled": True}
-
-
-@pytest.mark.parametrize("ours_enabled", [True, False])
-@pytest.mark.parametrize("recorded_flag", [True, False])
-def test_restore_pac_with_no_previous_url_only_switches_off(monkeypatch, hosts, ours_enabled, recorded_flag):
-    """macOS rejects an empty URL, so "there was nothing before" means disable, not clear — and
-    it means disable whatever flag was recorded next to the empty URL. Honouring `enabled: true`
-    there once left Lyrebird's own PAC switched on after `down` had said "direct networking
-    restored"."""
-    calls, state = fake_networksetup(monkeypatch, netproxy.pac_url(), ours_enabled)
-    netproxy.restore_pac("Wi-Fi", "", enabled=recorded_flag)
-    assert [c for c in calls if c[1].startswith("-set")] == [["networksetup", "-setautoproxystate", "Wi-Fi", "off"]]
-    assert state["enabled"] is False
-
-
-def test_restore_pac_raises_when_the_setting_does_not_take(monkeypatch, hosts):
-    """The same read-back `set_pac` has: exit 0 from `networksetup` is not evidence."""
-    fake_networksetup(monkeypatch, netproxy.pac_url(), True, inert=("-setautoproxyurl", "-setautoproxystate"))
     with pytest.raises(netproxy.NetworkSetupError):
-        netproxy.restore_pac("Wi-Fi", "http://proxy.example.com/corp.pac", enabled=True)
-
-
-def test_restore_pac_sets_the_state_after_the_url_because_setting_the_url_enables_it(monkeypatch, hosts):
-    """macOS switches the PAC on when its URL is set. State-then-URL restored a disabled corporate
-    PAC as an enabled one and then failed its own read-back."""
-    calls, state = fake_networksetup(monkeypatch, netproxy.pac_url(), True)
-    netproxy.restore_pac("Wi-Fi", "http://proxy.example.com/corp.pac", enabled=False)
-    verbs = [c[1] for c in calls if c[1].startswith("-set")]
-    assert verbs == ["-setautoproxyurl", "-setautoproxystate"]
-    assert state == {"url": "http://proxy.example.com/corp.pac", "enabled": False}
-
-
-@pytest.mark.parametrize("ours_enabled", [True, False])
-@pytest.mark.parametrize("enabled", [True, False])
-def test_restore_pac_partial_failure_leaves_the_url_ours_or_the_target(monkeypatch, hosts, ours_enabled, enabled):
-    """Whatever fails, the URL afterwards is one the retry in `cli._restore_previous_pac`
-    recognises: still ours, or already the one being restored. Never a third thing."""
-    target = "http://proxy.example.com/corp.pac"
-    for failing in ("-setautoproxyurl", "-setautoproxystate"):
-        _, state = fake_networksetup(monkeypatch, netproxy.pac_url(), ours_enabled, fail=(failing,))
-        with pytest.raises(netproxy.NetworkSetupError):
-            netproxy.restore_pac("Wi-Fi", target, enabled=enabled)
-        assert state["url"] in (netproxy.pac_url(), target), failing
+        netproxy.active_service()
 
 
 # MARK: - A command that never returns
@@ -207,7 +139,7 @@ def test_restore_pac_partial_failure_leaves_the_url_ours_or_the_target(monkeypat
 def test_every_command_is_bounded(monkeypatch, hosts):
     """The bound is on `subprocess.run` itself, so it is asserted there. Without it a hung
     `networksetup` took its whole caller with it — including `/health`, which runs on the proxy's
-    event loop and whose silence the watchdog reads as a dead proxy worth restoring over."""
+    event loop and whose silence the CLI reads as a dead proxy."""
     timeouts = []
 
     def _subprocess_run(args, *rest, **kwargs):
@@ -222,8 +154,8 @@ def test_every_command_is_bounded(monkeypatch, hosts):
 
 TIMES_OUT = {
     "pac_status": lambda: netproxy.pac_status("Wi-Fi"),
-    "set_pac": lambda: netproxy.set_pac("Wi-Fi"),
-    "restore_pac": lambda: netproxy.restore_pac("Wi-Fi", "http://proxy.example.com/corp.pac", True),
+    "write_pac_url": lambda: netproxy.write_pac_url("Wi-Fi", "http://proxy.example.com/corp.pac"),
+    "write_pac_state": lambda: netproxy.write_pac_state("Wi-Fi", True),
     "active_service": netproxy.active_service,
 }
 
@@ -326,4 +258,117 @@ def test_a_command_that_cannot_start_is_a_network_setup_error(monkeypatch):
 
     monkeypatch.setattr(netproxy.subprocess, "run", _subprocess_run)
     with pytest.raises(netproxy.NetworkSetupError, match="could not run `networksetup -getautoproxyurl Wi-Fi`"):
+        netproxy.pac_status("Wi-Fi")
+
+
+# MARK: - The by-device half: route, service table, resolution
+#
+# The PAC is set by *name* and the session records a *device*, because a name can be changed while
+# a session holds the PAC. Everything below is about the two failing the same way: a listing that
+# could not be parsed whole is not a service that is gone, and a service that is gone is a proof.
+
+LISTING = """An asterisk (*) denotes that a network service is disabled.
+(1) Wi-Fi
+(Hardware Port: Wi-Fi, Device: en0)
+
+(2) Thunderbolt Bridge
+(Hardware Port: Thunderbolt Bridge, Device: bridge0)
+
+(*) Old Ethernet
+(Hardware Port: Ethernet, Device: en5)
+
+"""
+
+
+def answering(monkeypatch, output, returncode=0, stderr=""):
+    """One `networksetup`/`route` answer for every call, with the kwargs recorded."""
+    calls = []
+
+    def _subprocess_run(args, *rest, **kwargs):
+        calls.append((args, kwargs))
+        return subprocess.CompletedProcess(args, returncode, output, stderr)
+
+    monkeypatch.setattr(netproxy.subprocess, "run", _subprocess_run)
+    return calls
+
+
+def test_service_table_reads_every_entry(monkeypatch):
+    answering(monkeypatch, LISTING)
+    assert netproxy.service_table() == [("Wi-Fi", "en0"), ("Thunderbolt Bridge", "bridge0"), ("Old Ethernet", "en5")]
+
+
+def test_service_table_keeps_a_disabled_service(monkeypatch):
+    """`(*)` means disabled, not absent: it is still listed and still holds its PAC, and dropping
+    it would have `down` refuse a session whose service was right there."""
+    answering(monkeypatch, LISTING)
+    assert ("Old Ethernet", "en5") in netproxy.service_table()
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        LISTING.replace("(Hardware Port: Ethernet, Device: en5)", "(Hardware Port: Ethernet, Devic"),
+        LISTING.replace("(2) Thunderbolt Bridge", "2) Thunderbolt Bridge"),
+        LISTING + "and one more thing\n",
+        LISTING.replace("An asterisk (*) denotes that a network service is disabled.\n", ""),
+        "",
+    ],
+    ids=["a truncated hardware line", "a mangled entry line", "a line after the last block", "no legend", "nothing"],
+)
+def test_service_table_rejects_a_partially_parsable_listing(monkeypatch, output):
+    """A `findall` drops what it cannot match: one truncated entry for the journalled device read
+    as gone, and `down` refused a session that had nothing wrong with it."""
+    answering(monkeypatch, output)
+    with pytest.raises(netproxy.NetworkSetupError):
+        netproxy.service_table()
+
+
+def test_route_device_reads_the_interface(monkeypatch):
+    answering(monkeypatch, "   gateway: 192.0.2.1\n  interface: en0\n")
+    assert netproxy.route_device() == "en0"
+
+
+def test_route_device_is_none_only_for_a_route_that_is_not_in_the_table(monkeypatch):
+    answering(monkeypatch, "", stderr="route: writing to routing socket: not in table\n")
+    assert netproxy.route_device() is None
+    answering(monkeypatch, "", returncode=1, stderr="route: bad address")
+    with pytest.raises(netproxy.NetworkSetupError):
+        netproxy.route_device()
+
+
+# MARK: - The single-command writers
+
+
+def test_write_pac_url_is_one_command(monkeypatch):
+    """No read-back here: that belongs to the recipe, which performs it against a name it resolved
+    once for the whole invocation."""
+    calls = answering(monkeypatch, "")
+    netproxy.write_pac_url("Wi-Fi", "http://proxy.example.com/corp.pac")
+    assert calls[0][0] == ["networksetup", "-setautoproxyurl", "Wi-Fi", "http://proxy.example.com/corp.pac"]
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize(("on", "word"), [(True, "on"), (False, "off")])
+def test_write_pac_state_is_one_command(monkeypatch, on, word):
+    calls = answering(monkeypatch, "")
+    netproxy.write_pac_state("Wi-Fi", on)
+    assert calls[0][0] == ["networksetup", "-setautoproxystate", "Wi-Fi", word]
+    assert len(calls) == 1
+
+
+def test_a_write_that_exits_non_zero_is_a_network_setup_error(monkeypatch):
+    answering(monkeypatch, "", returncode=1, stderr="** Error: The parameters were not valid.")
+    with pytest.raises(netproxy.NetworkSetupError):
+        netproxy.write_pac_state("Wi-Fi", True)
+
+
+def test_a_command_with_undecodable_output_is_a_network_setup_error(monkeypatch):
+    """`subprocess.run(text=True)` decodes strictly. Anything but a `NetworkSetupError` out of an
+    observation escapes every caller's mapping and tracebacks out of the command that met it."""
+
+    def _subprocess_run(args, *rest, **kwargs):
+        raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+    monkeypatch.setattr(netproxy.subprocess, "run", _subprocess_run)
+    with pytest.raises(netproxy.NetworkSetupError, match="could not be decoded"):
         netproxy.pac_status("Wi-Fi")

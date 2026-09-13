@@ -87,7 +87,7 @@ def test_control_surfaces_the_apis_detail_not_just_its_slug(profile, runner, mon
         body = io.BytesIO(json.dumps({"error": "invalid_payload", "detail": "match: unknown field 'kind'"}).encode())
         raise urllib.error.HTTPError("http://example.test", 400, "Bad Request", {}, body)
 
-    monkeypatch.setattr(urllib.request, "urlopen", raise_http)
+    monkeypatch.setattr(api, "_open", raise_http)
     result = runner.invoke(cli.cli, ["override", "add", '{"mode":"replace"}'])
     assert result.exit_code == 1
     assert "unknown field 'kind'" in result.output

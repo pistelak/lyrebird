@@ -1,34 +1,488 @@
-"""Doubles more than one CLI test module leans on: a fake `simctl` and the devices it reports,
-a fake proxy the CLI can select scenarios on, the health payloads the commands read, and the `up`
-that everything shelling out is stubbed under.
+"""Doubles more than one CLI test module leans on.
+
+Three of them carry the whole of the switch's world, and each can inject a failure or a death at
+the nth call — the shape a named example test needs to pin one window:
+
+* `FakeNetwork` replaces `netproxy._run` wholesale, so every *parser* under test is the real one
+  and only `networksetup` itself is invented;
+* `FakePsutil` replaces the module attribute `procs.psutil`, so the adapter's own error
+  normalisation is what runs;
+* `FakeHealth` replaces `api._open` — the one call every control request goes through — so a test
+  injects a transport answer and the real reader decodes it.
 
 Not named `test_*`, so pytest does not collect it. A double only one module uses lives in that
 module.
 """
 
 import json
+import os
 import subprocess
 import urllib.error
-import urllib.request
+import urllib.parse
 
 import click
+import psutil
 
 import api
 import config
 import netproxy
+import ownership
+import procs
+import session
 import simulator as sim
 import supervisor
+from ownership import Pac, ServiceRef
+
+# MARK: - the process table
 
 
-def _discovery_times_out():
-    """`netproxy.active_service` could not raise until its `route`/`networksetup` calls were given
-    a per-command bound. Now it can, and the three commands that ask it — `up`, `down`, `status` —
-    each ask outside any handler, so an uncaught error there is a traceback in the one place the
-    operator most needs an answer."""
-    raise netproxy.NetworkSetupError("`route -n get default` did not finish within 5s")
+class FakeProc:
+    """One process as the fake table knows it.
+
+    `errors` raises on a named call (`status`, `create_time`, `cmdline`, `uids`, `terminate`,
+    `kill`, `wait`), `waits` is the sequence `wait()` answers with, and `on_terminate`/`on_kill`
+    let a test say what the signal did — the real psutil exception classes throughout, because
+    `procs` catches those and nothing else.
+    """
+
+    def __init__(
+        self,
+        *,
+        create_time=1000.5,
+        cmdline=(),
+        uid=None,
+        status=psutil.STATUS_RUNNING,
+        errors=None,
+        waits=(),
+        on_terminate=None,
+        on_kill=None,
+        gone=False,
+        dies=False,
+    ):
+        self.create_time = create_time
+        self.cmdline = list(cmdline)
+        self.uid = os.getuid() if uid is None else uid
+        self.status = status
+        self.errors = dict(errors or {})
+        self.waits = list(waits)
+        self.on_terminate = on_terminate
+        self.on_kill = on_kill
+        self.gone = gone
+        # A process that dies when it is asked to, which is what an ordinary child does. Off by
+        # default so an adapter test can say "SIGTERM was ignored" by saying nothing.
+        self.dies = dies
 
 
-_CORPORATE = {"url": "http://proxy.example.com/corp.pac", "enabled": False}
+class _FakeProcess:
+    def __init__(self, table, pid, spec):
+        self.table = table
+        self.pid = pid
+        self.spec = spec
+
+    def _check(self, call):
+        error = self.spec.errors.get(call)
+        if error is not None:
+            raise error
+        if self.spec.gone:
+            raise psutil.NoSuchProcess(self.pid)
+
+    def status(self):
+        self._check("status")
+        return self.spec.status
+
+    def create_time(self):
+        self._check("create_time")
+        return self.spec.create_time
+
+    def cmdline(self):
+        self._check("cmdline")
+        if self.spec.status == psutil.STATUS_ZOMBIE:
+            raise psutil.ZombieProcess(self.pid)  # as macOS answers for a zombie
+        return list(self.spec.cmdline)
+
+    def terminate(self):
+        self._check("terminate")
+        self.table.signalled.append((self.pid, "terminate"))
+        if self.spec.on_terminate is not None:
+            self.spec.on_terminate(self.spec)
+        elif self.spec.dies:
+            self.spec.gone = True
+
+    def kill(self):
+        self._check("kill")
+        self.table.signalled.append((self.pid, "kill"))
+        if self.spec.on_kill is not None:
+            self.spec.on_kill(self.spec)
+        elif self.spec.dies:
+            self.spec.gone = True
+
+    def wait(self, timeout=None):
+        self._check("wait")
+        outcome = self.spec.waits.pop(0) if self.spec.waits else 0
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+
+def proxy_argv(port, *, confdir="/tmp/lyrebird-tests/mitmproxy"):
+    """A proxy's argv as `up` builds it — exactly the tokens `procs.is_proxy_on` reads."""
+    return [
+        "/opt/lyrebird/.venv/bin/mitmdump",
+        "--set",
+        f"lyrebird_control_port={port}",
+        "--listen-host",
+        "127.0.0.1",
+        "--listen-port",
+        "8080",
+        "--set",
+        f"confdir={confdir}",
+        "-s",
+        "/opt/lyrebird/engine/addon.py",
+    ]
+
+
+class FakePsutil:
+    """The process table `procs` sees. One `monkeypatch.setattr(procs, "psutil", fake)` is the
+    whole seam, so the adapter's own error normalisation is what is under test rather than a
+    double's idea of it. Counts constructions, so a test can prove inspection and signal went
+    through one instance."""
+
+    Error = psutil.Error
+    NoSuchProcess = psutil.NoSuchProcess
+    ZombieProcess = psutil.ZombieProcess
+    AccessDenied = psutil.AccessDenied
+    TimeoutExpired = psutil.TimeoutExpired
+    STATUS_ZOMBIE = psutil.STATUS_ZOMBIE
+    STATUS_RUNNING = psutil.STATUS_RUNNING
+
+    def __init__(self, processes=None):
+        self.processes = dict(processes or {})
+        self.constructed = []
+        self.signalled = []
+        self._next_pid = 5000
+
+    def Process(self, pid):  # noqa: N802 — the name psutil uses, which `procs` calls
+        self.constructed.append(pid)
+        spec = self.processes.get(pid)
+        if spec is None:
+            raise psutil.NoSuchProcess(pid)
+        construct = spec.errors.get("construct")
+        if construct is not None:
+            raise construct
+        return _FakeProcess(self, pid, spec)
+
+    # MARK: - what the CLI tests put in it
+
+    def spawn(self, port, *, create_time=None, pid=None, confdir=None):
+        """Register a marked Lyrebird proxy, and return its pid."""
+        if pid is None:
+            pid = self._next_pid
+            self._next_pid += 1
+        self.processes[pid] = FakeProc(
+            cmdline=proxy_argv(port, **({"confdir": confdir} if confdir else {})),
+            create_time=1000.0 + pid if create_time is None else create_time,
+            dies=True,
+        )
+        return pid
+
+    def ref(self, pid):
+        return ownership.Ref(pid=pid, create_time=self.processes[pid].create_time)
+
+    def spawn_ref(self, port, **kwargs):
+        return self.ref(self.spawn(port, **kwargs))
+
+    def marked_pid(self, port):
+        """The live pid of the marked proxy on this port, or None."""
+        for pid, spec in self.processes.items():
+            if spec.gone:
+                continue
+            if procs.is_proxy_on(list(spec.cmdline), port):
+                return pid
+        return None
+
+    def alive(self, pid):
+        spec = self.processes.get(pid)
+        return spec is not None and not spec.gone
+
+
+class FakePopen:
+    """What `subprocess.Popen` hands back: a pid, and the exit check `up` polls."""
+
+    def __init__(self, pid, table=None):
+        self.pid = pid
+        self._table = table
+
+    def poll(self):
+        spec = None if self._table is None else self._table.processes.get(self.pid)
+        return None if spec is None or not spec.gone else 1
+
+
+def spawning_proxy(monkeypatch, table, *, port=None, raises=None, pid=None, dead=False):
+    """`subprocess.Popen` for the proxy `up` starts: registers a marked pid in `table`.
+
+    `dead=True` is the child that exits the instant it is started — a malformed profile, a port
+    already bound — which is the case `up` has to report with the log's last lines.
+    """
+    started = []
+
+    def popen(argv, **kwargs):
+        if raises is not None:
+            raise raises
+        child = table.spawn(config.CONTROL_PORT if port is None else port, pid=pid)
+        if dead:
+            table.processes[child].gone = True
+        started.append(child)
+        return FakePopen(child, table)
+
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    return started
+
+
+# MARK: - the network
+
+
+_LEGEND = "An asterisk (*) denotes that a network service is disabled."
+
+
+class FakeNetwork:
+    """Every `networksetup`/`route` command, rendered as the real ones answer.
+
+    It replaces `netproxy._run`, so the parsers, the recipes and the read-backs under test are the
+    production ones. Failure is injected by *call number*, which is what lets a test land a foreign
+    write inside a window that has no other name.
+    """
+
+    def __init__(self, services=None, route="en0"):
+        given = services or {"Wi-Fi": ("en0", Pac("", False))}
+        self.services = {name: [device, pac] for name, (device, pac) in given.items()}
+        self.route = route
+        self.calls = []
+        self.disabled = set()
+        self._fail_at = {}
+        self._die_at = {}
+        self._write_at = {}
+        self._inert_at = set()
+        self._inert_all = False
+
+    # MARK: - setup
+
+    def install(self, monkeypatch):
+        monkeypatch.setattr(netproxy, "_run", self._run)
+        return self
+
+    def pac(self, name):
+        return self.services[name][1]
+
+    def set_pac(self, name, pac):
+        self.services[name][1] = pac
+
+    def ref(self, name):
+        return ServiceRef(name=name, device=self.services[name][0])
+
+    def rename(self, name, to):
+        self.services[to] = self.services.pop(name)
+
+    def fail_at(self, call, detail="networksetup: command failed"):
+        """The nth command exits non-zero, which `check=True` turns into a NetworkSetupError."""
+        self._fail_at[call] = detail
+        return self
+
+    def die_at(self, call, detail=None):
+        """The nth command does not answer at all."""
+        self._die_at[call] = detail or "did not finish within 5s"
+        return self
+
+    def write_at(self, call, name, pac):
+        """Somebody else's PAC edit lands immediately *before* the nth command runs."""
+        self._write_at.setdefault(call, []).append((name, pac))
+        return self
+
+    def inert_at(self, call):
+        """The nth setter exits 0 and changes nothing — `networksetup` really does this."""
+        self._inert_at.add(call)
+        return self
+
+    def inert_setters(self):
+        """*Every* setter exits 0 and changes nothing, for the tests about what a read-back is for
+        rather than about which command number it lands on."""
+        self._inert_all = True
+        return self
+
+    # MARK: - the commands
+
+    def _run(self, args, check=False):
+        args = list(args)
+        self.calls.append(args)
+        call = len(self.calls)
+        for name, pac in self._write_at.get(call, ()):
+            self.services[name][1] = pac
+        if call in self._die_at:
+            raise netproxy.NetworkSetupError(f"`{' '.join(args)}` {self._die_at[call]}")
+        if call in self._fail_at:
+            result = subprocess.CompletedProcess(args, 1, "", self._fail_at[call])
+            if check:
+                raise netproxy.NetworkSetupError(f"`{' '.join(args)}` failed: {self._fail_at[call]}")
+            return result
+        out = self._render(args, inert=self._inert_all or call in self._inert_at)
+        if isinstance(out, subprocess.CompletedProcess):
+            return out
+        if check and out is None:
+            raise netproxy.NetworkSetupError(f"`{' '.join(args)}` failed: no such service")
+        return subprocess.CompletedProcess(args, 0 if out is not None else 1, out or "", "")
+
+    def _render(self, args, *, inert):
+        if args[:2] == ["route", "-n"]:
+            return self._route(args)
+        option = args[1] if len(args) > 1 else ""
+        if option == "-listnetworkserviceorder":
+            return self._order()
+        if option == "-getautoproxyurl":
+            return self._get(args[2])
+        if option == "-setautoproxyurl":
+            return self._set_url(args[2], args[3], inert=inert)
+        if option == "-setautoproxystate":
+            return self._set_state(args[2], args[3] == "on", inert=inert)
+        raise AssertionError(f"a test reached an unexpected network command: {args}")
+
+    def _route(self, args):
+        if self.route is None:
+            # `route` exits 0 and says so on stderr: the one output that means "no default route".
+            return subprocess.CompletedProcess(args, 0, "", "   route: writing to routing socket: not in table\n")
+        return f"   route to: default\n   interface: {self.route}\n   flags: <UP,GATEWAY,DONE>\n"
+
+    def _order(self):
+        lines = [_LEGEND, ""]
+        for index, (name, (device, _)) in enumerate(self.services.items(), start=1):
+            marker = "*" if name in self.disabled else str(index)
+            lines.append(f"({marker}) {name}")
+            lines.append(f"(Hardware Port: {name}, Device: {device})")
+            lines.append("")
+        return "\n".join(lines)
+
+    def _get(self, name):
+        if name not in self.services:
+            return None
+        pac = self.services[name][1]
+        return f"URL: {pac.url or '(null)'}\nEnabled: {'Yes' if pac.enabled else 'No'}\n"
+
+    def _set_url(self, name, url, *, inert):
+        if name not in self.services:
+            return None
+        if not inert:
+            # As macOS does: setting the URL switches the PAC on as a side effect.
+            self.services[name][1] = Pac(url=url, enabled=True)
+        return ""
+
+    def _set_state(self, name, on, *, inert):
+        if name not in self.services:
+            return None
+        if not inert:
+            self.services[name][1] = Pac(url=self.services[name][1].url, enabled=on)
+        return ""
+
+    # MARK: - what a test asks it afterwards
+
+    def commands(self, *options):
+        """Every command whose option is one of these, in order."""
+        return [call for call in self.calls if len(call) > 1 and call[1] in options]
+
+    def setters(self):
+        return self.commands("-setautoproxyurl", "-setautoproxystate")
+
+
+# MARK: - health
+
+
+def _health_payload(**extra):
+    """The envelope every health response carries, so a double cannot pin a shape the API never
+    sends — and so a command that starts reading another field fails here rather than passing
+    against a payload that omitted it."""
+    return {
+        "pid": 1,
+        "scenarios": ["default"],
+        "activeScenario": "default",
+        "overrideCount": 1,
+        "simBundleId": None,
+        "proxyPort": 8080,
+        "profileFingerprint": config.PROFILE_FINGERPRINT,
+        "sequences": [],
+        "answers": [],
+        **extra,
+    }
+
+
+class _Response:
+    """What `urllib`'s opener hands back, as much of it as `api` reads."""
+
+    def __init__(self, payload):
+        self._payload = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
+
+    def read(self):
+        return self._payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+
+class _Silent:
+    """Nothing answers on the port — the transport raises, as it does for a closed one."""
+
+
+SILENT = _Silent()
+
+
+def answering(pid=4321, **extra):
+    """An answer from a proxy with this pid."""
+    return _Response(_health_payload(pid=pid, **extra))
+
+
+def body(payload):
+    """An answer with exactly this body — for the shapes `_health_payload` cannot express."""
+    return _Response(payload)
+
+
+class FakeHealth:
+    """Answers `api._open`, and records the port it was asked about.
+
+    With a `table` and no sequence it answers for whatever proxy that table holds on the port asked
+    — which is what makes an `up` test's health follow the proxy it actually started.
+    """
+
+    def __init__(self, table=None, *, sequence=None, payload=None):
+        self.table = table
+        self.sequence = None if sequence is None else list(sequence)
+        self.payload = payload if callable(payload) else dict(payload or {})
+        self.asked = []
+
+    def install(self, monkeypatch):
+        monkeypatch.setattr(api, "_open", self._open)
+        return self
+
+    def _open(self, request, timeout=1.5):
+        asked = urllib.parse.urlsplit(request.full_url).port or config.CONTROL_PORT
+        self.asked.append(asked)
+        answer = self._answer(asked)
+        if isinstance(answer, _Silent):
+            raise urllib.error.URLError("[Errno 61] Connection refused")
+        if isinstance(answer, BaseException):
+            raise answer
+        return answer
+
+    def _answer(self, asked):
+        if self.sequence:
+            answer = self.sequence.pop(0) if len(self.sequence) > 1 else self.sequence[0]
+            return answer(asked) if callable(answer) else answer
+        if self.table is None:
+            return SILENT
+        pid = self.table.marked_pid(asked)
+        extra = self.payload() if callable(self.payload) else self.payload
+        return SILENT if pid is None else answering(pid, **extra)
+
+
+# MARK: - simulators
 
 
 # Devices with the shape `simctl list devices --json` reports, and nothing that could reach a real
@@ -74,57 +528,105 @@ def fake_simctl(monkeypatch, devices, *, list_status=0, keychain_status=0, launc
     return calls
 
 
-_LIVE = {"pid": 4321, "activeScenario": "default", "scenarios": ["default"], "overrideCount": 0, "proxyPort": 8080}
+# MARK: - journals
 
 
-def _up_after_a_crash(profile, monkeypatch, pac_status, *, service="Wi-Fi", health=None, stub_trust=True):
-    """`up` with the proxy dead, a runtime file the watchdog kept (it could not restore), and the
-    PAC in whatever state `pac_status` reports. Everything that shells out is stubbed. `health` is
-    the sequence of answers `_health` gives; by default dead at the first look and live after.
+WIFI = ServiceRef(name="Wi-Fi", device="en0")
+CORPORATE = Pac("http://proxy.example.com/corp.pac", True)
 
-    `stub_trust=False` leaves the real `trust_ca_in_sim` in place, for the tests that are about
-    *which device* the CA goes to — a stub swallows the simctl call those tests exist to inspect.
+
+def owner(port=None, fingerprint=None, state_root=None):
+    return ownership.Owner(
+        control_port=config.CONTROL_PORT if port is None else port,
+        profile_fingerprint=config.PROFILE_FINGERPRINT if fingerprint is None else fingerprint,
+        state_root=str(config.STATE_ROOT) if state_root is None else state_root,
+    )
+
+
+def record(proxy, *, baseline=None, service=WIFI, owned_by=None, simulator=None):
+    return ownership.SessionRecord(
+        version=ownership.SESSION_VERSION,
+        owner=owned_by or owner(),
+        service=service,
+        baseline=Pac("", False) if baseline is None else baseline,
+        proxy=proxy,
+        simulator=simulator,
+    )
+
+
+def write_journal(journal):
+    """Put a record in the (monkeypatched) per-user root, the way `up` would."""
+    store = session.Session()
+    store.ensure_root()
+    if journal is not None:
+        store.write(journal)
+    return store
+
+
+class World:
+    """The three doubles and the journal, installed together — the state one CLI invocation reads."""
+
+    def __init__(self, network, table, health, store):
+        self.network = network
+        self.table = table
+        self.health = health
+        self.session = store
+
+    def journal(self):
+        return self.session.read()
+
+    def pac(self, name="Wi-Fi"):
+        return self.network.pac(name)
+
+
+def world(monkeypatch, journal, *, services=None, route="en0", table=None, health=None):
+    """A machine with this journal, this network and this process table, and nothing real behind
+    any of them."""
+    table = table if table is not None else FakePsutil()
+    monkeypatch.setattr(procs, "psutil", table)
+    network = FakeNetwork(services, route=route).install(monkeypatch)
+    reader = (health if health is not None else FakeHealth(table)).install(monkeypatch)
+    return World(network, table, reader, write_journal(journal))
+
+
+def ours(port=None):
+    return Pac(ownership.our_url(config.CONTROL_PORT if port is None else port), True)
+
+
+def ours_off(port=None):
+    return Pac(ownership.our_url(config.CONTROL_PORT if port is None else port), False)
+
+
+# MARK: - `up`
+
+
+def up_after(monkeypatch, profile, journal, network, table, *, health=None, stub_trust=True, bundle_id=None):
+    """`up` over a given journal, with everything that shells out replaced.
+
+    The journal is written through `Session.write` into the monkeypatched root, pids come from
+    `table`, and the PAC is state in `network` rather than a callable. Returns the `FakeHealth` in
+    force.
     """
-    (profile / "profile.json").write_text('{"hosts": ["api.example.com"]}', encoding="utf-8")
+    sim_field = f', "simBundleId": "{bundle_id}"' if bundle_id else ""
+    (profile / "profile.json").write_text(f'{{"hosts": ["api.example.com"]{sim_field}}}', encoding="utf-8")
+    config.reload_profile()
     config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
     config.LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-    config.write_runtime({"proxyPid": 99, "service": "Wi-Fi", "previousPac": _CORPORATE})
-    answers = iter([None] if health is None else health)
-
-    class Proc:
-        pid = 4321
-
-    monkeypatch.setattr(api, "_health", lambda: next(answers, _LIVE))
-    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: Proc())
+    write_journal(journal)
+    network.install(monkeypatch)
+    monkeypatch.setattr(procs, "psutil", table)
+    reader = (health or FakeHealth(table)).install(monkeypatch)
+    spawning_proxy(monkeypatch, table)
     monkeypatch.setattr(supervisor, "_start_fresh_log", lambda: None)
     if stub_trust:
         monkeypatch.setattr(sim, "trust_ca_in_sim", lambda simulator: (True, "trusted"))
     # One booted simulator, so device resolution succeeds without reading this machine's. A test
     # about several booted devices calls `fake_simctl` again with its own list.
     fake_simctl(monkeypatch, [_PHONE])
-    monkeypatch.setattr(netproxy, "active_service", lambda: service)
-    installed = {"ours": False}  # `set_pac` installs ours, and every read after it sees that
+    return reader
 
-    def read(service):
-        if installed["ours"]:
-            return netproxy.PacStatus(netproxy.pac_url(), True, True)
-        return pac_status(service)
 
-    def install(service):
-        installed["ours"] = True
-
-    monkeypatch.setattr(netproxy, "pac_status", read)
-    monkeypatch.setattr(netproxy, "set_pac", install)
-    # The crashed proxy (99) is gone; everything else a test names — the live proxy, a watchdog —
-    # is alive and this Lyrebird's. `up` checks the recorded pid before it spawns over it, and
-    # the answering pid before it adopts it, so "ours for every pid" would refuse every start.
-    monkeypatch.setattr(supervisor, "_pid_alive", lambda pid: pid not in (None, 99))
-    monkeypatch.setattr(
-        supervisor,
-        "_identity_of",
-        lambda pid, marker: supervisor.Identity.GONE if pid in (None, 99) else supervisor.Identity.OURS,
-    )
-    monkeypatch.setattr(supervisor, "_spawn_watchdog", lambda service: 4242)
+# MARK: - sequences and answers, shared by the evidence tests
 
 
 _BASE_SEQ = {
@@ -137,24 +639,6 @@ _BASE_SEQ = {
     "hasOverrun": False,
     "serves": {},
 }
-
-
-def _health_payload(**extra):
-    """The envelope every health response carries, so a double cannot pin a shape the API never
-    sends — and so a command that starts reading another field fails here rather than passing
-    against a payload that omitted it."""
-    return {
-        "pid": 1,
-        "scenarios": ["default"],
-        "activeScenario": "default",
-        "overrideCount": 1,
-        "simBundleId": None,
-        "proxyPort": 8080,
-        "profileFingerprint": config.PROFILE_FINGERPRINT,
-        "sequences": [],
-        "answers": [],
-        **extra,
-    }
 
 
 def _polling(states, build):
@@ -217,12 +701,23 @@ def _answers_with_a_conflict(monkeypatch, payload=None):
             ),
         )
 
-    monkeypatch.setattr(urllib.request, "urlopen", raise_http)
+    monkeypatch.setattr(api, "_open", raise_http)
 
 
-def _status_network(monkeypatch):
-    monkeypatch.setattr(netproxy, "active_service", lambda: "Wi-Fi")
-    monkeypatch.setattr(netproxy, "pac_status", lambda service: netproxy.PacStatus(netproxy.pac_url(), True, True))
+def _status_network(monkeypatch, table=None, *, port=None, service=WIFI):
+    """A machine whose PAC is this session's, with a journal that says so — what `status` needs to
+    reach exit 0."""
+    table = table or FakePsutil()
+    monkeypatch.setattr(procs, "psutil", table)
+    control_port = config.CONTROL_PORT if port is None else port
+    proxy = table.spawn_ref(control_port)
+    network = FakeNetwork({service.name: (service.device, Pac(ownership.our_url(control_port), True))})
+    network.install(monkeypatch)
+    write_journal(record(proxy, service=service))
+    return {"network": network, "table": table, "proxy": proxy}
+
+
+# MARK: - a proxy the CLI can select scenarios on
 
 
 _SCENARIOS = {"default": 200, "orders-outage": 500, "checkout/orders-outage": 503}
@@ -290,25 +785,24 @@ def _fake_proxy(
     return state
 
 
-def _live(state):
-    reading = {
-        **_LIVE,
+def _scenario_payload(state):
+    """The scenario fields a live proxy reports, overlaid on the health envelope."""
+    payload = {
         "activeScenario": state["active"],
         "scenarios": state["scenarios"],
         "loadProblems": state["loadProblems"],
         "scenariosNotWhole": state["notWhole"],
     }
     if state["notWhole"] is None:  # an engine older than the fields, which cannot say
-        del reading["loadProblems"]
-        del reading["scenariosNotWhole"]
-    return reading
+        del payload["loadProblems"]
+        del payload["scenariosNotWhole"]
+    return payload
 
 
-def _up_with_a_proxy(profile, monkeypatch, state, *, adopt=False, bundle_id="com.example.Store"):
-    """`up` against `state`'s proxy — either starting it, or adopting one already running."""
-    _up_after_a_crash(profile, monkeypatch, lambda service: netproxy.PacStatus(netproxy.pac_url(), True, True))
-    sim = f', "simBundleId": "{bundle_id}"' if bundle_id else ""
-    (profile / "profile.json").write_text(f'{{"hosts": ["api.example.com"]{sim}}}', encoding="utf-8")
-    # Health tracks the fake proxy, so the last look reports the scenario that was actually selected.
-    first = iter([] if adopt else [None])  # dead at the first look unless we are adopting one
-    monkeypatch.setattr(api, "_health", lambda: next(first, _live(state)))
+def _up_with_a_proxy(profile, monkeypatch, state, *, bundle_id="com.example.Store"):
+    """`up` against `state`'s proxy: it starts it, and the launch meets whatever it selected."""
+    table = FakePsutil()
+    network = FakeNetwork({"Wi-Fi": ("en0", Pac("", False))})
+    health = FakeHealth(table, payload=lambda: _scenario_payload(state))
+    up_after(monkeypatch, profile, None, network, table, health=health, bundle_id=bundle_id)
+    return {"table": table, "network": network}

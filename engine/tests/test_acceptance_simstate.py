@@ -16,15 +16,33 @@ from __future__ import annotations
 import importlib.util
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
-_spec = importlib.util.spec_from_file_location(
-    "simstate", Path(__file__).resolve().parent / "acceptance" / "simstate.py"
-)
-simstate = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(simstate)
+_ACCEPTANCE = Path(__file__).resolve().parent / "acceptance"
+
+
+def _load(file: str, name: str | None = None):
+    """Load a module out of `tests/acceptance/` by path.
+
+    `simstate` is registered under its own name because the harness imports it by that name, as
+    pytest's own collection of that directory does. The harness itself is *not* registered as
+    `conftest`: pytest already holds the root `tests/conftest.py` under that name, and replacing it
+    would take the whole suite's fixtures with it.
+    """
+    name = name or file
+    if name in sys.modules:
+        return sys.modules[name]
+    spec = importlib.util.spec_from_file_location(name, _ACCEPTANCE / f"{file}.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+simstate = _load("simstate")
 
 # Short and readable, like the other fixtures here: a real udid in the repository is a
 # machine-specific value nothing can reproduce, and the privacy gate refuses it.

@@ -1,378 +1,143 @@
-"""Starting and stopping the proxy: the lock, the PAC, the watchdog, and what `up` must achieve."""
+"""Starting and stopping the proxy: the session journal, the PAC, and what `up` must achieve.
+
+The journal is the authority: one record per user, under one lock, saying who holds the PAC and
+what was there before. There is one session per user, so a second `up` is refused while a journal
+exists, and `down` finds that record from any profile, port or directory — it is the only recovery
+command there is. Nothing restores the settings automatically: a proxy that dies leaves the Mac
+routed at a dead port until someone runs `lyrebird down`.
+
+`up` exits 0 only when one final observation says so: this proxy answering on the port, this PAC
+routing to it, on the service the default route still carries. Anything less unwinds — the network
+goes back and the journal goes away — because a half-acquired session nobody was told about is the
+failure this file exists to prevent.
+"""
 
 from __future__ import annotations
 
-import contextlib
-import fcntl
+import dataclasses
 import json
 import os
-import re
 import shutil
-import signal
 import subprocess
-import sys
 import time
-from enum import Enum
 from pathlib import Path
-from typing import Any
 
 import click
 
 import api
 import config
 import netproxy
+import ownership
+import procs
+import session
 import simulator as sim
 import store
 import ui
+from ownership import Absent, Configured, Off, Owner, Pac, PacClass, ServiceRef, SessionRecord, Unreadable
 
 MITMDUMP = config.ROOT / ".venv" / "bin" / "mitmdump"
-_DOWN_WAIT_SECONDS = 5.0  # how long `down` waits for SIGTERM to take effect
-_KILL_WAIT_SECONDS = 2.0  # and for SIGKILL, which the kernel honours or the process is unkillable
-_WATCHDOG_RESTORE_ATTEMPTS = 5  # `networksetup` fails transiently; one try is not a restore
-# An attempt is four `networksetup`/`route` calls, each bounded by `netproxy._COMMAND_TIMEOUT`,
-# so a hung command costs ~20s per attempt rather than the whole restore.
-_LOCK_WAIT_SECONDS = 60.0  # how long `up` waits for another `up`, or a watchdog restore, to finish
+_STARTUP_DEADLINE_SECONDS = 12.0
+
+_DOWN = "run `lyrebird down`"
 
 
-def _discover_service() -> tuple[str | None, str | None]:
-    """The service carrying the default route, or the reason we could not find out.
-
-    `netproxy.active_service` can raise now that its `route`/`networksetup` calls are bounded, and
-    the three commands that ask are the three that must not die of it: `status --json` would print
-    no JSON, `down` would abort before restoring anything, and `up` would exit with a proxy running
-    and no pid recorded. The substitution is made here rather than inside `active_service`, because
-    returning None there would claim "no default route" about a command that never answered — and
-    each caller below has both a fallback (the service recorded by the last `up`) and somewhere to
-    put the reason, which `active_service` has neither of.
-    """
-    try:
-        return netproxy.active_service(), None
-    except netproxy.NetworkSetupError as error:
-        return None, str(error)
+# MARK: - the session and the owner
 
 
-class ProcessCheckError(RuntimeError):
-    """A process could not be inspected or signalled, so nothing about it is known — which is a
-    different claim from "it is not running", and the one `down` used to make in its place."""
+def _session() -> session.Session:
+    """Every construction in this module goes through here, so the test suite's one patch of
+    `session.default_root` reaches all of them."""
+    return session.Session()
 
 
-class Termination(Enum):
-    """What `_terminate` achieved. `gone` is the question callers ask: is the process this pid
-    named no longer running? NOT_OURS answers yes as surely as NOT_RUNNING — a pid is held by one
-    process at a time, so one found under another command line has been reused, which only
-    happens after the original died. It is "not stopped by us", never "not stopped"."""
-
-    NOT_RUNNING = "not running"
-    NOT_OURS = "not ours"  # the pid is alive under another command line: reused, left alone
-    STOPPED = "stopped"
-    STILL_RUNNING = "still running"  # alive after SIGTERM and SIGKILL
-    UNVERIFIED = "unverified"  # `_stop` only: a check failed, and the reason has been printed
-
-    @property
-    def gone(self) -> bool:
-        """The process this pid named no longer runs — whether we stopped it or found it gone."""
-        return self in (Termination.STOPPED, Termination.NOT_RUNNING, Termination.NOT_OURS)
-
-
-def _pid_alive(pid: int | None) -> bool:
-    """Whether a process with this pid exists. Raises rather than answering when it cannot tell.
-
-    EPERM is an answer — the pid exists and belongs to somebody we may not signal — and reading it
-    as "dead" let `down` delete the record of a proxy that was still running under another user.
-    See test_pid_alive_reads_permission_denied_as_alive.
-    """
-    if not pid:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError as error:
-        raise ProcessCheckError(f"could not check pid {pid}: {error}") from None
-    return True
-
-
-def _identity(marker: str) -> tuple[bool, list[tuple[str, str]]]:
-    """What a process with this marker must say on its command line to be this instance's:
-    (required, [(option, expected value)]). The proxy needs only the control port — one process
-    can bind it — and an older proxy without the option is accepted, so an upgrade does not strand
-    the one it finds running. The watchdog needs the state root too: watchdogs of two state roots
-    can share a port, and each restores from its own record. A watchdog without the tokens is
-    not ours: one is cheap to replace, and adopting another root's used to leave this root's
-    record unwatched. See test_pid_is_ours_refuses_a_watchdog_of_another_state_root.
-    """
-    if marker == "_watchdog":
-        return True, [("--control-port ", str(config.CONTROL_PORT)), ("--state-root-id ", config.state_root_id())]
-    return False, [
-        ("--set lyrebird_control_port=", str(config.CONTROL_PORT)),
-        ("--set lyrebird_state_root_id=", config.state_root_id()),
-    ]
-
-
-def _first_token(option: str, command: str) -> str | None:
-    """The value after the *first* occurrence of the option as a whole word. Ours is the first
-    thing after the executable in both argvs, so a state directory or a service named like the
-    option — `Office --control-port 9099` — comes later and is not consulted."""
-    match = re.search(r"(?:^|\s)" + re.escape(option) + r"(\S+)(?=\s|$)", command)
-    return match.group(1) if match else None
-
-
-class Identity(Enum):
-    """Whose process a pid is, read off its command line."""
-
-    GONE = "gone"
-    OURS = "ours"
-    THEIRS = "theirs"  # a Lyrebird process, and demonstrably another instance's
-    UNMARKED = "unmarked"  # a Lyrebird proxy older than the identity tokens: whose, it cannot say
-
-
-def _pid_is_ours(pid: int | None, marker: str) -> bool:
-    """PIDs are reused. Never signal one whose command line isn't recognisably ours.
-
-    Ours means this instance's, not any Lyrebird's: both children are spawned with the control
-    port on their command line, and a pid reused by another instance's proxy or watchdog — same
-    marker, another port — used to be adopted by `up` and killed by `down`. A proxy with no
-    tokens predates them and is accepted here on the marker alone, so an upgrade does not strand
-    the proxy it finds running; the callers that adopt or tear down a proxy they did not record
-    ask `_identity_of` instead and refuse UNMARKED. See test_pid_is_ours_refuses_another_instances_process.
-    """
-    return _identity_of(pid, marker) in (Identity.OURS, Identity.UNMARKED)
-
-
-def _identity_of(pid: int | None, marker: str) -> Identity:
-    """A `ps` that fails is raised, not read as "not ours": that reading made `down` skip the
-    signal and print "stopped" — see test_pid_is_ours_raises_when_ps_fails."""
-    if not _pid_alive(pid):
-        return Identity.GONE
-    # `sim._run` is the generic capture-output subprocess helper; it lives in `simulator.py`
-    # because every simctl call goes through it, and `fake_simctl` in the tests replaces that one.
-    try:
-        result = sim._run(["ps", "-p", str(pid), "-o", "command="])
-    except OSError as error:
-        raise ProcessCheckError(f"could not run `ps -p {pid}`: {error}") from None
-    if result.returncode != 0:
-        if not _pid_alive(pid):
-            return Identity.GONE  # it exited between the two looks, which is what `ps` exits 1 for
-        detail = (result.stderr or result.stdout or "").strip()
-        raise ProcessCheckError(f"`ps -p {pid}` failed: {detail or result.returncode}")
-    return _identity_in(result.stdout, marker)
-
-
-def _identity_in(command: str, marker: str) -> Identity:
-    """OURS needs every token present and matching; one present and wrong is THEIRS; one missing
-    is UNMARKED — a proxy started before that token existed cannot say. A proxy carrying only the
-    control port used to read as OURS, and another directory's was stopped from a directory whose
-    record was corrupt. See test_a_proxy_with_only_the_port_token_is_unmarked."""
-    if marker not in command:
-        return Identity.THEIRS
-    required, tokens = _identity(marker)
-    missing = False
-    for option, expected in tokens:
-        found = _first_token(option, command)
-        if found is None:
-            if required:
-                return Identity.THEIRS
-            missing = True
-        elif found != expected:
-            return Identity.THEIRS
-    return Identity.UNMARKED if missing else Identity.OURS
-
-
-def _proxies_on_port() -> list[int]:
-    """Every live Lyrebird proxy whose command line names this control port, by scanning `ps`.
-
-    For the proxy health cannot reach: one with a hung control port answers nothing, and `down`
-    used to read that as "no proxy" and change the PAC under it. Its command line still says
-    what it is. Raises when the scan itself fails. See test_down_finds_a_silent_proxy_by_its_command_line.
-    """
-    try:
-        result = sim._run(["ps", "-axo", "pid=,command="])
-    except OSError as error:
-        raise ProcessCheckError(f"could not run `ps -axo`: {error}") from None
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout or "").strip()
-        raise ProcessCheckError(f"`ps -axo` failed: {detail or result.returncode}")
-    token = str(config.CONTROL_PORT)
-    found = []
-    for line in result.stdout.splitlines():
-        pid, _, command = line.strip().partition(" ")
-        if pid.isdigit() and "addon.py" in command and _first_token("--set lyrebird_control_port=", command) == token:
-            found.append(int(pid))
-    return found
-
-
-def _signal(pid: int, sig: signal.Signals) -> bool:
-    """Deliver `sig`; False when the process was already gone. Raises when it could not be sent."""
-    try:
-        os.kill(pid, sig)
-    except ProcessLookupError:
-        return False
-    except OSError as error:
-        raise ProcessCheckError(f"could not send {sig.name} to pid {pid}: {error}") from None
-    return True
-
-
-def _wait_for_exit(pid: int, seconds: float) -> bool:
-    deadline = time.time() + seconds
-    while _pid_alive(pid):
-        if time.time() >= deadline:
-            return False
-        time.sleep(0.1)
-    return True
-
-
-def _terminate(pid: int | None, marker: str) -> Termination:
-    """Stop the process, and say whether it is gone.
-
-    Returned, not assumed: `down` used to send SIGTERM and print "stopped" on the strength of the
-    control port going quiet, which a live proxy with a hung event loop also does — see
-    test_down_reports_a_proxy_that_is_alive_but_silent. SIGTERM first, SIGKILL if that is
-    ignored, ownership re-checked in between because the pid could have been reused in the wait.
-    """
-    if pid is None or not _pid_alive(pid):
-        return Termination.NOT_RUNNING
-    if not _pid_is_ours(pid, marker):
-        return Termination.NOT_OURS
-    if not _signal(pid, signal.SIGTERM) or _wait_for_exit(pid, _DOWN_WAIT_SECONDS):
-        return Termination.STOPPED
-    if not _pid_is_ours(pid, marker):
-        return Termination.STOPPED  # gone, and the pid already belongs to something else
-    if not _signal(pid, signal.SIGKILL) or _wait_for_exit(pid, _KILL_WAIT_SECONDS):
-        return Termination.STOPPED
-    return Termination.STILL_RUNNING
-
-
-def _require_this_lyrebirds(
-    pid: int | None, what: str, recorded_pid: int | None, *, consequence: str = "nothing was changed"
-) -> None:
-    """Refuse, with nothing changed, unless `pid` is a proxy this state directory started — or
-    the check cannot be made. Shared by `up`'s adoption and `down`'s teardown: a proxy another
-    directory started is recorded, watched and restored there. A proxy older than the identity
-    tokens cannot say whose it is; only a readable record of this directory naming its pid can —
-    see test_down_refuses_an_unmarked_proxy_its_record_does_not_name."""
-    if not pid:
-        click.echo(
-            f"{ui.RED}✗ {what} on port {config.CONTROL_PORT} answered without a pid, so whose it is cannot be "
-            f"checked — {consequence}{ui.R}"
-        )
-        raise SystemExit(1)
-    try:
-        identity = _identity_of(pid, "addon.py")
-    except ProcessCheckError as error:
-        click.echo(
-            f"{ui.RED}✗ could not check whose proxy answers on port {config.CONTROL_PORT} (pid {pid}): {error} — "
-            f"{consequence}{ui.R}\n   stop it by hand once it can be checked, or try again"
-        )
-        raise SystemExit(1) from None
-    if identity is Identity.THEIRS:
-        click.echo(
-            f"{ui.RED}✗ {what} on port {config.CONTROL_PORT} (pid {pid}) was not started by this Lyrebird — "
-            f"another state directory, or a reused pid — {consequence}{ui.R}\n"
-            f"   use the LYREBIRD_STATE_DIR that started it"
-        )
-        raise SystemExit(1)
-    if identity is Identity.UNMARKED and pid != recorded_pid:
-        click.echo(
-            f"{ui.RED}✗ {what} on port {config.CONTROL_PORT} (pid {pid}) predates Lyrebird's identity tokens and "
-            f"this directory's record does not name it — {consequence}{ui.R}\n"
-            f"   if it is yours, stop it by hand (`kill {pid}`) and check the proxy settings"
-        )
-        raise SystemExit(1)
-
-
-def _stop_child(proc: subprocess.Popen) -> str:
-    """Stop the proxy `up` itself spawned, SIGTERM then SIGKILL, and return the line to append
-    when it is still there or could not be signalled — "" when it is gone."""
-    try:
-        proc.terminate()
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            with contextlib.suppress(subprocess.TimeoutExpired):
-                proc.wait(timeout=_KILL_WAIT_SECONDS)
-    except OSError as error:
-        return f"\n   the proxy (pid {proc.pid}) could not be signalled ({error}) — stop it by hand"
-    if proc.poll() is None:
-        return f"\n   the proxy (pid {proc.pid}) is still running — stop it by hand"
-    return ""
-
-
-def _child_env() -> dict:
-    return {**os.environ, "LYREBIRD_PROFILE": str(config.PROFILE_DIR)}
-
-
-def _watchdog_argv(service: str) -> list[str]:
-    # `--control-port` is read by nobody; it is on the command line for `_pid_is_ours` to read
-    # back from `ps`, as `lyrebird_control_port` is on the proxy's — and first, before the
-    # user-named service, so it is the match `_PORT_TOKEN` finds.
-    return [
-        sys.executable,
-        str(config.ROOT / "cli.py"),
-        "_watchdog",
-        "--control-port",
-        str(config.CONTROL_PORT),
-        "--state-root-id",
-        config.state_root_id(),
-        service,
-    ]
-
-
-def _proxy_argv() -> list[str]:
-    return [
-        str(MITMDUMP),
-        "--set",
-        f"lyrebird_control_port={config.CONTROL_PORT}",  # first, for `ps`; see _pid_is_ours
-        "--set",
-        f"lyrebird_state_root_id={config.state_root_id()}",
-        "--listen-host",
-        config.PROXY_LISTEN_HOST,
-        "--listen-port",
-        str(config.PROXY_PORT),
-        "--set",
-        f"confdir={config.mitmproxy_confdir()}",
-        "-s",
-        str(config.ROOT / "addon.py"),
-    ]
-
-
-def _spawn_watchdog(service: str) -> int:
-    proc = subprocess.Popen(
-        _watchdog_argv(service),
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-        env=_child_env(),
+def _owner() -> Owner:
+    """Who this invocation would be. All three fields: a port, a profile and a state directory each
+    repeat on their own."""
+    return Owner(
+        control_port=config.CONTROL_PORT,
+        profile_fingerprint=config.PROFILE_FINGERPRINT,
+        state_root=str(config.STATE_ROOT),
     )
-    return proc.pid
 
 
-def _require_profile() -> None:
-    """Read the profile, for the one command that needs its contents.
+def _red(message: str) -> None:
+    click.echo(f"{ui.RED}✗ {message}{ui.R}")
 
-    `up` is where a malformed profile aborts. Every other command — `down` above all — works from
-    runtime state and the live API, so a broken profile.json cannot stop you restoring the network.
+
+def _pac_text(pac: Pac) -> str:
+    return f"{pac.url or '(none)'} · {'enabled' if pac.enabled else 'disabled'}"
+
+
+# MARK: - The two recipes
+#
+# Each resolves nothing itself: the caller resolves the service once per invocation and passes the
+# name. Each reads the PAC before it writes and again afterwards, and raises `NetworkSetupError`
+# for anything it cannot account for — `networksetup` exits 0 without applying its change, and a
+# recipe that trusted the exit code would report a PAC it never installed.
+
+
+def _install(name: str, port: int, expected: Pac) -> None:
+    """Put our PAC on, over exactly the reading `up` decided on.
+
+    The pre-write read must equal `expected` verbatim — disabled Lyrebird residue included, so
+    `up → down → up` installs over what `down` leaves — or nothing is written at all
+    (test_up_refuses_to_install_over_a_pac_that_changed_since_it_looked).
     """
-    config.reload_profile()
-    if not config.PROFILE.exists:
-        raise SystemExit(
-            f"{ui.RED}no profile at {config.PROFILE_DIR}{ui.R}\n"
-            f"  create one:   lyrebird init {config.PROFILE_DIR}\n"
-            f"  or point at an existing one:  lyrebird --profile /path/to/profile ...\n"
-            f"  (a profile is a directory containing profile.json and scenarios/)"
+    ours = ownership.our_url(port)
+    found = netproxy.pac_status(name)
+    if found != expected:
+        raise netproxy.NetworkSetupError(
+            f"the PAC changed while this `up` was deciding: expected {_pac_text(expected)}, found {_pac_text(found)}"
         )
-    # Refused, not warned about: with no hosts there is nothing `up` could achieve, and it
-    # used to trust the CA, install a DIRECT-only PAC, relaunch the app, print INTERCEPT ACTIVE
-    # and exit 0 — every step a success, the postcondition not met. The addon still honours an
-    # empty list as "intercept nothing"; this is the command named for intercepting declining
-    # to claim it did.
-    if not config.INTERCEPT_HOSTS:
-        raise SystemExit(
-            f"{ui.RED}profile at {config.PROFILE_DIR} lists no hosts — nothing would be intercepted{ui.R}\n"
-            f"  add the hostname your app calls to `hosts` in {config.PROFILE_FILE}"
+    netproxy.write_pac_url(name, ours)
+    back = netproxy.pac_status(name)
+    if back == Pac(ours, True):
+        return
+    if back == Pac(ours, False):
+        # `-setautoproxyurl` usually switches the PAC on as a side effect; when it did not, the flag
+        # is the one command left.
+        netproxy.write_pac_state(name, True)
+        back = netproxy.pac_status(name)
+        if back == Pac(ours, True):
+            return
+    raise netproxy.NetworkSetupError(f"the PAC on '{name}' did not become ours (now: {_pac_text(back)})")
+
+
+def _restore(name: str, port: int, baseline: Pac) -> None:
+    """Put the baseline back, in as few `networksetup` commands as the target needs.
+
+    A target that is already satisfied costs zero writes and is still a success: `satisfies` is the
+    one predicate for "the obligation is met", and it accepts the disabled residue an Off restore
+    leaves (test_restore_issues_exactly_the_commands_the_target_needs).
+    """
+    target = ownership.restore_target(baseline)
+    found = netproxy.pac_status(name)
+    cls = ownership.classify(found, port, baseline)
+    if ownership.satisfies(cls, target):
+        return
+    if cls is PacClass.RESUMABLE:
+        # The URL is already the baseline's and only the flag is wrong — one command.
+        netproxy.write_pac_state(name, isinstance(target, Configured) and target.enabled)
+    elif cls is PacClass.OURS_ENABLED or cls is PacClass.OURS_DISABLED:
+        if isinstance(target, Off):
+            # macOS rejects an empty URL, so the only move for "there was no PAC" is the flag.
+            netproxy.write_pac_state(name, False)
+        else:
+            netproxy.write_pac_url(name, target.url)
+            if netproxy.pac_status(name).enabled != target.enabled:
+                netproxy.write_pac_state(name, target.enabled)
+    else:
+        raise netproxy.NetworkSetupError(
+            f"the PAC on '{name}' is not one this session may restore over (now: {_pac_text(found)})"
         )
+    final = netproxy.pac_status(name)
+    if not ownership.satisfies(ownership.classify(final, port, baseline), target):
+        # `networksetup` exits 0 without applying its change; read back, that is an open obligation
+        # kept, never one abandoned — see test_down_keeps_the_journal_when_a_setter_changes_nothing.
+        raise netproxy.NetworkSetupError(f"the PAC on '{name}' did not restore (now: {_pac_text(final)})")
+
+
+# MARK: - `init`
 
 
 @click.command()
@@ -398,6 +163,44 @@ def init(path: str | None) -> None:
         f"  template, not a runnable demo — api.example.com serves none of these paths."
     )
     click.echo(f"  Then:  lyrebird --profile {target} up")
+
+
+# MARK: - `up`
+
+
+class _Unwind(Exception):
+    """A fresh acquisition met a failure: everything it did comes back off under the same lock."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+def _require_profile() -> None:
+    """Read the profile, for the one command that needs its contents.
+
+    `up` is where a malformed profile aborts. Every other command — `down` above all — works from
+    the session journal and the live API, so a broken profile.json cannot stop you restoring the
+    network.
+    """
+    config.reload_profile()
+    if not config.PROFILE.exists:
+        raise SystemExit(
+            f"{ui.RED}no profile at {config.PROFILE_DIR}{ui.R}\n"
+            f"  create one:   lyrebird init {config.PROFILE_DIR}\n"
+            f"  or point at an existing one:  lyrebird --profile /path/to/profile ...\n"
+            f"  (a profile is a directory containing profile.json and scenarios/)"
+        )
+    # Refused, not warned about: with no hosts there is nothing `up` could achieve, and it
+    # used to trust the CA, install a DIRECT-only PAC, relaunch the app, print INTERCEPT ACTIVE
+    # and exit 0 — every step a success, the postcondition not met. The addon still honours an
+    # empty list as "intercept nothing"; this is the command named for intercepting declining
+    # to claim it did.
+    if not config.INTERCEPT_HOSTS:
+        raise SystemExit(
+            f"{ui.RED}profile at {config.PROFILE_DIR} lists no hosts — nothing would be intercepted{ui.R}\n"
+            f"  add the hostname your app calls to `hosts` in {config.PROFILE_FILE}"
+        )
 
 
 @click.command()
@@ -439,6 +242,9 @@ def up(bundle_id: str | None, no_relaunch: bool, use_name: str | None, simulator
     already picked a simulator needs. It does not confine interception to that device: the PAC is
     installed on a network service and scoped by hostname, so every simulator on this Mac follows
     it for the profile's hosts.
+
+    There is one session per user, so this refuses while one exists — even this profile's. To put
+    a different scenario in front of the app: `lyrebird use NAME && lyrebird relaunch`.
     """
     # Before `_require_profile`, and so before anything is started: "which of these two did you
     # mean" is not a question to ask after the network has been rewired.
@@ -448,38 +254,431 @@ def up(bundle_id: str | None, no_relaunch: bool, use_name: str | None, simulator
         raise click.UsageError("--use needs a scenario name.")
 
     _require_profile()
-    config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
+    sess = _session()
+    sess.ensure_root()
+    try:
+        with sess.locked():
+            _up_locked(sess, bundle_id, no_relaunch, use_name, simulator_selector)
+    except session.LockBusy as error:
+        raise SystemExit(f"{ui.RED}{error}{ui.R}") from None
 
-    with open(config.lock_file(), "w") as lock:
-        _acquire_lock(lock)
-        _up_locked(bundle_id, no_relaunch, use_name, simulator_selector)
+
+def _refuse_over_a_journal(journal: ownership.Journal) -> None:
+    """One session per user. A journal that exists — this owner's or anybody's — is refused, and a
+    journal that cannot be read is refused hardest: it may still be holding somebody's PAC, and
+    `down` is what reads it next (test_up_refuses_over_an_unreadable_journal)."""
+    if isinstance(journal, Unreadable):
+        raise SystemExit(f"{ui.RED}✗ session.json cannot be read ({journal.reason}) — move it away and {_DOWN}{ui.R}")
+    if isinstance(journal, SessionRecord):
+        raise SystemExit(
+            f"{ui.RED}✗ a session is already up (port {journal.owner.control_port}, profile "
+            f"{journal.owner.profile_fingerprint}) — `lyrebird down` first; to switch scenario: "
+            f"`lyrebird use X && lyrebird relaunch`{ui.R}"
+        )
 
 
-def _acquire_lock(lock: Any, timeout: float = _LOCK_WAIT_SECONDS) -> None:
-    """Take the per-port lock, waiting for a holder to finish rather than failing at once.
+def _acquire_baseline() -> tuple[ServiceRef, Pac, Pac]:
+    """The service this `up` would take, the PAC it found there, and the baseline it would record.
 
-    The holder is another `up`, or the watchdog putting the network back after a crash — and the
-    second is exactly the moment an `up` must not start: an install interleaved with a restore on
-    one network service ends with the new proxy's PAC restored over and its runtime file deleted.
-    Both holders finish on their own within seconds, so waiting is right; the timeout is for a
-    holder that did not.
+    An *enabled* Lyrebird PAC with no journal is somebody's unowned session, and installing over it
+    would strand it with nothing left describing what to put back — see
+    test_up_refuses_an_enabled_unowned_lyrebird_pac.
     """
-    deadline = time.time() + timeout
-    waiting = False
-    while True:
+    try:
+        service = netproxy.active_service()
+    except netproxy.NetworkSetupError as error:
+        raise SystemExit(f"{ui.RED}✗ {error}{ui.R}") from None
+    if service is None:
+        raise SystemExit(f"{ui.RED}✗ could not detect the active network service{ui.R}")
+    try:
+        observed = netproxy.pac_status(service.name)
+    except netproxy.NetworkSetupError as error:
+        raise SystemExit(f"{ui.RED}✗ {error}{ui.R}") from None
+    cls = ownership.classify_unowned(observed)
+    if cls is ownership.UnownedClass.LYREBIRD_ENABLED:
+        raise SystemExit(
+            f"{ui.RED}✗ an enabled Lyrebird PAC on '{service.name}' that no session owns — "
+            f"`networksetup -setautoproxystate '{service.name}' off`, then `lyrebird up`{ui.R}"
+        )
+    # EMPTY and disabled Lyrebird residue both mean "there was nothing here": one canonical
+    # baseline, so the Off target cannot be read back as RESUMABLE forever.
+    empty = cls in (ownership.UnownedClass.EMPTY, ownership.UnownedClass.LYREBIRD_DISABLED)
+    return service, observed, Pac("", False) if empty else observed
+
+
+def _up_locked(
+    sess: session.Session,
+    bundle_id: str | None,
+    no_relaunch: bool,
+    use_name: str | None,
+    simulator_selector: str | None,
+) -> None:
+    owner = _owner()
+    port = owner.control_port
+    # Nothing else is observed first: `sim._run` has no timeout, and an `up` refused on the journal
+    # alone must not hold the session lock for the length of a hanging `simctl` — see
+    # test_up_refuses_on_the_journal_without_touching_simctl.
+    _refuse_over_a_journal(sess.read())
+    service, observed, baseline = _acquire_baseline()
+
+    failures: list[str] = []
+    try:
+        simulator: sim.Simulator | None = sim.resolve_simulator(simulator_selector)
+    except sim.SimulatorError as error:
+        simulator = None
+        _red(f"simulator: {error}")
+        click.echo("   the CA was NOT trusted and nothing was relaunched.")
+        failures.append(f"no simulator to work on: {str(error).splitlines()[0]}")
+
+    proc, ref = _start_proxy()
+    record = SessionRecord(
+        version=ownership.SESSION_VERSION,
+        owner=owner,
+        service=service,
+        baseline=baseline,
+        proxy=ref,
+        simulator=None,
+    )
+    try:
+        sess.write(record)
+    except OSError as error:
+        # Nothing is installed and the journal is not there to unwind from, so the child this run
+        # started is stopped here — see test_up_stops_the_child_when_the_journal_cannot_be_written.
+        _report_stop(ref, port)
+        raise SystemExit(
+            f"{ui.RED}✗ could not write the session journal ({error}); nothing was installed{ui.R}"
+        ) from None
+
+    # From here every failure unwinds: the network goes back and the journal goes away.
+    try:
+        health = _wait_for_startup(proc, ref, port)
         try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            return
-        except OSError:
-            if time.time() >= deadline:
+            _install(service.name, port, observed)
+        except netproxy.NetworkSetupError as error:
+            raise _Unwind(f"could not install the PAC on '{service.name}': {error}") from None
+        click.echo(f"✓ PAC installed on '{service.name}' (configured hosts → proxy, everything else DIRECT)")
+        record = _trust_ca(sess, record, simulator, failures)
+        _relaunch(simulator, bundle_id, no_relaunch, use_name, health, failures)
+        _final_look(record, health, failures)
+    except _Unwind as unwound:
+        _red(unwound.reason)
+        _teardown(sess, record)
+        raise SystemExit(1) from None
+    except BaseException:
+        # Any failure unwinds — a Ctrl-C in the startup wait or a transport error nobody named
+        # included. Without this the PAC stayed installed at a port whose proxy this run had just
+        # abandoned — see test_up_unwinds_when_something_unexpected_raises_after_the_install.
+        _red("up did not finish; putting the network back")
+        _teardown(sess, record)
+        raise
+
+    if failures:
+        if len(failures) > 1:
+            click.echo(f"\n{ui.RED}✗ up did not finish cleanly:{ui.R}")
+            for failure in failures:
+                click.echo(f"   · {failure.splitlines()[0]}")
+        else:
+            click.echo(f"{ui.RED}✗ up did not finish cleanly.{ui.R}")
+        # Any failure unwinds: an acquisition that could not achieve its postcondition puts the
+        # network back rather than leaving a proxy the operator must remember to stop.
+        _teardown(sess, record)
+        raise SystemExit(1)
+
+
+def _start_proxy() -> tuple[subprocess.Popen, ownership.Ref]:
+    """Start the proxy and mint the `Ref` the journal will name. Nothing is installed yet, so both
+    failures here exit outright rather than unwinding."""
+    _start_fresh_log()
+    try:
+        with open(config.LOG_FILE, "a", encoding="utf-8") as log:
+            proc = subprocess.Popen(
+                _proxy_argv(),
+                cwd=str(config.ROOT),
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+                env=_child_env(),
+            )
+    except OSError as error:
+        raise SystemExit(f"{ui.RED}✗ the proxy could not be started ({error}); nothing was installed{ui.R}") from None
+    try:
+        return proc, procs.ref_of(proc.pid)
+    except procs.ProcessCheckError as error:
+        click.echo(f"{ui.RED}proxy exited on startup — last log lines:{ui.R}\n{ui._tail_log(20)}")
+        raise SystemExit(f"{ui.RED}✗ the proxy this run started could not be inspected ({error}){ui.R}") from None
+
+
+def _wait_for_startup(proc: subprocess.Popen, ref: ownership.Ref, port: int) -> dict:
+    """Wait for *this* proxy to answer on the port. A reading from another pid is the startup port
+    race, and adopting it would install a PAC for a proxy this run did not start."""
+    deadline = time.time() + _STARTUP_DEADLINE_SECONDS
+    while True:
+        health = api._health(port)
+        if health is not None:
+            if health.get("pid") == ref.pid:
+                return health
+            raise _Unwind(
+                f"another proxy (pid {health.get('pid')}) answered on port {port} while this one was starting"
+            )
+        if proc.poll() is not None:
+            click.echo(f"{ui.RED}proxy exited on startup — last log lines:{ui.R}\n{ui._tail_log(20)}")
+            raise _Unwind("the proxy exited on startup")
+        if time.time() >= deadline:
+            click.echo(
+                f"{ui.RED}proxy did not become healthy in time — last log lines:{ui.R}\n"
+                f"{ui._tail_log(20)}\n   full log: {config.LOG_FILE}"
+            )
+            raise _Unwind("the proxy did not become healthy in time")
+        time.sleep(0.3)
+
+
+def _trust_ca(
+    sess: session.Session, record: SessionRecord, simulator: sim.Simulator | None, failures: list[str]
+) -> SessionRecord:
+    if simulator is None:
+        return record
+    ca_ok, message = sim.trust_ca_in_sim(simulator)
+    click.echo(f"{'✓' if ca_ok else '✗'} CA: {message}")
+    if not ca_ok:
+        failures.append(f"CA not trusted in the simulator: {message}")
+        return record
+    # Only now: the journal's `simulator` means "the device holding the CA", and a failed trust must
+    # not leave the session bound to a device without one — see
+    # test_up_records_the_simulator_only_after_trusting_it.
+    trusted = dataclasses.replace(record, simulator=ownership.Simulator(simulator.udid, simulator.name))
+    try:
+        sess.write(trusted)
+    except OSError as error:
+        # `relaunch` and `status` read the device from here, so a write that failed leaves them
+        # naming the wrong device while `up` reports success.
+        raise _Unwind(f"the trusted simulator could not be recorded ({error})") from None
+    return trusted
+
+
+def _relaunch(
+    simulator: sim.Simulator | None,
+    bundle_id: str | None,
+    no_relaunch: bool,
+    use_name: str | None,
+    health: dict,
+    failures: list[str],
+) -> None:
+    refused = _select_before_relaunch(use_name, health) if use_name else None
+    if refused:
+        failures.append(refused)
+    elif no_relaunch:
+        click.echo("↷ relaunch skipped (--no-relaunch): the caller launches the app")
+    elif simulator is not None and (target := (bundle_id or config.PROFILE.sim_bundle_id)):
+        launched, detail = sim._relaunch(target, simulator)
+        click.echo(f"{'✓' if launched else '✗'} relaunch {target}: {detail}")
+        if not launched:
+            failures.append(f"could not relaunch {target}: {detail}")
+    elif simulator is not None:
+        click.echo(
+            f"{ui.BOLD}{ui.YELLOW}⚠ RELAUNCH THE APP NOW{ui.R} — URLSession caches the proxy config, so an "
+            f"already-running app won't use the PAC until it's relaunched.\n"
+            f"   lyrebird relaunch <bundleid>   # on {simulator}, the device this run used\n"
+            f"   (or set simBundleId in profile.json and it happens here)"
+        )
+
+
+def _final_look(record: SessionRecord, startup: dict, failures: list[str]) -> None:
+    """The postcondition itself — this proxy answering, this PAC routing to it, on the service the
+    route still carries — observed once, at the end. A step that succeeded a moment ago is no
+    defence if the observation says otherwise now."""
+    port = record.owner.control_port
+    health = api._health(port)
+    if health is None:
+        _red(f"the proxy stopped answering on port {port} during startup")
+        failures.append("the proxy stopped answering during startup")
+    else:
+        if health.get("pid") != record.proxy.pid:
+            _red(f"the proxy answering on port {port} is now pid {health.get('pid')}, not {record.proxy.pid}")
+            failures.append(f"the port changed hands during startup (pid {record.proxy.pid} → {health.get('pid')})")
+        if health.get("journalError"):
+            # The proxy reads the journal too, and it saying the journal is broken means the `down`
+            # this `up` promises cannot restore from it.
+            _red(f"the proxy reports the session journal unreadable: {health['journalError']}")
+            failures.append("the session journal is unreadable")
+        running = health.get("profileFingerprint")
+        if running and running != record.owner.profile_fingerprint:
+            _red(f"the proxy on port {port} runs profile {running}, not {record.owner.profile_fingerprint}")
+            failures.append("another profile answers on the control port")
+    try:
+        pac: Pac | None = netproxy.pac_status(record.service.name)
+    except netproxy.NetworkSetupError as error:
+        pac = None
+        _red(f"the PAC on '{record.service.name}' could not be read: {error}")
+    if pac != Pac(ownership.our_url(port), True):
+        _red(f"the PAC on '{record.service.name}' is not routing to this proxy")
+        failures.append(f"PAC on '{record.service.name}' is not routing to the proxy")
+    try:
+        route = netproxy.active_service()
+    except netproxy.NetworkSetupError as error:
+        route = None
+        _red(f"the active network service could not be confirmed: {error}")
+    if route is None:
+        _red("the active network service could not be confirmed")
+        failures.append("the active network service could not be confirmed")
+    elif route.device != record.service.device:
+        _red(f"the default route moved to '{route.name}' during startup")
+        failures.append("the default route moved during startup")
+    if not failures:
+        ui._banner(startup, record.service.name, True)
+
+
+# MARK: - `down`
+
+
+@click.command()
+def down() -> None:
+    """Stop the proxy and restore the previous proxy settings.
+
+    From anywhere: no profile, no port and no state directory are needed, because the session
+    journal is the authority and there is one per user.
+    """
+    sess = _session()
+    sess.ensure_root()
+    try:
+        with sess.locked():
+            journal = sess.read()
+            if isinstance(journal, Absent):
+                click.echo(f"{ui.DIM}no session: nothing to stop{ui.R}")
+                return
+            if isinstance(journal, Unreadable):
                 raise SystemExit(
-                    f"{ui.RED}another `lyrebird up` or a watchdog restore is still in progress on port "
-                    f"{config.CONTROL_PORT} after {timeout:g}s{ui.R}"
-                ) from None
-            if not waiting:
-                click.echo(f"{ui.DIM}waiting for another `lyrebird up` or a watchdog restore to finish…{ui.R}")
-                waiting = True
-            time.sleep(0.5)
+                    f"{ui.RED}✗ session.json cannot be read ({journal.reason}) — nothing was changed; move it "
+                    f"away, put the PAC back by hand (`networksetup -setautoproxystate <service> off`), then "
+                    f"`lyrebird down`{ui.R}"
+                )
+            code = _teardown(sess, journal)
+    except session.LockBusy as error:
+        raise SystemExit(f"{ui.RED}{error}{ui.R}") from None
+    if code:
+        raise SystemExit(code)
+
+
+def _teardown(sess: session.Session, journal: SessionRecord) -> int:
+    """Put the recorded settings back, release the journal, stop the proxy — in that order.
+
+    The order is the point. A journal kept after a successful restore let a later `down` read a
+    baseline the user had since enabled by hand as RESUMABLE and disable it again; with the journal
+    gone the second `down` says "no session" and touches nothing — see
+    test_down_never_touches_the_pac_after_a_restore_whose_stop_failed.
+    """
+    port = journal.owner.control_port
+    baseline = journal.baseline
+    try:
+        name = netproxy.resolve(journal.service)
+    except netproxy.NetworkSetupError as error:
+        _red(f"{error} — the settings recorded at `up` were {_pac_text(baseline)}; the journal is kept")
+        return 1
+    try:
+        found = netproxy.pac_status(name)
+    except netproxy.NetworkSetupError as error:
+        _red(f"the PAC on '{name}' could not be read ({error}) — nothing was changed; the journal is kept")
+        return 1
+    if ownership.classify(found, port, baseline) is PacClass.FOREIGN:
+        # A hand-set PAC is never written over. The proxy still goes, so nothing keeps routing to
+        # it, and the journal stays: it is the only durable record of what the operator has to put
+        # back, and a `down` after they have is what releases it — see
+        # test_down_over_a_foreign_pac_prints_the_baseline_and_keeps_the_journal.
+        _report_stop(journal.proxy, port)
+        _red(
+            f"the PAC on '{name}' is not this session's any more (now: {_pac_text(found)}); the settings "
+            f"recorded at `up` were {_pac_text(baseline)} — not restored. Put them back by hand, then "
+            f"`lyrebird down` again; or, to keep the PAC you set, delete {sess.journal_path}."
+        )
+        return 1
+    try:
+        _restore(name, port, baseline)
+    except netproxy.NetworkSetupError as error:
+        _red(
+            f"could not restore the previous settings on '{name}': {error} — the journal is kept, `lyrebird down` again"
+        )
+        return 1
+    target = ownership.restore_target(baseline)
+    if isinstance(target, Off):
+        click.echo(f"✓ PAC removed from '{name}' — direct networking restored")
+    else:
+        click.echo(f"✓ restored the previous PAC on '{name}': {target.url}")
+    try:
+        sess.unlink()
+    except OSError as error:
+        _red(
+            f"the previous settings are back, but the journal could not be removed ({error}) — delete "
+            f"{sess.journal_path} by hand"
+        )
+        return 1
+    failure = _stop_failure(journal.proxy, port)
+    if failure is not None:
+        _red(f"the previous settings are back; {failure}")
+        return 1
+    click.echo(f"{ui.GREEN}stopped{ui.R}")
+    return 0
+
+
+def _stop_failure(ref: ownership.Ref, port: int) -> str | None:
+    """Stop the recorded proxy, or say why it could not be proven stopped.
+
+    A pid alone is never enough: after a clock step the create time no longer matches and the
+    identity is unproven, which is a refusal to signal rather than a licence to — see
+    test_down_refuses_to_signal_a_pid_it_cannot_prove_is_this_sessions.
+    """
+    try:
+        outcome = procs.terminate(ref, port)
+    except procs.ProcessCheckError as error:
+        return (
+            f"the proxy (pid {ref.pid}) could not be proved to be this session's ({error}) — stop it by hand "
+            f"(`kill -9 {ref.pid}`)"
+        )
+    if outcome is procs.Termination.STILL_RUNNING:
+        return f"the proxy (pid {ref.pid}) is still running — `kill -9 {ref.pid}`"
+    return None
+
+
+def _report_stop(ref: ownership.Ref, port: int) -> None:
+    failure = _stop_failure(ref, port)
+    if failure is not None:
+        _red(failure)
+
+
+# MARK: - children
+
+
+def _child_env() -> dict:
+    return {**os.environ, "LYREBIRD_PROFILE": str(config.PROFILE_DIR)}
+
+
+def _proxy_argv() -> list[str]:
+    return [
+        str(MITMDUMP),
+        "--set",
+        f"lyrebird_control_port={config.CONTROL_PORT}",  # adjacent tokens: see `procs.is_proxy_on`
+        "--listen-host",
+        config.PROXY_LISTEN_HOST,
+        "--listen-port",
+        str(config.PROXY_PORT),
+        "--set",
+        f"confdir={config.mitmproxy_confdir()}",
+        "-s",
+        str(config.ROOT / "addon.py"),
+    ]
+
+
+def _start_fresh_log() -> None:
+    """Begin each run on a new inode rather than truncating the old one.
+
+    The log names every host and path that came through, so it is 0600 — but a log left by an
+    older version may be 0644, and `chmod` cannot revoke a descriptor somebody already holds.
+    Truncating in place keeps that inode, so a reader who opened it while it was readable goes on
+    seeing new traffic. Renaming a fresh private file over it leaves them holding the old one.
+    """
+    config.LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    config.atomic_write(config.LOG_FILE, "")
+
+
+# MARK: - scenario selection, shared by `use` and `up --use`
 
 
 def _activate_scenario(name: str) -> None:
@@ -544,8 +743,7 @@ def _select_before_relaunch(name: str, health: dict | None) -> str | None:
             f"{ui.RED}✗ the running proxy is older than this CLI and cannot say whether "
             f"'{name}' loaded whole — the app was NOT relaunched against a scenario "
             f"nothing could check.{ui.R}\n"
-            f"   restart the proxy: `lyrebird down && lyrebird up --use {name}`.\n"
-            f"   the proxy is running — stop it with `lyrebird down`."
+            f"   restart the proxy: `lyrebird down && lyrebird up --use {name}`."
         )
         return f"the running proxy did not report whether '{name}' loaded whole"
     if problems:
@@ -553,8 +751,7 @@ def _select_before_relaunch(name: str, health: dict | None) -> str | None:
         click.echo(
             f"{ui.RED}✗ scenario '{name}' did not load whole: {detail}{ui.R}\n"
             f"   the app was NOT relaunched — fix the file, then "
-            f"`lyrebird down && lyrebird up --use {name}`.\n"
-            f"   the proxy is running — stop it with `lyrebird down`."
+            f"`lyrebird down && lyrebird up --use {name}`."
         )
         return f"scenario '{name}' did not load whole: {detail}"
 
@@ -566,643 +763,12 @@ def _select_before_relaunch(name: str, health: dict | None) -> str | None:
         # front of some scenario other than the one the caller named.
         known = [str(scenario) for scenario in (health or {}).get("scenarios") or []]
         listing = f"\n   scenarios in this profile: {', '.join(known)}" if known else ""
-        click.echo(
-            f"{ui.RED}   could not select '{name}' — the app was NOT relaunched.{ui.R}{listing}\n"
-            f"   the proxy is running — stop it with `lyrebird down`."
-        )
+        click.echo(f"{ui.RED}   could not select '{name}' — the app was NOT relaunched.{ui.R}{listing}")
         return f"could not select scenario '{name}'"
     return None
 
 
-def _up_locked(
-    bundle_id: str | None, no_relaunch: bool = False, use_name: str | None = None, simulator_selector: str | None = None
-) -> None:
-    try:
-        runtime = config.read_runtime()
-    except config.RuntimeRecordUnreadable as error:
-        # The migration and restore below act on what this record says; started over one that
-        # cannot be read, `up` would snapshot the network afresh and the previous PAC it may hold
-        # would be lost. See test_up_refuses_to_start_over_a_record_it_cannot_read.
-        click.echo(
-            f"{ui.RED}✗ the record for port {config.CONTROL_PORT} cannot be read ({error.reason}) — nothing "
-            f"started{ui.R}\n   run `lyrebird down` to stop what it names and put the network back, then "
-            f"fix or remove {error.path}"
-        )
-        raise SystemExit(1) from None
-    existing = api._health()
-    # Kept rather than fetched again later: this is the reading `--use` checks its scenario against.
-    health = existing
-
-    if existing:
-        api._require_same_profile(existing)
-        # The same profile under another state directory answers the same way; adopted, it went
-        # into this directory's record with a watchdog of its own, and this directory's `down`
-        # then refused it by identity. See test_up_does_not_adopt_another_state_directorys_proxy.
-        _require_this_lyrebirds(existing.get("pid"), "the proxy already running", runtime.get("proxyPid"))
-        click.echo(f"{ui.YELLOW}proxy already running{ui.R} (scenario '{existing['activeScenario']}')")
-        proxy_pid = existing.get("pid", 0)
-    else:
-        # A recorded proxy that is alive but not answering is not a dead one to start over: the
-        # child would lose the port race, and the record — rewritten with the child's pid —
-        # would forget the survivor. See test_up_refuses_to_start_over_a_recorded_proxy_that_is_alive.
-        recorded_pid = runtime.get("proxyPid")
-        try:
-            survivor = _pid_is_ours(recorded_pid, "addon.py")
-        except ProcessCheckError as error:
-            click.echo(
-                f"{ui.RED}✗ could not check whether the recorded proxy (pid {recorded_pid}) is still running: "
-                f"{error} — nothing started{ui.R}\n   run `lyrebird down` once it can be checked"
-            )
-            raise SystemExit(1) from None
-        if survivor:
-            click.echo(
-                f"{ui.RED}✗ the recorded proxy (pid {recorded_pid}) is still running but not answering on port "
-                f"{config.CONTROL_PORT} — nothing started{ui.R}\n   run `lyrebird down` to stop it first"
-            )
-            raise SystemExit(1)
-        _start_fresh_log()
-        # Popen dups the fd for the child, so closing our copy immediately is correct.
-        with open(config.LOG_FILE, "a", encoding="utf-8") as log:
-            proc = subprocess.Popen(
-                _proxy_argv(),
-                cwd=str(config.ROOT),
-                stdout=log,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
-                env=_child_env(),
-            )
-        # Recorded now, into whatever record is there, so every exit below — the timeout, a check
-        # that failed, a foreign proxy that took the port — leaves `down` a pid to act on. The
-        # record is rewritten whole once the PAC is dealt with. Strict: a write that failed here
-        # would leave the child with no record naming it, which is the gap this write closes —
-        # so the child is stopped instead. See test_up_records_its_child_before_the_startup_wait
-        # and test_up_stops_its_child_when_it_cannot_record_it.
-        try:
-            config.write_runtime({**runtime, "proxyPid": proc.pid})
-        except OSError as error:
-            click.echo(
-                f"{ui.RED}✗ could not record the proxy it started ({config.runtime_file()}: {error}) — "
-                f"stopping it again{ui.R}{_stop_child(proc)}"
-            )
-            raise SystemExit(1) from None
-        runtime = {**runtime, "proxyPid": proc.pid}
-        deadline = time.time() + 12
-        while True:
-            health = api._health()
-            if health is not None:
-                if health.get("pid") != proc.pid:
-                    # Somebody else answered: another `up` — under another state directory,
-                    # whose lock this one does not hold — won the port race, or a proxy that
-                    # was silent at the first look woke up. Adopted, it was recorded under the
-                    # child's pid, given a PAC and a watchdog, and reported INTERCEPT ACTIVE.
-                    # See test_up_refuses_a_proxy_that_took_the_port_during_startup.
-                    click.echo(
-                        f"{ui.RED}✗ another proxy (pid {health.get('pid')}) answered on port "
-                        f"{config.CONTROL_PORT} while this one was starting — not the one this `up` started"
-                        f"{ui.R}{_stop_child(proc)}\n   run `lyrebird down` under the state directory that owns it"
-                    )
-                    raise SystemExit(1)
-                break
-            # A check that failed has not shown the child exited; the deadline below decides.
-            with contextlib.suppress(ProcessCheckError):
-                if not _pid_alive(proc.pid):
-                    click.echo(f"{ui.RED}proxy exited on startup — last log lines:{ui.R}\n{ui._tail_log(20)}")
-                    raise SystemExit(1)
-            if time.time() >= deadline:
-                # Don't leave an orphan that becomes healthy after we have given up on it — and
-                # say so if it is left anyway, rather than reporting a timeout over a child that
-                # is still there. See test_up_names_a_child_that_survives_its_startup_cleanup.
-                left = _stop_child(proc)
-                click.echo(
-                    f"{ui.RED}proxy did not become healthy in time — last log lines:{ui.R}\n"
-                    f"{ui._tail_log(20)}\n   full log: {config.LOG_FILE}{left}"
-                )
-                raise SystemExit(1)
-            time.sleep(0.3)
-        proxy_pid = proc.pid
-
-    failures: list[str] = []
-
-    # One resolution for both device operations below, so the CA cannot be trusted on one
-    # simulator while the app is relaunched on another — which is what two independent `booted`
-    # lookups allow the moment a second device boots between them.
-    try:
-        simulator: sim.Simulator | None = sim.resolve_simulator(simulator_selector)
-    except sim.SimulatorError as error:
-        simulator = None
-        click.echo(f"{ui.RED}✗ simulator: {error}{ui.R}\n   the CA was NOT trusted and nothing was relaunched.")
-        failures.append(f"no simulator to work on: {str(error).splitlines()[0]}")
-
-    if simulator is not None:
-        ca_ok, message = sim.trust_ca_in_sim(simulator)
-        click.echo(f"{'✓' if ca_ok else '✗'} CA: {message}")
-        if not ca_ok:
-            failures.append(f"CA not trusted in the simulator: {message}")
-
-    # The recorded service is a fallback, not merely a default. After a crash and a restore that
-    # failed, the record names the service whose PAC is still ours; losing the route meanwhile
-    # (Wi-Fi off) must not turn that into "no service", which strands the record with nothing to
-    # restore it on and lets `down` delete it.
-    discovered, discovery_error = _discover_service()
-    service = discovered or runtime.get("service")
-    recorded = runtime.get("previousPac")
-    recorded_service = runtime.get("service")
-    if recorded and recorded_service and recorded_service != service:
-        # The route moved — Wi-Fi to Ethernet — since the record was written. The record belongs
-        # to the old service, and it is about to be replaced by one for the new: put the old
-        # service back *first*, or nothing will remember that its PAC still points at us. A
-        # record that is not ours any more (settings changed by hand) is simply dropped.
-        #
-        # The old service's watchdog goes first of all. It is told its service on its command
-        # line; left alive it would answer the proxy's next death by reading the new record,
-        # finding the old service's PAC "not ours", and deleting it. Its live loop is no safer:
-        # it re-enables our PAC wherever it finds it disabled — which is exactly what restoring
-        # "no previous PAC" leaves behind. The lock this `up` holds keeps that loop out until the
-        # signal lands, and the loop checks whose record it is once it gets in.
-        try:
-            stopped = _terminate(runtime.get("watchdogPid"), "_watchdog")
-            why = None if stopped.gone else stopped.value
-        except ProcessCheckError as error:
-            why = str(error)
-        if why is not None:
-            # Proven gone or `up` goes no further: its live loop re-enables our PAC wherever it
-            # finds it disabled, which is what the restore below leaves on the old service. See
-            # test_up_refuses_to_migrate_over_a_watchdog_it_could_not_stop.
-            click.echo(
-                f"{ui.RED}✗ the watchdog for '{recorded_service}' (pid {runtime.get('watchdogPid')}) "
-                f"could not be stopped: {why}{ui.R}\n"
-                f"   the record is kept; stop it by hand and run `lyrebird up` again."
-            )
-            raise SystemExit(1)
-        # On disk, not only in this dict: if the restore below fails the record is kept, and one
-        # still naming a stopped pid makes the next `up` refuse over a watchdog already gone.
-        runtime = _record(runtime, watchdogPid=None)
-        try:
-            _restore_previous_pac(recorded_service, runtime)
-        except netproxy.NetworkSetupError as error:
-            click.echo(
-                f"{ui.RED}✗ could not restore the previous PAC on '{recorded_service}' before "
-                f"switching to '{service}': {error}{ui.R}\n"
-                f"   the record is kept; run `lyrebird down` once '{recorded_service}' can "
-                f"be reached."
-            )
-            raise SystemExit(1) from None
-        recorded = None
-    state: dict = {"proxyPid": proxy_pid, "service": service}
-    if simulator is not None:
-        # Recorded so `status` can say which device this run trusted and relaunched. Absent when
-        # nothing was resolved, rather than a stale entry from an earlier run: the file is
-        # rewritten whole on every `up`.
-        state["simulator"] = {"udid": simulator.udid, "name": simulator.name}
-    if recorded:
-        # Kept until a successful read says otherwise. The record is what the watchdog left when
-        # it could not restore; a PAC read that fails below must not cost it, or `down` restores
-        # "nothing" over the user's PAC once reads work again.
-        state["previousPac"] = recorded
-    # Record the pid before anything else can fail: if PAC installation raises, `down` must still
-    # be able to find and stop the proxy we just started.
-    config.write_runtime(state)
-
-    if service:
-        # Carry a recorded previousPac forward while it still describes the network: a proxy is
-        # running, or the installed PAC is one Lyrebird is answerable for — ours, or the recorded
-        # URL that a failed restore handed back with the wrong flag. Both are the watchdog having
-        # kept the record because it could not restore; snapshotting now would read "ours, so
-        # nothing" or the wrong flag, and the user's PAC would be lost or restored wrong at the
-        # next `down`. Once the installed PAC is somebody else's the record is stale (a crash,
-        # then settings changed by hand), and the network is snapshotted afresh.
-        try:
-            installed = netproxy.pac_status(service)
-            keep = recorded is not None and (existing is not None or _still_restorable(installed, recorded))
-            state["previousPac"] = recorded if keep else _snapshot_pac(installed)
-            config.write_runtime(state)
-            netproxy.set_pac(service)
-        except netproxy.NetworkSetupError as error:
-            click.echo(
-                f"{ui.RED}✗ could not install the PAC on '{service}': {error}{ui.R}\n"
-                f"   the proxy is running — stop it with `lyrebird down`."
-            )
-            raise SystemExit(1) from None
-
-        # A watchdog watches one service, given on its command line. One left over from a run on
-        # another service would restore that service's record and then delete this one's.
-        watchdog_pid = runtime.get("watchdogPid")
-        try:
-            reuse = _pid_is_ours(watchdog_pid, "_watchdog") and recorded_service == service
-            why = None if reuse or _terminate(watchdog_pid, "_watchdog").gone else "is still running"
-        except ProcessCheckError as error:
-            why = f"could not be checked: {error}"
-        if why is not None:
-            # No second watchdog. One this run cannot verify cannot verify its successor either
-            # (`_should_retire` keeps watching when `ps` fails), and two loops on one record was
-            # the state the record's single `watchdogPid` exists to rule out. The record keeps
-            # naming the old one, so the next `up` asks again. See
-            # test_up_refuses_rather_than_spawn_a_second_watchdog.
-            state["watchdogPid"] = watchdog_pid
-            config.write_runtime(state)
-            click.echo(
-                f"{ui.RED}✗ the previous watchdog (pid {watchdog_pid}) {why} — the PAC is installed but "
-                f"this run could not give it one watchdog{ui.R}\n"
-                f"   stop pid {watchdog_pid} by hand and run `lyrebird up` again, or `lyrebird down`."
-            )
-            raise SystemExit(1)
-        if not reuse:
-            watchdog_pid = _spawn_watchdog(service)
-        state["watchdogPid"] = watchdog_pid
-        click.echo(f"✓ PAC installed on '{service}' (configured hosts → proxy, everything else DIRECT)")
-        if discovery_error:
-            # Installed on the recorded service — the record must keep describing a service
-            # `down` can restore — but not claimed as interception: the read that would have
-            # shown which service carries the route failed, and a crash record can name
-            # yesterday's. See test_up_fails_when_discovery_fails_even_with_a_recorded_service.
-            click.echo(
-                f"{ui.RED}✗ could not detect the active network service ({discovery_error}) — the PAC is on "
-                f"'{service}' from the last run, which may no longer carry the default route{ui.R}"
-            )
-            failures.append(
-                f"active network service unknown ({discovery_error}): interception on '{service}' is unproven"
-            )
-    else:
-        # The discovery error is appended rather than replacing the message: "no active network
-        # service" is what it means for the run, and the `route`/`networksetup` failure is why —
-        # an operator told only the first goes looking at Wi-Fi, and one told only the second
-        # does not learn that nothing is being intercepted.
-        why = f" ({discovery_error})" if discovery_error else ""
-        click.echo(
-            f"{ui.RED}✗ could not detect the active network service{why} — set the PAC "
-            f"manually:{ui.R}\n   {netproxy.pac_url()}"
-        )
-        failures.append(f"no active network service{why}: traffic is NOT being intercepted")
-
-    config.write_runtime(state)
-
-    # Before the relaunch, and that ordering is the whole point of `--use`: an app makes its first
-    # requests *while it launches*, so a scenario selected afterwards is one the launch never saw —
-    # and an app that caches its launch response goes on showing the old scenario however green a
-    # later `use` looks. It runs whether or not there is a device to launch on: a caller who
-    # starts the app themselves still asked for that scenario.
-    refused = _select_before_relaunch(use_name, health) if use_name else None
-    if refused:
-        # No relaunch, and no banner asking for one by hand either: both would put the app in front
-        # of the scenario the caller was trying to replace. The final look below still runs — the
-        # proxy is up and the PAC is installed, and an operator not told that walks away believing
-        # the network was left alone.
-        failures.append(refused)
-    elif no_relaunch:
-        click.echo("↷ relaunch skipped (--no-relaunch): the caller launches the app")
-    elif simulator is not None and (target := (bundle_id or config.PROFILE.sim_bundle_id)):
-        launched, detail = sim._relaunch(target, simulator)
-        click.echo(f"{'✓' if launched else '✗'} relaunch {target}: {detail}")
-        if not launched:
-            failures.append(f"could not relaunch {target}: {detail}")
-    elif simulator is not None:
-        click.echo(
-            f"{ui.BOLD}{ui.YELLOW}⚠ RELAUNCH THE APP NOW{ui.R} — URLSession caches the proxy config, so an "
-            f"already-running app won't use the PAC until it's relaunched.\n"
-            f"   lyrebird relaunch <bundleid>   # on {simulator}, the device this run used\n"
-            f"   (or set simBundleId in profile.json and it happens here)"
-        )
-    # And no `else`: with no simulator resolved there is nothing to launch on, and no device to
-    # tell the operator to launch on by hand either. That failure was printed and counted where
-    # the device could not be resolved; saying it again here would turn one problem into two.
-
-    # The last look decides. Everything above reported its own step; this is the postcondition
-    # itself — proxy answering, PAC routing to it — observed once, at the end, and a step that
-    # succeeded a moment ago is no defence if the observation says otherwise now.
-    final = api._health()
-    if final is None:
-        click.echo(f"{ui.RED}✗ the proxy stopped answering on port {config.CONTROL_PORT} during startup{ui.R}")
-        failures.append("the proxy stopped answering during startup")
-    if final is not None and final.get("runtimeError"):
-        # The proxy reads the record too, and it saying the record is broken means the `down`
-        # this `up` promises cannot restore from it. See test_up_fails_when_its_final_look_reports_a_broken_record.
-        click.echo(f"{ui.RED}✗ the proxy reports its runtime record unreadable: {final['runtimeError']}{ui.R}")
-        failures.append("the runtime record is unreadable")
-    changed_hands = final is not None and final.get("pid") != proxy_pid
-    if final is not None and changed_hands:
-        # The port changed hands between the start and this look. Whatever answers now is not
-        # what the PAC was installed for, and no banner below may describe it as if it were.
-        # See test_up_fails_when_its_final_look_finds_another_proxy.
-        now = final.get("pid")
-        click.echo(
-            f"{ui.RED}✗ the proxy answering on port {config.CONTROL_PORT} is now pid {now}, not {proxy_pid} — "
-            f"the port changed hands during startup{ui.R}"
-        )
-        failures.append(f"the port changed hands during startup (pid {proxy_pid} → {now})")
-    try:
-        intercepting = netproxy.intercepting(service)
-    except netproxy.NetworkSetupError as error:
-        # Said here, in place of the banner: the banner's "PAC is disabled/not ours" would be a
-        # diagnosis this command never made, and the summary below only names failures that
-        # were printed as they happened.
-        click.echo(f"{ui.RED}✗ could not read the PAC on '{service}' after installing it: {error}{ui.R}")
-        failures.append(f"could not read the PAC on '{service}': {error}")
-    else:
-        if changed_hands:
-            pass  # said above; a banner about a proxy this run did not start would be a claim
-        elif discovery_error and service:
-            # No banner either way: "INTERCEPT ACTIVE" would claim a route this command could not
-            # read, and "NOT INTERCEPTING — PAC is disabled/not ours" a diagnosis it never made.
-            # The failure was printed, with the reason, when discovery failed.
-            click.echo(f"{ui.YELLOW}🟠 PROXY UP, ROUTE UNKNOWN{ui.R} — PAC on '{service}'; interception unproven")
-        else:
-            ui._banner(final, service, intercepting)
-            if service and not intercepting:
-                failures.append(f"PAC on '{service}' is not routing to the proxy — disabled, or not ours")
-
-    # Exit non-zero unless the whole point of `up` was achieved. Reporting a warning and returning 0
-    # meant a script — or an agent — could believe it was mocking when nothing was intercepted.
-    if failures:
-        # Each failure was already printed inline as it happened, so a single one needs no
-        # summary — only collect them when there is more than one to collect.
-        if len(failures) > 1:
-            click.echo(f"\n{ui.RED}✗ up did not finish cleanly:{ui.R}")
-            for failure in failures:
-                click.echo(f"   · {failure.splitlines()[0]}")
-        else:
-            click.echo(f"{ui.RED}✗ up did not finish cleanly.{ui.R}")
-        raise SystemExit(1)
-
-
-def _restore_previous_pac(service: str, runtime: dict) -> dict | None:
-    """Put back the PAC recorded at `up`, or return None having touched nothing.
-
-    Returns None when the installed PAC is neither ours nor the one being restored: a PAC the
-    user set by hand while Lyrebird was running must survive teardown. The second clause is what
-    makes a retry work — `restore_pac` changes the URL before the enabled state, so an attempt
-    that failed between the two has already handed the URL back and only the flag is wrong.
-    Reading that as "not ours" left it wrong for good, because the runtime file was then
-    discarded. Both callers depend on this rule, so it lives here rather than in each.
-    """
-    status = netproxy.pac_status(service)
-    previous = runtime.get("previousPac") or {"url": "", "enabled": False}
-    if not _still_restorable(status, previous):
-        return None
-    netproxy.restore_pac(service, previous.get("url", ""), previous.get("enabled", False))
-    return previous
-
-
-def _still_restorable(status: netproxy.PacStatus, previous: dict) -> bool:
-    """Is the installed PAC one Lyrebird is answerable for? Ours, or the recorded previous URL —
-    which a restore that failed between its two `networksetup` calls has already handed back, with
-    the wrong enabled flag. Anything else was set by hand and is left alone. One predicate for
-    `down`, the watchdog and `up`, so they cannot disagree about whose PAC it is."""
-    url = previous.get("url", "")
-    return status.ours or bool(url and status.url == url)
-
-
-def _snapshot_pac(status: netproxy.PacStatus) -> dict:
-    if status.ours:
-        return {"url": "", "enabled": False}  # never record our own PAC as the thing to restore
-    return {"url": status.url, "enabled": status.enabled}
-
-
-@click.command()
-def down() -> None:
-    """Stop the proxy and restore the previous proxy configuration."""
-    config.STATE_ROOT.mkdir(parents=True, exist_ok=True)
-    with open(config.lock_file(), "w") as lock:
-        # The same lock `up` and the watchdog take, held from before the runtime record is read
-        # until the cleanup is done. A watchdog repair in flight finishes before its parent is
-        # signalled — SIGTERM reaches the watchdog, not the `networksetup` it already started,
-        # which would otherwise switch the PAC back on after the restore had read back clean.
-        # And no repair can start afterwards: the record it checks is gone.
-        _acquire_lock(lock)
-        _down_locked()
-
-
-def _down_locked() -> None:
-    unreadable: config.RuntimeRecordUnreadable | None = None
-    try:
-        runtime = config.read_runtime()
-    except config.RuntimeRecordUnreadable as error:
-        # Worked around, not read as absent: what follows still stops the proxy and takes the
-        # routing off it, but "previous PAC" is unknown, so nothing below may claim to have
-        # restored it, the file stays for the user to read, and the exit code says so. Said once,
-        # here, whichever branch this run ends in. See
-        # test_down_does_not_claim_to_restore_from_a_record_it_could_not_read.
-        unreadable, runtime = error, {}
-        click.echo(
-            f"{ui.RED}✗ {error.path} cannot be read ({error.reason}) — the previous proxy settings it holds are "
-            f"unknown{ui.R}\n   this run stops what it can and switches Lyrebird's PAC off, but cannot put them "
-            f"back: do that by hand (System Settings ▸ Network ▸ <service> ▸ Proxies), then delete the file"
-        )
-    # What the record — and only the record — names, captured before health fills the gap: it is
-    # what vouches for a proxy older than the identity tokens, and health's own pid must not.
-    recorded_pid = runtime.get("proxyPid")
-    health = api._health()
-    if not health:
-        # Health cannot reach a proxy whose control port is hung, and `down` used to read that as
-        # none and change the PAC under it. Its command line still says what it is: this port's,
-        # and whose. See test_down_finds_a_silent_proxy_by_its_command_line.
-        try:
-            silent = _proxies_on_port()
-        except ProcessCheckError as error:
-            click.echo(
-                f"{ui.RED}✗ could not check for a proxy on port {config.CONTROL_PORT} ({error}) — nothing was "
-                f"changed{ui.R}"
-            )
-            raise SystemExit(1) from None
-        for pid in silent:
-            _require_this_lyrebirds(pid, "a proxy found running", recorded_pid)
-    else:
-        silent = []
-
-    # The runtime file can be missing or unreadable — deleted by hand, or written by a version
-    # that crashed mid-write. Without this, `down` would find nothing to do and cheerfully report
-    # "stopped" while the proxy was still running and the PAC still pointing at it. Rediscover
-    # what we can: health knows the pid, and the OS knows which service carries the default route.
-    if health and not runtime.get("proxyPid"):
-        runtime = {**runtime, "proxyPid": health.get("pid")}
-    if health:
-        _require_this_lyrebirds(health.get("pid"), "the proxy answering", recorded_pid)
-        running = health.get("profileFingerprint")
-        if running and running != config.PROFILE_FINGERPRINT:
-            # Another profile of this user, on this port: the record is the port's and the
-            # routing points here, so `down` still takes it down — and says whose it was.
-            click.echo(
-                f"{ui.YELLOW}the proxy on port {config.CONTROL_PORT} runs another profile ({running}) — stopping "
-                f"it anyway: the network points at this port{ui.R}"
-            )
-    discovery_error = None
-    if not runtime.get("service"):
-        discovered, discovery_error = _discover_service()
-        if health or discovered:
-            runtime = {**runtime, "service": discovered}
-
-    if not health and not runtime and not silent:
-        # `silent` too: a proxy the scan found is something to stop, route or no route. See
-        # test_down_stops_a_silent_proxy_when_there_is_no_route.
-        if unreadable:
-            # Nothing running, and a record that cannot be read: what it holds — a previous PAC,
-            # a watchdog to stop — was neither done nor shown to be absent. See
-            # test_down_does_not_say_nothing_to_stop_over_a_record_it_cannot_read.
-            click.echo(f"{ui.RED}✗ no proxy running; what the record holds is unknown — see above{ui.R}")
-            raise SystemExit(1)
-        if discovery_error:
-            # No proxy and no record, but the one read that could have found a PAC of ours still
-            # installed never answered. "Nothing to stop" is true of the proxy and unproven of the
-            # network, and exit 0 would claim both.
-            click.echo(
-                f"{ui.RED}✗ nothing to stop, but the proxy settings could not be checked: the "
-                f"active network service could not be detected ({discovery_error}){ui.R}\n"
-                f"   check System Settings ▸ Network ▸ <service> ▸ Proxies by hand."
-            )
-            raise SystemExit(1)
-        click.echo(f"{ui.DIM}nothing to stop — no proxy running and no runtime state{ui.R}")
-        return
-
-    # Kill the watchdog FIRST so it can't reinstall the PAC mid-teardown — and go no further
-    # until it is proven gone. Left alive with a record `down` then keeps (a proxy that would not
-    # stop), its live loop re-enables the PAC this command just switched off, and its death path
-    # restores from the record and deletes it. See test_down_touches_nothing_while_the_watchdog_lives.
-    watchdog = _stop(runtime.get("watchdogPid"), "_watchdog")
-    if not watchdog.gone:
-        click.echo(
-            f"{ui.RED}✗ the watchdog (pid {runtime.get('watchdogPid')}) is {watchdog.value} — nothing was "
-            f"changed; stop it by hand (`kill -9 {runtime.get('watchdogPid')}`) and run `lyrebird down` again{ui.R}"
-        )
-        raise SystemExit(1)
-    # From here the record is rewritten as each obligation is met, so a `down` that has to stop
-    # early leaves the next one exactly what remains — not a watchdog to stop again, and not a
-    # PAC to restore a second time over whatever the user set in between. See
-    # test_down_records_what_is_left_when_the_proxy_will_not_stop. An unreadable record is the
-    # exception: it is not rewritten, because its bytes may still hold the previous PAC.
-    record = _remember if unreadable else _record
-    runtime = record(runtime, watchdogPid=None)
-
-    service = runtime.get("service")
-    unrestorable = False
-    if not service and discovery_error:
-        # No service to act on and no record of one, so there is nothing the PAC could be restored
-        # *on*. The proxy and the watchdog are still stopped below — leaving them alive would be a
-        # second failure on top of this one — but `down` must not then print "stopped" and exit 0,
-        # because the network is exactly as this command found it.
-        unrestorable = True
-        click.echo(
-            f"{ui.RED}✗ could not restore the proxy settings: the active network service "
-            f"could not be detected ({discovery_error}) and none is recorded{ui.R}\n"
-            f"   the proxy is being stopped anyway; check System Settings ▸ Network ▸ "
-            f"<service> ▸ Proxies by hand."
-        )
-    if service:
-        try:
-            previous = _restore_previous_pac(service, runtime)
-        except netproxy.NetworkSetupError as error:
-            click.echo(
-                f"{ui.RED}✗ could not restore proxy settings on '{service}': {error}{ui.R}\n"
-                f"   fix manually: System Settings ▸ Network ▸ {service} ▸ Proxies{ui.R}"
-            )
-            raise SystemExit(1) from error
-        if previous is None:
-            click.echo(f"{ui.DIM}PAC on '{service}' is not ours — left untouched{ui.R}")
-        elif unreadable:
-            # Ours was switched off — the Mac must not stay routed at a port about to go quiet —
-            # and that is all that is known to have happened.
-            click.echo(f"{ui.RED}✗ switched Lyrebird's PAC off on '{service}'; the previous settings are unknown{ui.R}")
-        elif previous.get("url"):
-            click.echo(f"✓ restored the previous PAC on '{service}': {previous['url']}")
-        else:
-            click.echo(f"✓ PAC removed from '{service}' — direct networking restored")
-        runtime = record(runtime, previousPac=None)
-
-    proxy_pid = runtime.get("proxyPid")
-    proxy = _stop(proxy_pid, "addon.py")
-    # Every other proxy this run has seen on its port — on the first health reading, in the
-    # process table, or answering now — is a candidate once the record's is proven gone: a
-    # replacement started under a different state root, an `up` that died before it could record
-    # its child, a survivor with a hung control port. `down` stops what is on its port (the PAC
-    # points there) rather than exiting 1 over a stale pid on every run — and each candidate
-    # passes the same identity gate against the *original* record before it is recorded or
-    # signalled, because recording it first would be the record vouching for what it just met.
-    # See test_down_stops_the_proxy_that_answers_when_the_recorded_one_is_gone,
-    # test_down_does_not_forget_a_replacement_that_went_silent,
-    # test_down_stops_a_silent_proxy_even_when_the_record_names_a_stale_pid and
-    # test_down_gates_a_proxy_first_seen_on_its_second_reading.
-    seen = [(health or {}).get("pid"), *silent, (api._health() or {}).get("pid")]
-    for candidate in dict.fromkeys(pid for pid in seen if pid not in (None, proxy_pid)):
-        if not proxy.gone:
-            break
-        _require_this_lyrebirds(candidate, "the proxy answering", recorded_pid, consequence="it is left running")
-        proxy_pid = candidate
-        runtime = record(runtime, proxyPid=proxy_pid)  # before the signal: a failed stop must not lose it
-        proxy = _stop(proxy_pid, "addon.py")
-
-    # "stopped" needs two proofs, and the record outlives both: the pid is gone, *and* nothing
-    # answers on the control port. Either alone used to be enough — the record was deleted before
-    # the port was even polled — and a proxy whose event loop had hung, or one whose pid the
-    # record never knew, was reported stopped with the PAC still pointing at it. See
-    # test_down_reports_a_proxy_that_is_alive_but_silent and
-    # test_down_keeps_the_record_when_the_proxy_cannot_be_checked.
-    if not proxy.gone:
-        click.echo(
-            f"{ui.RED}✗ proxy pid {proxy_pid} is {proxy.value} — the record is kept; stop it by hand "
-            f"(`kill -9 {proxy_pid}`) and run `lyrebird down` again{ui.R}"
-        )
-        raise SystemExit(1)
-    deadline = time.time() + _DOWN_WAIT_SECONDS
-    while time.time() < deadline and api._health() is not None:
-        time.sleep(0.2)
-    if api._health() is not None:
-        if proxy is Termination.STOPPED:
-            why = f"after pid {proxy_pid} stopped — something else holds the port"
-        else:
-            why = f"and pid {proxy_pid} is {proxy.value} — this is not the proxy the record names"
-        click.echo(f"{ui.YELLOW}⚠ proxy still responding on port {config.CONTROL_PORT} {why}; the record is kept{ui.R}")
-        raise SystemExit(1)
-    if unreadable:
-        if proxy_pid is None:
-            # Nothing answered and the record names nothing readable, so no process was stopped —
-            # and a proxy with a hung control port looks exactly like none. Said, not "stopped".
-            # See test_down_does_not_say_stopped_when_no_pid_was_ever_known.
-            click.echo(
-                f"{ui.YELLOW}no proxy answered, none was found running for port {config.CONTROL_PORT}, and no pid "
-                f"could be read from the record — the file is kept{ui.R}"
-            )
-        else:
-            click.echo(f"{ui.YELLOW}proxy stopped; {unreadable.path} is kept — see above{ui.R}")
-        raise SystemExit(1)
-    if config.runtime_file().is_file():
-        config.runtime_file().unlink()
-    click.echo(f"{ui.GREEN}stopped{ui.R}")
-    if unrestorable:
-        raise SystemExit(1)  # the proxy is down; the network was never put back
-
-
-def _remember(runtime: dict, **remaining: Any) -> dict:
-    """`_record` without the write, for a `down` whose record on disk must be left as it is."""
-    updated = {**runtime, **remaining}
-    return {key: value for key, value in updated.items() if value is not None}
-
-
-def _record(runtime: dict, **remaining: Any) -> dict:
-    """Rewrite the runtime record with these fields updated — `None` drops one. Written whether or
-    not a file existed: a `down` that found no record and a proxy it could not stop used to say
-    "the record is kept" with nothing on disk, and the next `down` knew no pid to try. See
-    test_down_writes_the_record_it_reconstructed_when_the_proxy_will_not_stop.
-
-    A write that fails is reported and survived: this is bookkeeping for the *next* `down`, and
-    raising here — after the watchdog is stopped, before the PAC is restored — left the network
-    routed at a proxy nothing was watching. See test_down_restores_the_network_when_the_record_cannot_be_written.
-    """
-    updated = {**runtime, **remaining}
-    updated = {key: value for key, value in updated.items() if value is not None}
-    try:
-        config.write_runtime(updated)
-    except OSError as error:
-        click.echo(f"{ui.YELLOW}⚠ could not update {config.runtime_file()}: {error} — carrying on{ui.R}")
-    return updated
-
-
-def _stop(pid: int | None, marker: str) -> Termination:
-    """`_terminate` for `down`: a failed check is printed where it happened and returned as
-    UNVERIFIED rather than raised, because there is a restore to finish either way and the exit
-    code is decided once it is."""
-    try:
-        return _terminate(pid, marker)
-    except ProcessCheckError as error:
-        click.echo(f"{ui.RED}✗ could not stop pid {pid}: {error}{ui.R}")
-        return Termination.UNVERIFIED
+# MARK: - `status`
 
 
 @click.command()
@@ -1215,70 +781,71 @@ def status(as_json: bool) -> None:
     never what it means — a flag that decides how output is rendered must not also decide what
     success is, or `lyrebird status && …` silently proceeds against a proxy that is mocking
     nothing.
+
+    It answers for the *requested* owner — this profile, this port — and reports the journal
+    beside it: a closed control port is exit 1 whatever the journal says, which is what the CI
+    launcher check and the subprocess test both depend on.
     """
-    health = api._health()
-    # Compared by hand, not `_require_same_profile` (see it for why): `status` reports the foreign
-    # proxy before exiting 1, so `--profile B status && …` cannot proceed against one mocking A.
-    running = (health or {}).get("profileFingerprint")
+    # One reading. A status taken from one and fields printed from another can disagree about which
+    # proxy answered — see test_status_output_and_exit_code_come_from_one_reading.
+    raw = api._health(config.CONTROL_PORT)
+    running = (raw or {}).get("profileFingerprint")
     foreign = bool(running) and running != config.PROFILE_FINGERPRINT
-    # This directory's record, or the one the proxy reports about its own — the same profile
-    # under another state directory answers here too, and its `down` cannot restore either.
-    runtime_error = None if foreign else (health or {}).get("runtimeError")
-    try:
-        runtime = config.read_runtime()
-    except config.RuntimeRecordUnreadable as error:
-        # Reported, and the exit code says the run is not as `up` left it: `down` will not be
-        # able to restore from this record. See test_status_reports_a_record_it_cannot_read.
-        runtime, runtime_error = {}, str(error)
-    # Discovery can fail the same way the PAC read below can, and it is reported the same way: as
-    # `pacError` with `service` null, not as a traceback that leaves `--json` printing nothing.
-    service, pac_error = runtime.get("service"), None
-    if not service:
-        service, pac_error = _discover_service()
-    # What the last `up` acted on, not a fresh lookup: the question `status` answers is which
-    # device this run trusted and relaunched, and re-resolving would report whatever is booted
-    # now — a different device, with the old one's CA, reading as if it were the one in use.
-    recorded_simulator = runtime.get("simulator")
-    simulator = recorded_simulator if isinstance(recorded_simulator, dict) else None
-    # One observation of the PAC feeds the output and the exit code alike. Reading it once for
-    # the banner, again for the JSON field and a third time for the exit status let a PAC that
-    # flips in between produce output that contradicts the exit code — a `status` whose text says
-    # one thing and whose `$?` says another is worse than either being wrong.
-    try:
-        pac = netproxy.pac_status(service) if service else None
-    except netproxy.NetworkSetupError as error:
-        # Unproven, which is different from seen to be off — the exit code is the same, the
-        # explanation is not, and a person reading "DISABLED" would go and switch it on.
-        pac, pac_error = None, str(error)
-    # A PAC pointing at this port is "ours" whoever started the proxy behind it, so a foreign
-    # profile fails the same way a disabled PAC does: nothing here is intercepting this profile.
-    intercepting = pac is not None and pac.enabled and pac.ours and not foreign
+
+    # Lock-free: `status` writes nothing, and waiting on the lock behind a slow `up` would turn a
+    # question into a hang.
+    journal = _session().read()
+    journal_error: str | None = journal.reason if isinstance(journal, Unreadable) else None
+    if journal_error is None and not foreign and raw and isinstance(raw.get("journalError"), str):
+        journal_error = raw["journalError"]
+
+    route, route_error = _active_service()
+    service, pac_error = _status_service(journal, route, route_error)
+    pac: Pac | None = None
+    if service is not None and pac_error is None:
+        try:
+            pac = netproxy.pac_status(service)
+        except netproxy.NetworkSetupError as error:
+            # Unproven, which is different from seen to be off — the exit code is the same, the
+            # explanation is not, and a person reading "DISABLED" would go and switch it on.
+            pac_error = str(error)
+    ours = pac is not None and pac.url == ownership.our_url(config.CONTROL_PORT)
+    # The route is part of "intercepting": our PAC on the journalled service routes nothing once the
+    # default route has moved to another one, and a banner saying ACTIVE beside exit 1 sent people
+    # the wrong way — see test_status_exits_1_when_the_route_moved_off_the_journalled_device.
+    on_route = route is not None and (not isinstance(journal, SessionRecord) or route.device == journal.service.device)
+    intercepting = pac is not None and pac.enabled and ours and not foreign and on_route
+    reasons = _status_reasons(journal, raw, route, route_error, pac, ours, foreign, journal_error, pac_error)
+    simulator = (
+        {"udid": journal.simulator.udid, "name": journal.simulator.name}
+        if isinstance(journal, SessionRecord) and journal.simulator is not None
+        else None
+    )
 
     if as_json:
-        # Every field below that describes a profile's state is whatever the proxy that answered
-        # said; when that proxy is running another profile, none of it is this profile's, so it
-        # is reported as unknown rather than handed over under this profile's name. `proxyUp`
-        # stays true — the port really is held — and `profileMismatch` says by whom.
-        mine = {} if foreign else (health or {})
+        # Every field that describes a profile's state is whatever the proxy that answered said;
+        # when that proxy is running another profile, none of it is this profile's, so it is
+        # reported as unknown rather than handed over under this profile's name.
+        mine = {} if foreign else (raw or {})
         click.echo(
             json.dumps(
                 {
-                    "proxyUp": health is not None,
+                    "proxyUp": raw is not None,
                     "intercepting": intercepting,
                     "profileMismatch": foreign,
                     "profileFingerprint": config.PROFILE_FINGERPRINT,
                     "runningProfileFingerprint": running,
                     "pacError": pac_error,
-                    "runtimeError": runtime_error,
+                    # Renamed from `runtimeError`: the per-port record it named is gone, and this is
+                    # the session journal — reported from the local read *and* from the proxy's own.
+                    "journalError": journal_error,
                     "activeScenario": mine.get("activeScenario"),
                     "overrideCount": mine.get("overrideCount"),
-                    "scenarios": None if foreign else (health or {}).get("scenarios", []),
+                    "scenarios": None if foreign else (raw or {}).get("scenarios", []),
                     # `null` when the running engine did not supply the field, never `[]`. A current
                     # engine always sends both, with one entry per rule — so `[]` is a real state ("no
                     # rules here") and a missing key is a capability signal ("this proxy cannot tell
-                    # you"). Defaulting to `[]` collapsed those into the claim that nothing has answered,
-                    # which is the shape this file exists to avoid. The exit code is computed separately
-                    # and still does not depend on either field existing.
+                    # you"). Defaulting to `[]` collapsed those into the claim that nothing has answered.
                     "sequences": mine.get("sequences"),
                     "answers": mine.get("answers"),
                     "simBundleId": mine.get("simBundleId"),
@@ -1287,7 +854,7 @@ def status(as_json: bool) -> None:
                     # `{"udid": …, "name": …}`, or null when no `up` has recorded one — which is a real
                     # state ("nothing here trusted a CA") and not the same as "the default device".
                     "simulator": simulator,
-                    "pac": {"url": pac.url, "enabled": pac.enabled, "ours": pac.ours} if pac else None,
+                    "pac": {"url": pac.url, "enabled": pac.enabled, "ours": ours} if pac else None,
                 },
                 indent=2,
             )
@@ -1296,25 +863,21 @@ def status(as_json: bool) -> None:
         click.echo(f"{ui.DIM}profile: {config.PROFILE_DIR}{ui.R}")
         if foreign:
             # Not the banner: "PAC is disabled/not ours" would send the operator to `lyrebird up`,
-            # which refuses this exact situation. The remedy is to stop that proxy or aim
-            # elsewhere, so say which proxy answered and print both fingerprints to identify it.
+            # which refuses this exact situation.
             click.echo(
                 f"{ui.BOLD}{ui.YELLOW}🟠 PROXY UP, ANOTHER PROFILE{ui.R} — nothing is intercepting for this profile."
             )
             click.echo(api._profile_mismatch(str(running)))
-        elif pac_error and health is not None:
-            # Not the banner: its "PAC is disabled/not ours" is a diagnosis this read never made.
-            # `service` is None when discovery itself is what failed, and "on 'None'" would name a
-            # network service that does not exist.
+        elif pac_error and raw is not None:
             where = f" on '{service}'" if service else ""
             click.echo(
                 f"{ui.BOLD}{ui.YELLOW}🟠 PROXY UP, PAC UNREADABLE{ui.R} — could not read the PAC{where}: {pac_error}"
             )
         else:
-            ui._banner(health, service, intercepting)
-        if health and not foreign:
-            click.echo(f"  scenarios: {', '.join(health['scenarios'])}")
-            for state in health.get("sequences", []):
+            ui._banner(raw, service, intercepting)
+        if raw and not foreign:
+            click.echo(f"  scenarios: {', '.join(raw['scenarios'])}")
+            for state in raw.get("sequences", []):
                 position = (
                     f"next step {state['nextStep']}/{state['stepCount']}"
                     if state["nextStep"]
@@ -1325,17 +888,79 @@ def status(as_json: bool) -> None:
                 click.echo(f"  sequence {state['id']}: {position} · {trigger}{overrun}")
         if pac is not None:
             state = "enabled" if pac.enabled else f"{ui.RED}DISABLED{ui.R}"
-            owner = "" if pac.ours or not pac.url else " · not ours"
+            owner = "" if ours or not pac.url else " · not ours"
             click.echo(f"  PAC on '{service}': {pac.url or '(none)'} · {state}{owner}")
-        if runtime_error:
-            click.echo(f"  {ui.RED}✗ runtime record: {runtime_error} — `down` cannot restore from it{ui.R}")
+        for reason in reasons:
+            click.echo(f"  {ui.RED}✗ {reason}{ui.R}")
         if simulator:
             click.echo(
-                f"  simulator: {simulator.get('name')} ({simulator.get('udid')}) "
+                f"  simulator: {simulator['name']} ({simulator['udid']}) "
                 f"{ui.DIM}· CA + relaunch only; the PAC is not scoped to it{ui.R}"
             )
 
-    raise SystemExit(0 if health is not None and intercepting and runtime_error is None else 1)
+    raise SystemExit(1 if reasons else 0)
+
+
+def _active_service() -> tuple[ServiceRef | None, str | None]:
+    try:
+        return netproxy.active_service(), None
+    except netproxy.NetworkSetupError as error:
+        return None, str(error)
+
+
+def _status_service(
+    journal: ownership.Journal, route: ServiceRef | None, route_error: str | None
+) -> tuple[str | None, str | None]:
+    """Which service `status` reports on: the journal's, resolved by device, or — with no session —
+    whichever carries the default route."""
+    if isinstance(journal, SessionRecord):
+        try:
+            return netproxy.resolve(journal.service), None
+        except netproxy.NetworkSetupError as error:
+            return journal.service.name, str(error)
+    if route is not None:
+        return route.name, None
+    return None, route_error
+
+
+def _status_reasons(
+    journal: ownership.Journal,
+    raw: dict | None,
+    route: ServiceRef | None,
+    route_error: str | None,
+    pac: Pac | None,
+    ours: bool,
+    foreign: bool,
+    journal_error: str | None,
+    pac_error: str | None,
+) -> list[str]:
+    """Every reason this `status` is not exit 0, in the order a person would act on them."""
+    reasons: list[str] = []
+    if foreign:
+        reasons.append(f"another profile answers on port {config.CONTROL_PORT}")
+    if journal_error:
+        reasons.append(f"session journal: {journal_error} — `down` cannot restore from it")
+    if not isinstance(journal, SessionRecord):
+        reasons.append("no session holds the PAC — `lyrebird up`")
+        return reasons
+    if journal.owner != _owner():
+        reasons.append(
+            f"another session owns the PAC: port {journal.owner.control_port}, "
+            f"profile {journal.owner.profile_fingerprint}"
+        )
+        return reasons
+    port = journal.owner.control_port
+    if raw is None or raw.get("pid") != journal.proxy.pid:
+        reasons.append(f"the recorded proxy (pid {journal.proxy.pid}) is not what answers on port {port}")
+    if pac_error is not None:
+        reasons.append(f"the PAC on '{journal.service.name}' could not be read: {pac_error}")
+    elif pac is None or not ours or not pac.enabled:
+        reasons.append(f"the PAC on '{journal.service.name}' is not routing to this session")
+    if route is None:
+        reasons.append(f"the active network service could not be confirmed{f': {route_error}' if route_error else ''}")
+    elif route.device != journal.service.device:
+        reasons.append(f"route moved to {route.device} — `lyrebird down && lyrebird up`")
+    return reasons
 
 
 @click.command()
@@ -1343,165 +968,3 @@ def logs() -> None:
     """Print the last 60 lines of the proxy log (not a follow — use `tail -f` on the path shown)."""
     click.echo(ui._tail_log(60))
     click.echo(f"{ui.DIM}{config.LOG_FILE}{ui.R}", err=True)
-
-
-@click.command(name="_watchdog", hidden=True)
-@click.argument("service")
-@click.option("--control-port", type=int, default=None, help="Ignored; puts the port in `ps` for `_pid_is_ours`.")
-@click.option("--state-root-id", default=None, help="Ignored; puts the state root in `ps` for `_pid_is_ours`.")
-def watchdog(service: str, control_port: int | None, state_root_id: str | None) -> None:
-    while True:
-        if api._health() is None:
-            if _restore_after_death(service):
-                return
-            continue  # a replacement proxy is live: go back to watching it
-        if _should_retire():
-            return
-        _repair_pac(service)
-        time.sleep(2)
-
-
-def _should_retire() -> bool:
-    """Whether the proxy answering on our control port is still the one this watchdog serves.
-
-    Health alone answers "is a proxy up on this port", which is not the question: the port outlives
-    the proxy that opened it, so a watchdog whose proxy died while a later `up` took the port kept
-    seeing health, never reached the restore that holds the loop's only `return`, and repaired a PAC
-    for a proxy that was not the one running. Ports are reused exactly as pids are, which
-    `_pid_is_ours` already refuses to trust. Pinned by
-    `test_watchdog_retires_when_another_proxy_holds_its_control_port`.
-
-    Health is read here rather than passed in, because the caller's look happened before this lock:
-    `up` can start a replacement and adopt this very watchdog in that gap, and comparing the older
-    look against the newer record retires the one watchdog the new proxy has — see
-    `test_watchdog_does_not_retire_when_up_replaces_the_proxy_while_it_waits_for_the_lock`. Both
-    observations have to come from inside one critical section to mean anything together.
-
-    Retiring leaves the record alone. It is the only description of what to put back, and health
-    proves a listener rather than a successor: records are keyed by state root *and* port, so a
-    replacement under another state root answers without inheriting this record's service or
-    `previousPac`. A PAC stranded that way is for `down`, or the recovery in TROUBLESHOOTING.md.
-    """
-    with open(config.lock_file(), "w") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        try:
-            runtime = config.read_runtime()
-        except config.RuntimeRecordUnreadable:
-            return False  # unreadable is not gone: keep watching, and leave the file for `down`
-        if not runtime:
-            return True  # `down` has been, or this port's record belongs to another state root
-        recorded = runtime.get("watchdogPid")
-        try:
-            if recorded is not None and recorded != os.getpid() and _pid_is_ours(recorded, "_watchdog"):
-                return True  # a live successor owns the record; two of us repairing one service is nobody's design
-        except ProcessCheckError:
-            return False  # unverifiable is not "handed over": keep watching, ask again next poll
-        health = api._health()
-        if health is None:
-            return False  # it died while we waited: the next look takes the restore path, not this one
-        # A record naming no live watchdog is one no `up` has claimed — it failed partway, or the
-        # watchdog it named has since gone. Either way there is no successor to hand over to.
-        return health.get("pid") != runtime.get("proxyPid")
-
-
-def _repair_pac(service: str) -> None:
-    """The watchdog's live loop: macOS silently disables our PAC while the proxy is alive, so
-    switch it back on.
-
-    Under the lock `up` holds, and only while the runtime record still names this service. An
-    `up` that moves the route to another service restores this one — and restoring "no previous
-    PAC" leaves our URL installed, disabled — exactly what this loop exists to undo. Unlocked, it
-    undid it in the gap before its own SIGTERM landed, and the next `down` restored the new
-    service only.
-    """
-    with open(config.lock_file(), "w") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        try:
-            recorded_service = config.read_runtime().get("service")
-        except config.RuntimeRecordUnreadable:
-            return  # whose service this is cannot be read: neither repair nor give up, ask again
-        if recorded_service != service:
-            return  # migrated away from, or `down` has been: not ours to touch any more
-        try:
-            pac = netproxy.pac_status(service)
-        except netproxy.NetworkSetupError:
-            return  # unknown is not "off": neither reinstall nor give up, just ask again
-        if not (pac.enabled and pac.ours) and pac.url in ("", netproxy.pac_url()):
-            with contextlib.suppress(netproxy.NetworkSetupError):
-                netproxy.set_pac(service)
-
-
-def _restore_after_death(service: str) -> bool:
-    """The watchdog's job once health is gone: put back whatever the user had, rather than
-    merely switching off. True when that job is finished — restored, or given up with the runtime
-    file left for `down` — and False when a replacement proxy turns out to be live.
-
-    Under the lock `up` takes while it starts a proxy and installs its PAC, with health checked
-    again once it is held. `up` reuses a running watchdog rather than spawning another, so without
-    the lock a replacement starting during this restore had its PAC restored over and then its
-    runtime file deleted; the health check before the lock was too early to see it.
-
-    Several attempts, not one: a network change in progress is a common reason for a proxy to
-    die, and it makes `networksetup` fail for a moment too. Giving up on the first error left
-    the Mac routed at a dead port with nobody left to fix it.
-    """
-    with open(config.lock_file(), "w") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        if api._health() is not None:
-            return False
-        try:
-            runtime = config.read_runtime()
-        except config.RuntimeRecordUnreadable:
-            # What to put back is unknown; that the Mac must not stay routed at a dead port is
-            # not. Ours is switched off, the file is kept for `down` and the person reading it.
-            # See test_watchdog_switches_ours_off_and_keeps_a_record_it_cannot_read.
-            for _ in range(_WATCHDOG_RESTORE_ATTEMPTS):
-                try:
-                    _restore_previous_pac(service, {})
-                except netproxy.NetworkSetupError:
-                    time.sleep(2)
-                    continue
-                break
-            return True
-        if runtime.get("service") not in (None, service):
-            # The record is another service's — an `up` moved the route and then failed before
-            # it could replace this watchdog. Restoring *our* service from it would read the PAC
-            # there as "not ours" and delete a record that still matters. Leave it for `down`.
-            return True
-        for _ in range(_WATCHDOG_RESTORE_ATTEMPTS):
-            try:
-                _restore_previous_pac(service, runtime)
-            except netproxy.NetworkSetupError:
-                time.sleep(2)
-                continue
-            # The settings it describes have been put back, so a later `up` must snapshot the
-            # network afresh rather than trust this record — but the record also names the
-            # proxy, and one that is alive with its control port hung is exactly what this path
-            # sees as dead. Deleted, `down` had nothing left to stop it by. See
-            # test_watchdog_keeps_the_record_of_a_proxy_that_is_alive_but_silent.
-            try:
-                survivor = _pid_is_ours(runtime.get("proxyPid"), "addon.py")
-            except ProcessCheckError:
-                survivor = True  # unverifiable: keep the record rather than lose the pid
-            if survivor:
-                _record(runtime, previousPac=None)
-            else:
-                with contextlib.suppress(OSError):
-                    config.runtime_file().unlink()
-            return True
-        # Could not read the PAC, or could not put it back. The runtime file is the only record
-        # of what to restore, so it stays for `down` — or the next `up` — to act on; deleting it
-        # here is how a failed restore used to become permanent and invisible.
-        return True
-
-
-def _start_fresh_log() -> None:
-    """Begin each run on a new inode rather than truncating the old one.
-
-    The log names every host and path that came through, so it is 0600 — but a log left by an
-    older version may be 0644, and `chmod` cannot revoke a descriptor somebody already holds.
-    Truncating in place keeps that inode, so a reader who opened it while it was readable goes on
-    seeing new traffic. Renaming a fresh private file over it leaves them holding the old one.
-    """
-    config.LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-    config.atomic_write(config.LOG_FILE, "")

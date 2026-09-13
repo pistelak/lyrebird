@@ -193,9 +193,13 @@ Your hosts and scenarios live in a **profile** directory, outside this repo. The
 Because a profile is plain JSON, you can keep it in its own repository and review scenarios the way
 you review code. Saving a scenario writes to it — that is what it is for. Everything *operational*
 stays out, in the macOS directory that matches how long it should live: the active-scenario pointer
-and the CA under `~/Library/Application Support/Lyrebird/`, the proxy log under
+and the CA under `~/Library/Application Support/Lyrebird/`, the record of who holds your proxy
+settings under `~/Library/Application Support/Lyrebird/session/`, the proxy log under
 `~/Library/Logs/Lyrebird/`. So a profile in git changes when you change a scenario, never merely
 because the proxy ran.
+
+There is one such session per user, wherever the profile is and whichever port it took, which is
+why `lyrebird down` needs neither: it reads that record and restores from it.
 
 Where a profile sits has two consequences worth knowing before you move one: saving a scenario
 requires its file to resolve inside the profile, and the remembered active scenario is keyed by the
@@ -224,7 +228,9 @@ with an earlier tag.
 The steps are chained because each one only makes sense if the last worked — a checkout that failed
 leaves the old tree, and reinstalling into it would look like an upgrade that happened. `down` comes
 first because swapping dependencies under a running engine leaves a mixed runtime that neither
-version was tested as. Rebuild the menu-bar app afterwards if you use it.
+version was tested as — and it has to be the *previous* version's `down`, because that is the one
+that can release the session it started. A record left behind by an older Lyrebird is reported by
+the new one, never imported. Rebuild the menu-bar app afterwards if you use it.
 
 If you skipped the `PATH` symlink, `bin/lyrebird down` from the checkout root does the same.
 
@@ -246,7 +252,10 @@ the menu-bar app does not stop interception** — the engine runs detached from 
 what puts your proxy settings back.
 
 Operational state is separate, and optional to remove: the active-scenario pointer and the CA under
-`~/Library/Application Support/Lyrebird/`, logs under `~/Library/Logs/Lyrebird/`.
+`~/Library/Application Support/Lyrebird/`, the session journal and its lock under
+`~/Library/Application Support/Lyrebird/session/`, logs under `~/Library/Logs/Lyrebird/`. Delete
+`session/` only after a `down` that exited 0 — while a session is live it is the only record of the
+settings to put back.
 
 Two things deliberately survive. **Your profile** (`~/.config/lyrebird` by default) holds the
 scenarios you wrote — nothing above touches it. And **the CA stays trusted in the simulator**:
@@ -286,7 +295,8 @@ exactly what it does:
   and which override matched — never a request or response body.
 - The control API is unauthenticated on loopback, with Host and Origin checks so a web page
   you're visiting can't drive it. Other processes running as you still can.
-- `down` restores the proxy settings you had before.
+- `down` restores the proxy settings you had before — and nothing else does: a proxy that dies
+  leaves the PAC pointing at a dead port until you run it.
 
 Development machines only. [SECURITY.md](SECURITY.md) has the full threat model and how to remove
 the CA.

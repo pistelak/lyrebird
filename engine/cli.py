@@ -26,8 +26,10 @@
     lyrebird logs                         print the last 60 lines; path on stderr
 
 Routing uses a *host-scoped PAC* so only the hosts in your profile go through the proxy; everything
-else stays DIRECT. Whatever PAC you had before is recorded and put back on `down` — and by the
-watchdog if the proxy dies, so a crash is unlikely to strand the Mac pointing at a dead port.
+else stays DIRECT. Whatever PAC you had before is recorded in this user's one session journal and
+put back on `down`. Nothing puts it back automatically: a proxy that dies leaves the Mac pointing
+at a dead port until you run `lyrebird down`. There is one such session per user — `lyrebird down`
+finds it from any profile, port or directory, and is the only recovery command there is.
 """
 
 from __future__ import annotations
@@ -55,8 +57,8 @@ def cli(profile: str | None) -> None:
 
 
 # Every command and group lives in the module named for its concern; this is the only place that
-# knows the whole set. `cli.py` stays the entry point `bin/lyrebird` and the watchdog spawn run by
-# path, so what it registers is what `lyrebird --help` lists.
+# knows the whole set. `cli.py` stays the entry point `bin/lyrebird` runs by path, so what it
+# registers is what `lyrebird --help` lists.
 cli.add_command(supervisor.init)
 cli.add_command(supervisor.up)
 cli.add_command(supervisor.down)
@@ -75,7 +77,6 @@ cli.add_command(sim.relaunch_cmd)
 cli.add_command(sim.trust_ca_cmd)
 cli.add_command(sim.untrust_ca_cmd)
 cli.add_command(supervisor.logs)
-cli.add_command(supervisor.watchdog)
 
 
 if __name__ == "__main__":
