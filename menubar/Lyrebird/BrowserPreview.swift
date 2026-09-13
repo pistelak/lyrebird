@@ -116,8 +116,9 @@
 
     private final class PreviewProtocol: URLProtocol {
         private static let lock = NSLock()
-        private static var active = BrowserPreview.initialScenario
-        private static var cleared = false
+        // Unsafe to the compiler only: every read and write below holds `lock`.
+        nonisolated(unsafe) private static var active = BrowserPreview.initialScenario
+        nonisolated(unsafe) private static var cleared = false
 
         override class func canInit(with request: URLRequest) -> Bool {
             true

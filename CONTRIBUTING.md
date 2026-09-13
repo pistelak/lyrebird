@@ -64,6 +64,11 @@ ignored `.build` directories. `make acceptance` is separate and never part of `m
 
 ## Swift tests
 
+The app and both test targets build in Swift 6 language mode (`SWIFT_VERSION` in
+`menubar/project.yml`), so an isolation mistake is a compile error rather than a crash on a
+background queue. A `nonisolated(unsafe)` static carries a comment naming the lock or the actor
+that actually guards it.
+
 Use Swift Testing (`import Testing`, `@Test`, `#expect`, and `#require`) for unit tests.
 Keep XCTest only where there is no replacement, such as XCUIAutomation. Pure suites can run
 in parallel. Tests that share app preferences, URL protocol stubs, or Dock state belong under

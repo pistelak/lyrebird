@@ -13,8 +13,8 @@ final class StubURLProtocol: URLProtocol {
     typealias Handler = @Sendable (URLRequest) throws -> (HTTPURLResponse, Data)
 
     private static let lock = NSLock()
-    private static var handler: Handler?
-    private static var recorded: [URLRequest] = []
+    nonisolated(unsafe) private static var handler: Handler?
+    nonisolated(unsafe) private static var recorded: [URLRequest] = []
 
     /// Installs the handler and clears the recording, so each test starts from an empty log.
     static func install(_ handler: @escaping Handler) {

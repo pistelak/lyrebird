@@ -32,7 +32,7 @@ enum Control {
     static func shell(
         _ launchPath: String, _ arguments: [String],
         environment: [String: String] = [:],
-        readerStarted: ((OutputBuffer) -> Void)? = nil
+        readerStarted: (@Sendable (OutputBuffer) -> Void)? = nil
     ) async -> Result {
         guard !launchPath.isEmpty, FileManager.default.isExecutableFile(atPath: launchPath) else {
             return Result(

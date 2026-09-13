@@ -5,6 +5,7 @@ import Testing
 
 /// Redirect hosted tests away from the user's settings and verify cleanup preserves them.
 /// A fixed scratch domain avoids leaving one preferences file behind per test run.
+@MainActor
 enum TestDefaults {
     static let suiteName = "com.lyrebird.LyrebirdTests"
     static let ownedKeys = [Config.controlURLKey, Config.lyrebirdPathKey, Config.profilePathKey]
