@@ -27,7 +27,8 @@ Lyrebird's contract for coding agents; assumes a shell and JSON.
 
 Use your own profile. On a shared one, follow
 [the scratch-scenario procedure](#working-on-a-scenario-without-disturbing-anyone) first, and name
-that scenario in the loop.
+that scenario in the loop. On a shared Mac, one agent runs at a time — see
+[Several agents on one Mac](#several-agents-on-one-mac).
 
 ```bash
 lyrebird --profile PATH validate NAME   # offline: non-zero unless that scenario loads whole
@@ -42,7 +43,9 @@ The contract:
 
 - **Profile** — always pass `--profile`.
 - **Cleanup** — check `up`'s exit code; on failure stop and run `down`, because setup may have left
-  the proxy running. Run `down` on every exit path.
+  the proxy running — unless `up` refused over a session you did not start: then wait, see
+  [Several agents on one Mac](#several-agents-on-one-mac). Run `down` on every exit path of a
+  session you started.
 - **Exit codes** — 0 means the postcondition was met, never merely that the command ran.
   `assert-answered --run`: 1 = the rule answered nothing in your run; 3 = the assertion could not be
   made — resolve the reported cause, then reset and repeat the action.
@@ -55,7 +58,7 @@ The contract:
 Do not:
 
 - **Point it at production.** Development and simulators only.
-- **Leave interception on.** Run `down`.
+- **Leave interception on.** Run `down` on the session you started.
 - **Commit a profile** into this repository, or any public one. Scenarios can hold real payloads.
 - **Assume no output means success.** Check exit codes; they are meaningful.
 
@@ -116,6 +119,16 @@ selection as a way to run two scenarios side by side.
 UDIDs are matched, and what happens on a device that does or
 does not trust the CA.
 
+### Several agents on one Mac
+
+There is one session per user, so one agent at a time. The agent that ran `up` runs `down`; nobody
+else does. A second agent's `up` is refused, naming the session's port and profile. To wait for it,
+poll `LYREBIRD_CONTROL_PORT=<that port> lyrebird status --json` until `proxyUp` is `false` — that is
+permission to try `up` again, not proof the session is gone: `up` still refuses over a journal a
+failed `down` left behind, and says so. While a session is on, every simulator app on the profile's
+hosts is answered from that session's scenario and credits that agent's runs, so quit your app until
+it is your turn.
+
 ## Five things worth knowing before you start
 
 **1. Exit codes mean the postcondition, not "the command ran."**
@@ -161,8 +174,8 @@ With `--run`, 1 means the assertion was made and failed; 3 means it could not be
 | 3 | The run you named is not the rule's current run, the rule is not in the active scenario at all, or nothing could be read about it: the proxy is unreachable, too old to report runs, or running another profile. **Not** "the mock did not apply" |
 
 Exit 3 is the one a harness handles separately: nothing was learned about your run, so re-draw the
-boundary and run the action again (or, for the version-skew cases, `lyrebird down && lyrebird up`)
-rather than going to debug the rule. A `runId` of `null` — the rule has no run at all, its state
+boundary and run the action again (or, for the version-skew cases, `lyrebird down && lyrebird up`
+on your own session) rather than going to debug the rule. A `runId` of `null` — the rule has no run at all, its state
 dropped by a scenario switch or a replacement — is exit 3 too, never a count of zero. So is another
 profile's proxy taking the port mid-test: its counters describe someone else's rules, and the
 fingerprint is compared on every poll, so the wait ends there instead of running to its timeout.
@@ -223,10 +236,11 @@ intercepting, but not for you, so `status` exits non-zero and says so: `profileM
 with `intercepting` `false`, the two fingerprints name which proxy answered and which profile you
 asked about, and everything that describes a profile's state (`activeScenario`, `overrideCount`,
 `scenarios`, `sequences`, `answers`, `simBundleId`) is `null` — it is the other profile's, not
-yours. The fix is `lyrebird down`; there is one session per user, so `up` refuses while that one
-exists, whatever port or profile you ask for. A proxy too old to report `profileFingerprint` is
-another profile too — it predates the guard, so nothing can vouch for whose it is; stop it with
-that version's own `lyrebird down`.
+yours. The fix is that session's owner running `lyrebird down` — if that is not you, wait, see
+[Several agents on one Mac](#several-agents-on-one-mac); there is one session per user, so `up`
+refuses while that one exists, whatever port or profile you ask for. A proxy too old to report
+`profileFingerprint` is another profile too — it predates the guard, so nothing can vouch for whose
+it is; if you started it, stop it with that version's own `lyrebird down`.
 
 **4. Relaunch the app after `up`, every time.**
 
@@ -238,8 +252,9 @@ Set `simBundleId` in the profile and `up` handles it — and name the scenario i
 
 **5. `down` is not optional.**
 
-It restores the proxy settings that were there before. Run it even on your failure paths. Nothing
-else does it: a proxy that dies leaves the Mac routed at a dead port until `lyrebird down` runs.
+It restores the proxy settings that were there before. Run it even on your failure paths, for a
+session you started. Nothing else does it: a proxy that dies leaves the Mac routed at a dead port
+until `lyrebird down` runs.
 
 `down` is also the only recovery command, and it needs nothing to find the session: no `--profile`,
 no port, no directory. It reads this user's one session journal, which is what the run recorded the
@@ -247,8 +262,8 @@ settings in. Exit 0 means they are back; exit 1 means they are not, and it says 
 including a PAC somebody set by hand since, which it never writes over: it prints the settings it
 recorded at `up` for you to put back yourself.
 
-There is one such session per user, so `up` refuses while one exists — even this profile's. To put
-a different scenario in front of the app on a running session: `lyrebird use NAME && lyrebird
+There is one such session per user, so `up` refuses while one exists — even this profile's. For a
+session you started, to put a different scenario in front of the app: `lyrebird use NAME && lyrebird
 relaunch`.
 
 ## Making a scenario
@@ -275,7 +290,7 @@ the rule when omitted — so the minimum is:
 Files are picked up when the proxy starts, so a scenario file written while Lyrebird is running is
 not there yet. `lyrebird --profile PATH scenario reload` re-reads them without a restart; it refuses
 whole if any file cannot be read, and **it resets run evidence**, so `lyrebird reset` and any
-`assert-answered --run` boundary come after it, not before. A restart
+`assert-answered --run` boundary come after it, not before. A restart of your own session
 (`down && up --use orders-outage`) is the other way, and is the lenient one: startup keeps the rules
 it can where reload refuses.
 
@@ -382,7 +397,7 @@ One proxy holds the control port, so the CLI also names the profile it means wit
 `X-Lyrebird-Profile` header: run it with a `--profile` other than the one that is running and the
 call is refused with **409** `profile_mismatch` instead of quietly acting on the running profile.
 `/__mock__/health` and `/proxy.pac` are unscoped and answer whoever asks. The check lives in the
-running proxy, so restart it (`lyrebird down && lyrebird up`) after upgrading.
+running proxy, so its owner restarts it (`lyrebird down && lyrebird up`) after upgrading.
 [engine/README.md — Admin API](engine/README.md#admin-api-__mock__) has the header, the error body
 and why those two routes are exempt.
 
@@ -422,7 +437,7 @@ Both lists are `null`, not `[]`, when the running proxy did not report them — 
 an engine older than the field, or one that is not up at all. An empty list means "the engine
 answered, and there is nothing to show"; `null` means "it could not tell you", which is a different
 thing to act on. If you pipe this into `jq '.answers[]'`, handle the null rather than reading it as
-zero answers; `lyrebird down && lyrebird up` clears the version-skew case.
+zero answers; `lyrebird down && lyrebird up` on your own session clears the version-skew case.
 
 The same distinction one level down: inside an entry, `"runId": null` means the rule has no run at
 all — never reset, never near a request, or its run state dropped by a scenario switch or a
@@ -435,7 +450,9 @@ If a rule advances when you did not expect it to, the fix is usually a narrower 
 
 ## Working on a scenario without disturbing anyone
 
-A profile is shared state. If it belongs to a person or a team, do not edit their scenarios.
+A profile is shared state. If it belongs to a person or a team, do not edit their scenarios. This is
+for a session you started; `reload --use` and `use` switch the running session's scenario, so on
+another agent's session wait for its `down` instead.
 
 ```bash
 lyrebird status --json                                  # note activeScenario before you touch anything
