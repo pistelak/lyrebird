@@ -53,11 +53,16 @@ final class StatusItemController: NSObject {
     func update(_ content: Content) {
         self.content = content
         let status = content.status
-        item.button?.image = Self.templateImage(for: status, description: content.statusLine)
+        #if DEBUG
+            let line = content.statusLine + " · debug build"
+        #else
+            let line = content.statusLine
+        #endif
+        item.button?.image = Self.templateImage(for: status, description: line)
         dotView.color = status.dotColor
         dotView.isHidden = status.dotColor == nil
-        item.button?.toolTip = content.statusLine
-        item.button?.setAccessibilityLabel("Lyrebird: " + content.statusLine)
+        item.button?.toolTip = line
+        item.button?.setAccessibilityLabel("Lyrebird: " + line)
         rebuildMenu()
     }
 
