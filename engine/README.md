@@ -193,6 +193,13 @@ and what the PAC advertises — those are deliberately separate settings.
     strings cannot answer it: a file named `orders-outage.json: backup.json` produces a
     `"skipped …"` line that begins exactly like a problem with `orders-outage`. A file whose
     *name* was rejected appears in `loadProblems` only — it could never have become a scenario.
+  - `staleScenarioFiles` lists scenario files whose size or modification time changed, or that
+    appeared or vanished, since the proxy read them (`["orders-outage.json", "checkout/added.json"]`);
+    `lyrebird status` prints them as a warning. Metadata only: an edit that keeps both size and
+    timestamp is not seen, a `touch` is, and a directory that cannot be listed discovers nothing, so
+    every file read from it is reported. An empty list does not certify that what is served matches
+    the disk. A successful `scenario reload` publishes fresh stamps with the fresh rules; a refused
+    one keeps the old stamps beside the old rules, so the list stands.
 - `GET /rules` — the active scenario's rules, each carrying `rewrite`, `answer` (its row from
   `answers`) and `sequenceState` (its row from `sequences`, or `null`). `?scenario=NAME` browses a
   loaded scenario instead: the same rules and the same `rewrite`, with `answer` and `sequenceState`

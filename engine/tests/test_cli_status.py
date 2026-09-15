@@ -132,6 +132,48 @@ def test_status_json_carries_sequences(profile, runner, monkeypatch):
     assert '"sequences"' in result.output and "ovr_a" in result.output
 
 
+def test_status_warns_about_scenario_files_changed_since_load(profile, runner, monkeypatch):
+    """The proxy serving a file's previous contents looked, in every command, like one serving the
+    file. The warning is the one place that says otherwise; it names the remedy and is not a reason,
+    so the exit code still reports interception."""
+    _healthy(monkeypatch, staleScenarioFiles=["orders-outage.json", "checkout/added.json"])
+
+    result = runner.invoke(cli.cli, ["status"])
+
+    assert result.exit_code == 0, result.output
+    assert "changed since the proxy read them: orders-outage.json, checkout/added.json" in result.output
+    assert "lyrebird scenario reload" in result.output
+
+
+def test_status_warns_about_changed_files_even_when_the_pac_cannot_be_read(profile, runner, monkeypatch):
+    """The warning sits outside the banner's branches: a PAC read failure changes what the banner
+    says, not whether the files changed."""
+    world = _healthy(monkeypatch, staleScenarioFiles=["orders-outage.json"])
+    world["network"].fail_at(3)  # the PAC read, after the route and the service table
+
+    result = runner.invoke(cli.cli, ["status"])
+
+    assert result.exit_code == 1, result.output
+    assert "PAC UNREADABLE" in result.output
+    assert "changed since the proxy read them: orders-outage.json" in result.output
+
+
+def test_status_json_passes_stale_scenario_files_through_and_reports_null_when_unsent(profile, runner, monkeypatch):
+    world = _status_network(monkeypatch)
+    FakeHealth(
+        sequence=[
+            answering(world["proxy"].pid, staleScenarioFiles=["orders-outage.json"]),
+            answering(world["proxy"].pid),
+        ]
+    ).install(monkeypatch)
+
+    listed = json.loads(runner.invoke(cli.cli, ["status", "--json"]).output)
+    unsent = json.loads(runner.invoke(cli.cli, ["status", "--json"]).output)
+
+    assert listed["staleScenarioFiles"] == ["orders-outage.json"]
+    assert unsent["staleScenarioFiles"] is None, "an engine that does not send it cannot be read as 'nothing changed'"
+
+
 def test_status_output_and_exit_code_come_from_one_reading(profile, runner, monkeypatch):
     """A status taken from one fetch and fields printed from another can disagree about which proxy
     answered — and a `status` whose text says one thing and whose `$?` says another is worse than

@@ -1056,6 +1056,64 @@ def test_reload_invalidates_prior_run_evidence(profile):
     assert slot["answers"] == 2, "the orphaned slot is mutated, and nothing can reach it"
 
 
+def test_a_scenario_file_edited_after_load_is_reported_stale(profile):
+    """A field added to a scenario never took effect, and the hours went to the app and then the
+    scenario, because `status`, `validate` and `explain-match` all described the loaded rules as
+    if they were the file. The proxy now names the files it read that no longer match what it read;
+    a reload publishes fresh stamps with the fresh rules."""
+    file = _scenario(profile, "orders", {"id": "rule", "mode": "replace", "status": 200})
+    subject = make_store(profile)
+    assert subject.stale_files() == [], "nothing changed since the read"
+
+    file.write_text(json.dumps({"overrides": [{"id": "rule", "mode": "replace", "status": 503}]}))
+
+    assert subject.stale_files() == ["orders.json"]
+    subject.reload_scenarios()
+    assert subject.stale_files() == [], "the reload read the file as it is now"
+
+
+def test_a_file_added_or_removed_after_load_is_reported_stale(profile):
+    _scenario(profile, "orders", {"id": "rule", "mode": "replace", "status": 200})
+    (profile / "scenarios" / "checkout").mkdir()
+    _scenario(profile, "checkout/cart", {"id": "cart", "mode": "replace", "status": 200})
+    subject = make_store(profile)
+
+    (profile / "scenarios" / "orders.json").unlink()
+    _scenario(profile, "checkout/added", {"id": "added", "mode": "replace", "status": 200})
+
+    assert subject.stale_files() == ["checkout/added.json", "orders.json"]
+
+
+def test_a_file_that_cannot_be_stated_still_counts_as_appeared_or_vanished(profile):
+    """A dangling link is discovered but has no stat to stamp; dropping it from the stamps made a
+    link added after the read invisible, and one removed after the read invisible too."""
+    _scenario(profile, "orders", {"id": "rule", "mode": "replace", "status": 200})
+    subject = make_store(profile)
+
+    (profile / "scenarios" / "added.json").symlink_to(profile / "nowhere.json")
+    assert subject.stale_files() == ["added.json"], "appeared, stat or no stat"
+
+    subject = make_store(profile)
+    assert subject.stale_files() == [], "still there, still unstatable: nothing changed"
+    (profile / "scenarios" / "added.json").unlink()
+    assert subject.stale_files() == ["added.json"], "vanished"
+
+
+def test_a_refused_reload_keeps_the_old_stamps(profile):
+    """A refused reload goes on serving the old snapshot, so the old stamps stay beside it: the
+    edited file is still reported, rather than the refusal quietly marking it as read."""
+    edited = _scenario(profile, "orders", {"id": "rule", "mode": "replace", "status": 200})
+    broken = _scenario(profile, "checkout", {"id": "checkout", "mode": "replace", "status": 200})
+    subject = make_store(profile)
+    edited.write_text(json.dumps({"overrides": [{"id": "rule", "mode": "replace", "status": 503}]}))
+    broken.write_text("{ not json")
+
+    with pytest.raises(store.ReloadRefused):
+        subject.reload_scenarios()
+
+    assert subject.stale_files() == ["checkout.json", "orders.json"]
+
+
 def test_a_directory_named_like_a_scenario_file_is_reported_against_that_name(profile):
     """`default.json/` is a valid *group* name to `safe_component`, so it was scanned for scenarios
     inside and an empty one produced no problem at all — while `up --use default` served the

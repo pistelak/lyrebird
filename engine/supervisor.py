@@ -842,6 +842,7 @@ def status(as_json: bool) -> None:
                     # you"). Defaulting to `[]` collapsed those into the claim that nothing has answered.
                     "sequences": mine.get("sequences"),
                     "answers": mine.get("answers"),
+                    "staleScenarioFiles": mine.get("staleScenarioFiles"),
                     "simBundleId": mine.get("simBundleId"),
                     "profile": str(config.PROFILE_DIR),
                     "service": service,
@@ -869,6 +870,13 @@ def status(as_json: bool) -> None:
             )
         else:
             ui._banner(raw, service, intercepting)
+        # A warning, not a reason, and printed whatever the banner said about the PAC: the proxy's
+        # files changed under it either way — see test_status_warns_about_scenario_files_changed_since_load.
+        if not foreign and (stale := (raw or {}).get("staleScenarioFiles")):
+            click.echo(
+                f"  {ui.YELLOW}⚠ changed since the proxy read them: {', '.join(stale)} — "
+                f"run `lyrebird scenario reload` to apply them (a successful reload resets run evidence){ui.R}"
+            )
         for reason in reasons:
             click.echo(f"  {ui.RED}✗ {reason}{ui.R}")
 

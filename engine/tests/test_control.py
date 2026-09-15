@@ -296,6 +296,22 @@ def test_health_forgets_a_scenario_once_the_file_is_fixed_and_reloaded(profile):
     assert "orders-outage" in body["scenarios"]
 
 
+def test_health_reports_scenario_files_changed_since_the_read(profile):
+    """Every command described the loaded rules as the file; `status` reads this field to say
+    otherwise. Empty right after the read, the file's label once it changed."""
+    file = profile / "scenarios" / "orders-outage.json"
+    file.write_text(json.dumps({"overrides": []}), encoding="utf-8")
+
+    def edit_the_file(subject):
+        assert subject.stale_files() == []
+        file.write_text(json.dumps({"overrides": [], "notes": "edited"}), encoding="utf-8")
+
+    status, _, body = call(profile, "GET", "/__mock__/health", prepare=edit_the_file)
+
+    assert status == 200
+    assert body["staleScenarioFiles"] == ["orders-outage.json"]
+
+
 def test_health_reports_no_load_problems_when_every_scenario_loaded(profile):
     """The other half: empty is a real answer, and the CLI treats it as one."""
     status, _, body = call(profile, "GET", "/__mock__/health")

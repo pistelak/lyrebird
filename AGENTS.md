@@ -206,6 +206,7 @@ lyrebird --profile PATH status --json
   "overrideCount": 1,
   "answers": [ { "id": "ovr_9a99bd", "active": true, "count": 3, "runId": "5c1f9d0a7b3e4d62" } ],
   "scenarios": ["default", "orders-outage"],
+  "staleScenarioFiles": [],
   "simBundleId": "com.example.Store",
   "profile": "/path/to/profile",
   "service": "Wi-Fi",
