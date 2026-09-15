@@ -95,11 +95,13 @@ def test_up_refuses_over_a_journal_of_its_own_owner(profile, runner, monkeypatch
     result = runner.invoke(cli.cli, ["up"])
 
     assert result.exit_code == 1
-    assert "already up" in result.output and "lyrebird use" in result.output
+    assert "If you started it" in result.output and "lyrebird use" in result.output
     assert place.pac() == EMPTY and place.network.setters() == []
 
 
 def test_up_refuses_over_another_owners_journal(profile, runner, monkeypatch):
+    """The message used to order everyone to run `lyrebird down` first, and a second agent on the
+    same Mac, following it, tore down the first agent's run."""
     place = _fresh(
         monkeypatch,
         profile,
@@ -110,6 +112,8 @@ def test_up_refuses_over_another_owners_journal(profile, runner, monkeypatch):
 
     assert result.exit_code == 1
     assert "9099" in result.output and "deadbeef" in result.output
+    assert "If another agent did" in result.output and "wait for its" in result.output
+    assert "`lyrebird down` first;" not in result.output
     assert place.network.setters() == []
 
 

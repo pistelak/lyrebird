@@ -235,8 +235,9 @@ def up(bundle_id: str | None, no_relaunch: bool, use_name: str | None, simulator
     installed on a network service and scoped by hostname, so every simulator on this Mac follows
     it for the profile's hosts.
 
-    There is one session per user, so this refuses while one exists — even this profile's. To put
-    a different scenario in front of the app: `lyrebird use NAME && lyrebird relaunch`.
+    There is one session per user, so this refuses while one exists — even this profile's. On a
+    session you started, to put a different scenario in front of the app: `lyrebird use NAME &&
+    lyrebird relaunch`; on another agent's, wait for its `down`.
     """
     # Before `_require_profile`, and so before anything is started: "which of these two did you
     # mean" is not a question to ask after the network has been rewired.
@@ -260,12 +261,18 @@ def _refuse_over_a_journal(journal: ownership.Journal) -> None:
     journal that cannot be read is refused hardest: it may still be holding somebody's PAC, and
     `down` is what reads it next (test_up_refuses_over_an_unreadable_journal)."""
     if isinstance(journal, Unreadable):
-        raise SystemExit(f"{ui.RED}✗ session.json cannot be read ({journal.reason}) — move it away and {_DOWN}{ui.R}")
-    if isinstance(journal, SessionRecord):
         raise SystemExit(
-            f"{ui.RED}✗ a session is already up (port {journal.owner.control_port}, profile "
-            f"{journal.owner.profile_fingerprint}) — `lyrebird down` first; to switch scenario: "
-            f"`lyrebird use X && lyrebird relaunch`{ui.R}"
+            f"{ui.RED}✗ session.json cannot be read ({journal.reason}) — if the session is yours, move it away and "
+            f"{_DOWN}; if another agent's, ask them{ui.R}"
+        )
+    if isinstance(journal, SessionRecord):
+        # Addressed to the reader, not decided by the fingerprint: a shared profile is one fingerprint
+        # and two agents — see test_up_refuses_over_another_owners_journal.
+        raise SystemExit(
+            f"{ui.RED}✗ a session is up (port {journal.owner.control_port}, profile "
+            f"{journal.owner.profile_fingerprint}). If you started it: `lyrebird down` first, or to switch "
+            f"scenario `lyrebird use X && lyrebird relaunch`. If another agent did: do not run `down` — "
+            f"wait for its `down`, then `up` again{ui.R}"
         )
 
 
@@ -926,5 +933,5 @@ def _status_reasons(
     if route is None:
         reasons.append(f"the active network service could not be confirmed{f': {route_error}' if route_error else ''}")
     elif route.device != journal.service.device:
-        reasons.append(f"route moved to {route.device} — `lyrebird down && lyrebird up`")
+        reasons.append(f"route moved to {route.device} — the session's owner: `lyrebird down && lyrebird up`")
     return reasons
