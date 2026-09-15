@@ -42,8 +42,8 @@ struct ScenarioOutlineTests {
                     steps: (1...steps).map { StepSummary(status: 199 + $0, bodyKind: "json", bodyBytes: 250 + $0) })))
     }
 
-    /// A sequence that waits 250 ms, the PATCH that advances it waiting 3 s, and two standalone
-    /// rules — one delayed, one not — so a row's delay can only come from the rule it belongs to.
+    /// A sequence that waits 250 ms, a rule answering its advancing PATCH that waits 3 s, and two
+    /// standalone rules — one delayed, one not — so a row's delay can only come from its own rule.
     private var delayedScenario: RulesSnapshot {
         snapshot([
             sequenceRule(
@@ -314,24 +314,20 @@ struct ScenarioOutlineTests {
         var unknown = replacement.rewrite
         unknown.mode = "future-mode"
         #expect(RuleFormatting.responseKind(unknown) == .unknown("future-mode"))
-        let shot = snapshot([
-            sequenceRule(id: "ovr_orders", steps: 2, advanceOn: RuleMatch(method: "PATCH", path: "/api/orders")),
-            replaceRule(id: "ovr_update", method: "PATCH", path: "/api/orders", status: 204),
-        ])
-        #expect(RuleFormatting.flowSections(shot)[0].rows.map(\.responseKind) == [.sequence, .replace, .sequence])
     }
 
     @Test
-    func flowListRowsOpenTheCorrectRuleAndStepAndDoNotDuplicateTheTrigger() {
+    func flowListRowsOpenTheCorrectRuleAndStep() {
         let shot = snapshot([
             sequenceRule(id: "ovr_orders", steps: 2, advanceOn: RuleMatch(method: "PATCH", path: "/api/orders")),
             replaceRule(id: "ovr_update", method: "PATCH", path: "/api/orders", status: 204),
         ])
         let sections = RuleFormatting.flowSections(shot)
-        #expect(sections.count == 1)
+        #expect(sections.count == 2)
+        #expect(sections[1].rows.map(\.ruleId) == ["ovr_update"], "the candidate is a rule of its own")
         let rows = sections[0].rows
         #expect(rows.map(\.number) == [1, 2, 3])
-        #expect(rows.map(\.ruleId) == ["ovr_orders", "ovr_update", "ovr_orders"])
+        #expect(rows.map(\.ruleId) == ["ovr_orders", nil, "ovr_orders"])
         #expect(rows.map(\.step) == [1, nil, 2])
         #expect(RuleFormatting.detailRule(selection: rows[2].selection, in: shot)?.id == "ovr_orders")
         #expect(RuleFormatting.flowRow(rows[2].selection, in: shot)?.step == 2)
@@ -343,33 +339,17 @@ struct ScenarioOutlineTests {
     func everyRowThatAnswersSaysHowLongItIsHeld() {
         // The delay lived only in the detail pane, so a list of rules said nothing about the one
         // fact that explains a screen sitting still. A sequence's own delay is every step's — the
-        // engine refuses a `delayMs` on a step — and a trigger's is its response rule's, which is
-        // also where the trigger row's status comes from.
+        // engine refuses a `delayMs` on a step — and a trigger row borrows nothing from a candidate.
         let rows = RuleFormatting.flowSections(delayedScenario).flatMap(\.rows)
 
-        #expect(rows.map(\.delay) == ["250 ms", "3 s", "250 ms", nil, "3 s"])
+        #expect(rows.map(\.delay) == ["250 ms", nil, "250 ms", "3 s", nil, "3 s"])
         // Exact subtitles, because `subtitle: rule.line` would pass an assertion that only looked
         // for the absence of a duplicate on rows that have no delay to duplicate.
-        #expect(rows[3].subtitle == "Returns 200")
-        #expect(rows[4].subtitle == "Returns 200", "the badge carries the wait; the subtitle says it once")
+        #expect(rows[4].subtitle == "Returns 200")
+        #expect(rows[5].subtitle == "Returns 200", "the badge carries the wait; the subtitle says it once")
         #expect(
             rows.allSatisfy { row in row.delay.map { !row.subtitle.contains($0) } ?? true },
             "a subtitle repeating the badge states one wait twice")
-    }
-
-    @Test
-    func aTriggerWithNoIdentifiedResponseNamesNoDelay() {
-        // The wait belongs to the rule that answers the trigger. With none identified there is no
-        // rule to read one off, and the sequence's own delay is a different rule's wait.
-        let shot = snapshot([
-            sequenceRule(
-                id: "ovr_orders", steps: 2, advanceOn: RuleMatch(method: "PATCH", path: "/api/orders"),
-                delayMs: 250)
-        ])
-        let rows = RuleFormatting.flowSections(shot).flatMap(\.rows)
-
-        #expect(rows[1].ruleId == nil)
-        #expect(rows[1].delay == nil)
     }
 
     @Test
@@ -493,25 +473,38 @@ struct ScenarioOutlineTests {
         #expect(state.number == 2, "flow row 3 must still open sequence step 2")
     }
 
+    /// The sole candidate answers only `id=42`; the sequence advances on any `PATCH /api/orders`. The
+    /// trigger row used to wear the candidate's 204 and open its response — a statement about what
+    /// the proxy will answer, derived from a match that does not decide it (issue #76). Candidates are
+    /// collected by method and path so they can be linked; nothing about them is the trigger's.
     @Test
     func aTriggerIncludesItsConditionalResponseWithoutNarrowingAdvancement() throws {
         var response = replaceRule(id: "ovr_update", method: "PATCH", path: "/api/orders", status: 204)
         response.match = RuleMatch(method: "PATCH", path: "/api/orders", query: ["id": .string("42")])
-        let outline = RuleFormatting.outline(
-            snapshot([
-                sequenceRule(steps: 2, advanceOn: RuleMatch(method: "PATCH", path: "/api/orders")),
-                response,
-                replaceRule(id: "ovr_unrelated", method: "PATCH", path: "/api/items"),
-                replaceRule(id: "ovr_read", method: "GET", path: "/api/orders"),
-            ]))
+        let shot = snapshot([
+            sequenceRule(steps: 2, advanceOn: RuleMatch(method: "PATCH", path: "/api/orders")),
+            response,
+            replaceRule(id: "ovr_unrelated", method: "PATCH", path: "/api/items"),
+            replaceRule(id: "ovr_read", method: "GET", path: "/api/orders"),
+        ])
+        let outline = RuleFormatting.outline(shot)
         let transition = try #require(outline.sequences[0].states[0].transition)
         #expect(transition.conditions.isEmpty)
         #expect(transition.relatedResponses.map(\.id) == ["ovr_update"])
         #expect(transition.relatedResponses[0].conditions == [.init("Query", "id = 42")])
         #expect(transition.relatedResponses[0].behaviour == "Returns 204")
         #expect(transition.relatedResponses[0].line == "Returns 204", "no delay, nothing to append")
-        #expect(outline.otherRules.contains { $0.id == "ovr_update" })
         #expect(outline.sequences[0].states[1].transition == transition)
+
+        let sections = RuleFormatting.flowSections(shot)
+        let trigger = try #require(sections[0].rows.first { $0.transition != nil })
+        #expect(trigger.status == nil)
+        #expect(trigger.delay == nil)
+        #expect(trigger.ruleId == nil)
+        #expect(trigger.responseKind == nil)
+        #expect(trigger.conditions.isEmpty, "the trigger's own conditions, not the candidate's `id = 42`")
+        #expect(trigger.subtitle == "Advances the sequence")
+        #expect(sections[1].rows.map(\.ruleId).contains("ovr_update"), "listed as a rule, linked from the pane")
     }
 
     @Test

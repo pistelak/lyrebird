@@ -7,9 +7,6 @@ extension RuleFormatting {
         var request: RequestLine
         var status: Int?
         var subtitle: String
-        /// How long the proxy holds this response, as a badge reads it. Nil where nothing waits —
-        /// and on a trigger whose response rule was not identified, whose delay is not this app's
-        /// to guess.
         var delay: String?
         var conditions: [Fact]
         var inactive: Bool
@@ -33,7 +30,7 @@ extension RuleFormatting {
         var footer: String?
     }
 
-    /// Preserve configured order and trigger identity; see flowListRowsOpenTheCorrectRuleAndStepAndDoNotDuplicateTheTrigger.
+    /// Preserve configured order and trigger identity; see flowListRowsOpenTheCorrectRuleAndStep.
     static func flowSections(_ snapshot: RulesSnapshot) -> [FlowListSection] {
         let outline = outline(snapshot)
         let kinds = Dictionary(
@@ -49,8 +46,7 @@ extension RuleFormatting {
                     : "Sequence · " + sequence.request.method + " " + sequence.request.path,
                 rows: rows, footer: sequenceFooter(sequence))
         }
-        let embedded = Set(sections.flatMap(\.rows).compactMap(\.ruleId))
-        let others = outline.otherRules.filter { !embedded.contains($0.id) }.map { rule in
+        let others = outline.otherRules.map { rule in
             FlowListRow(
                 selection: .rule(rule.id), request: rule.request, status: rule.status,
                 subtitle: rule.behaviour, delay: rule.delay, conditions: rule.conditions,
@@ -80,29 +76,28 @@ extension RuleFormatting {
                 endingTransition: state.number == sequence.states.last?.number ? state.transition : nil,
                 responseKind: kinds[sequence.id])
         case .trigger(_, let transition):
-            let candidate = transition.relatedResponses.count == 1 ? transition.relatedResponses.first : nil
-            let response = candidate?.inactive == false ? candidate : nil
+            // Nothing borrowed from a candidate: one matched by method and path alone may not be the
+            // rule that answers, and a 204 badge here said it would — see
+            // aTriggerIncludesItsConditionalResponseWithoutNarrowingAdvancement.
             return FlowListRow(
                 selection: .flow(sequence.id, item.id), number: number,
-                request: transition.request, status: response?.status,
-                subtitle: triggerSubtitle(transition, response: response), delay: response?.delay,
-                conditions: response?.conditions ?? transition.conditions,
-                inactive: sequence.inactive,
-                ruleId: response?.id, transition: transition, responseKind: response.flatMap { kinds[$0.id] })
+                request: transition.request, status: nil,
+                subtitle: triggerSubtitle(transition), delay: nil,
+                conditions: transition.conditions, inactive: sequence.inactive,
+                ruleId: nil, transition: transition, responseKind: nil)
         }
     }
 
-    private static func triggerSubtitle(
-        _ transition: ScenarioOutline.Transition, response: ScenarioOutline.RuleSummary?
-    ) -> String {
-        if response != nil {
-            return "Advances the sequence"
+    private static func triggerSubtitle(_ transition: ScenarioOutline.Transition) -> String {
+        let candidates = transition.relatedResponses
+        if candidates.isEmpty {
+            return "Advances the sequence · response not identified"
         }
-        if !transition.relatedResponses.isEmpty && transition.relatedResponses.allSatisfy(\.inactive) {
+        if candidates.allSatisfy(\.inactive) {
             return "Advances the sequence · no active response rule identified"
         }
-        return transition.relatedResponses.isEmpty
-            ? "Advances the sequence · response not identified"
+        return candidates.count == 1
+            ? "Advances the sequence"
             : "Advances the sequence · multiple response rules"
     }
 
