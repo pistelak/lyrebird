@@ -104,51 +104,37 @@ extension AppTests {
             }
         }
 
-        /// Related matchers are candidates, not a chosen response; an ambiguous trigger must expose
-        /// their links without adopting either candidate's body or the previously selected rule's step target.
-        @Test func anAmbiguousTransitionLinksCandidatesWithoutAdoptingTheirActions() throws {
+        /// A candidate is a link, not the answer: the preview's sole candidate used to be opened as
+        /// the trigger's response, body and Copy button included (issue #76).
+        @Test func aSoleCandidateIsLinkedWithoutAdoptingItsActions() throws {
             var snapshot = BrowserPreview.snapshot("orders-pending")
             let index = try #require(snapshot.rules.firstIndex { $0.id == "ovr_update" })
-            snapshot.rules[index].body = .string("First candidate payload")
+            snapshot.rules[index].body = .string("Candidate payload")
             snapshot.rules[index].rewrite.bodyKind = "text"
-            var alternative = snapshot.rules[index]
-            alternative.id = "ovr_alternative"
-            alternative.body = .string("Second candidate payload")
-            snapshot.rules.append(alternative)
             let trigger = try #require(
-                RuleFormatting.flowSections(snapshot).flatMap(\.rows).first { $0.transition != nil && $0.ruleId == nil }
-            )
+                RuleFormatting.flowSections(snapshot).flatMap(\.rows).first { $0.transition != nil })
             let content = BrowserContent(
                 status: .intercepting, rulesRead: .ok(snapshot), recentRead: .ok([]),
                 recentPlaceholder: "No recorded requests", scenarios: nil, busy: false, lastError: nil)
             let state = BrowserState()
             state.select(.scenario(snapshot.scenario))
-            state.ruleSelection = .rule("ovr_orders")
-            let detail = RuleDetailController()
-            detail.update(content, state: state)
             state.ruleSelection = trigger.selection
+            let detail = RuleDetailController()
             detail.update(content, state: state)
             let copy = try #require(detail.textView.subviews.compactMap { $0 as? ActionButton }.first)
             #expect(copy.isHidden)
-            #expect(detail.stepPicker.isHidden)
-            #expect(!detail.textView.string.contains("candidate payload"))
-            var picked: [String] = []
-            detail.onPickStep = { _, rule in picked.append(rule) }
-            let action = try #require(detail.stepPicker.action)
-            #expect(NSApp.sendAction(action, to: detail.stepPicker.target, from: detail.stepPicker))
-            #expect(picked.isEmpty)
-            let pasteboardVersion = NSPasteboard.general.changeCount
-            copy.invoke()
-            #expect(NSPasteboard.general.changeCount == pasteboardVersion)
+            #expect(!detail.textView.string.contains("Candidate payload"))
             var opened: [RuleFormatting.Destination] = []
             detail.onOpenRule = { opened.append($0) }
-            #expect(detail.textView(detail.textView, clickedOnLink: "lyrebird-rule:0", at: 0))
-            #expect(detail.textView(detail.textView, clickedOnLink: "lyrebird-rule:1", at: 0))
-            #expect(
-                opened == [
-                    RuleFormatting.destination(rule: "ovr_alternative", drawnFrom: snapshot.scenario),
-                    RuleFormatting.destination(rule: "ovr_update", drawnFrom: snapshot.scenario),
-                ])
+            let text = detail.textView.attributedString()
+            var links: [Any] = []
+            text.enumerateAttribute(.link, in: NSRange(location: 0, length: text.length)) { value, _, _ in
+                if let value { links.append(value) }
+            }
+            #expect(links.count == 1, "one candidate, one link")
+            let link = try #require(links.first)
+            #expect(detail.textView(detail.textView, clickedOnLink: link, at: 0))
+            #expect(opened == [RuleFormatting.destination(rule: "ovr_update", drawnFrom: snapshot.scenario)])
         }
 
         /// An error note must not suppress the empty-traffic message, and replacing traffic with a

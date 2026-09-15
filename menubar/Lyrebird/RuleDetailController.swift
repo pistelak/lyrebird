@@ -139,7 +139,7 @@ final class RuleDetailController: NSViewController {
         } else if let rule = RuleFormatting.detailRule(selection: state.ruleSelection, in: snapshot) {
             appendRuleDetail(rule, flow: flow, scenario: snapshot?.scenario, pick: state.pickedStep, to: document)
         } else if let value = flow?.transition {
-            appendTransition(value, showRelated: true, scenario: state.scenario, to: document)
+            appendTransition(value, scenario: state.scenario, to: document)
         } else if let value = RuleFormatting.rulesVacancy(status: content.status, read: content.rulesRead) {
             appendVacancy(value, to: document)
         } else {
@@ -189,7 +189,6 @@ final class RuleDetailController: NSViewController {
         if let query = rule.match?.query, !query.isEmpty { document.query(query) }
         if let contains = rule.match?.bodyContains, !contains.isEmpty { document.bodyContains(contains) }
         if !rule.isActive { document.line("Inactive", secondary: true) }
-        if let value = flow?.transition { appendTransition(value, scenario: scenario, to: document) }
         responseRange = NSRange(location: document.length, length: 0)
         document.section("Response")
         let kind = RuleFormatting.responseKind(rule.rewrite)
@@ -274,8 +273,7 @@ final class RuleDetailController: NSViewController {
     }
 
     private func appendTransition(
-        _ value: ScenarioOutline.Transition, ending: Bool = false, showRelated: Bool = false,
-        scenario: String?, to document: DetailDocument
+        _ value: ScenarioOutline.Transition, ending: Bool = false, scenario: String?, to document: DetailDocument
     ) {
         document.section(ending ? "Advances past the final response" : "Advances the sequence")
         document.request(value.request.method, value.request.path)
@@ -283,20 +281,18 @@ final class RuleDetailController: NSViewController {
         if value.conditions.isEmpty {
             document.line("Any query or body can advance this sequence.", secondary: true)
         }
-        if showRelated || ending {
-            if value.relatedResponses.isEmpty {
-                document.line(
-                    "No response rule was identified. Advancement does not depend on a successful response.",
-                    secondary: true)
-            }
-            for related in value.relatedResponses {
-                let token = "lyrebird-rule:\(links.count)"
-                links[token] = RuleFormatting.destination(rule: related.id, drawnFrom: scenario ?? "")
-                document.link(
-                    (related.line.isEmpty ? "Open response rule" : related.line)
-                        + (related.inactive ? " · Inactive" : ""), token: token)
-                document.facts(related.conditions)
-            }
+        if value.relatedResponses.isEmpty {
+            document.line(
+                "No response rule was identified. Advancement does not depend on a successful response.",
+                secondary: true)
+        }
+        for related in value.relatedResponses {
+            let token = "lyrebird-rule:\(links.count)"
+            links[token] = RuleFormatting.destination(rule: related.id, drawnFrom: scenario ?? "")
+            document.link(
+                (related.line.isEmpty ? "Open response rule" : related.line)
+                    + (related.inactive ? " · Inactive" : ""), token: token)
+            document.facts(related.conditions)
         }
     }
 

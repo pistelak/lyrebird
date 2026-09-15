@@ -82,7 +82,8 @@ The sidebar marks the active scenario, and the toolbar shows the interception st
 Sequence rules appear in configured order, with each response state followed by its advancing
 request. These are configured transitions, not a traffic trace: reads can repeat, and an advance
 matcher may have different conditions from the rule that answers that request. The detail pane
-shows those conditions and any candidate response rules. Other rules are listed separately.
+shows those conditions and links the candidate response rules; a trigger row never shows a
+candidate's status, because a candidate is not the answer. Other rules are listed separately.
 Scenario notes provide context above the list. Search has been removed.
 
 **Recent** shows recorded requests newest first, with status and override/sequence metadata.
