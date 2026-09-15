@@ -303,10 +303,20 @@ wrote — a rule carrying `statsu: 503` would otherwise load cleanly and reply 2
 | `status` | HTTP status of the answer (replace) or forced onto the real response (patch). |
 | `headers` | Response headers (replace). |
 | `body` | Response body, JSON or string (replace). |
+| `bodyFile` | A file beside the scenario, served as its bytes; needs a `Content-Type` header (replace). |
 | `patch` | JSON deep-merged into the real response (patch). |
 | `patchStrategy` | `appendToArray` appends to arrays instead of replacing them (patch). |
 | `sequence` | Answer differently as a scenario progresses (replace only). |
 | `notes` | Free text for the author. Ignored by the engine. |
+
+`bodyFile` answers with a file instead of a `body`: one file name, in the same directory as the
+scenario file (`scenarios/banner.png` beside `scenarios/banner.json`, or inside the group's folder for
+a grouped scenario), sent byte for byte under the `Content-Type` header the rule must carry — a
+`Content-Encoding` header describes the file as it is, the proxy does not encode it again. It is
+read when the scenario loads, so a missing, unreadable or escaping file drops the rule and marks the
+scenario not whole, exactly like a malformed rule; replace the file, then `scenario reload`. A
+bodyless status (204, 304) sends no body, file or not. `/rules` describes such a rule as
+`bodyKind: "file"` with no size.
 
 `notes` is the only free-text field — JSON has no comments, and a rule usually needs a sentence
 saying why it exists. When a file is read, an override that carries an unknown field is reported and

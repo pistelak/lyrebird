@@ -216,15 +216,53 @@ EVERY_FIELD_RULES = {
         "mode": "replace",
         "sequence": {"steps": [{"status": 202}, {"status": 200}]},
     },
+    "file": {
+        "match": {"path": "/mock-assets/banner.png"},
+        "mode": "replace",
+        "bodyFile": "banner.png",
+        "headers": {"Content-Type": "image/png"},
+    },
 }
 
 
 @pytest.mark.parametrize("rule", list(EVERY_FIELD_RULES.values()), ids=list(EVERY_FIELD_RULES))
 def test_a_rule_using_every_documented_field_validates(rule):
-    """Between them these three use every field in OVERRIDE_FIELDS, so a field the vocabulary
+    """Between them these rules use every field in OVERRIDE_FIELDS, so a field the vocabulary
     advertises but some later check refuses fails here rather than in front of the author who read
     the help and believed it."""
     assert rules.validate_override(rule) == rule
+
+
+@pytest.mark.parametrize(
+    ("extra", "message"),
+    [
+        ({"body": {"x": 1}}, "bodyFile and body are exclusive"),
+        ({"mode": "patch"}, "bodyFile needs mode 'replace'"),
+        ({"sequence": {"steps": [{"status": 200}]}}, "not supported on a sequenced rule"),
+        ({"headers": {}}, "needs a Content-Type header"),
+        ({"bodyFile": ""}, "bodyFile must be a file name"),
+        ({"bodyFile": None}, "bodyFile must be a file name"),
+    ],
+    ids=["with-body", "on-a-patch", "on-a-sequence", "no-content-type", "empty", "null"],
+)
+def test_a_body_file_needs_a_content_type_and_nothing_that_would_contend_with_it(extra, message):
+    """A file rule is a `replace` with one body source and the header the app will receive; the
+    content type is written, not guessed, because a guess the author cannot see is one more thing
+    to be wrong about. An explicit `null` used to pass every check and load a rule answering 200
+    with nothing."""
+    rule = {**EVERY_FIELD_RULES["file"], **extra}
+    with pytest.raises(rules.ValidationError, match=message):
+        rules.validate_override(rule)
+
+
+def test_describe_rewrite_calls_a_file_body_a_file():
+    """`none` here rendered as "No body" in the app for a rule that answers with a file. The size is
+    not reported: the bytes live beside the scenario, not in the rule."""
+    summary = rules.describe_rewrite(EVERY_FIELD_RULES["file"])
+    assert (summary["bodyKind"], summary["bodyBytes"], summary["status"]) == ("file", None, 200)
+    bodyless = rules.describe_rewrite({**EVERY_FIELD_RULES["file"], "status": 304})
+    assert summary["mode"] == "replace"
+    assert (bodyless["bodyKind"], bodyless["bodyBytes"]) == ("none", None), "304 sends no body, file or not"
 
 
 def test_the_documented_override_fields_are_all_exercised_above():

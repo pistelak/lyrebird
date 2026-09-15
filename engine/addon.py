@@ -278,12 +278,26 @@ class Lyrebird:
             # cannot drift. Only the encoding is done here.
             wire = rules.wire_response(resolved)
             status, body = wire["status"], wire["body"]
-            payload = b"" if body is None else (body if isinstance(body, str) else json.dumps(body)).encode("utf-8")
-            response = http.Response.make(status, payload, wire["headers"])
+            if resolved.get("bodyFile") and status not in rules.BODYLESS_STATUSES:
+                # Headers and bytes set apart from `make`'s content setter, which encodes per
+                # Content-Encoding and drops encodings it cannot produce — see
+                # test_a_body_file_is_served_byte_for_byte.
+                response = http.Response.make(status)
+                # Wholesale, so the constructor's `content-length: 0` does not survive beside a
+                # Transfer-Encoding the rule wrote.
+                response.headers = http.Headers([(k.encode(), v.encode()) for k, v in wire["headers"].items()])
+                response.raw_content = self.store.file_body(resolved["id"])
+                if "transfer-encoding" not in response.headers:
+                    response.headers["content-length"] = str(len(response.raw_content))
+            else:
+                payload = b"" if body is None else (body if isinstance(body, str) else json.dumps(body)).encode("utf-8")
+                response = http.Response.make(status, payload, wire["headers"])
             if status in rules.BODYLESS_STATUSES:
-                # Still needed after `wire_response` drops the header: `Response.make` sets
-                # `content-length: 0` for the empty payload, and a 204 carrying one is malformed —
+                # Still needed after `wire_response` drops the body: `Response.make` sets
+                # `content-length: 0` for the empty payload, and encodes it into a gzip stream when
+                # the rule carries a Content-Encoding header; a 204 carrying either is malformed —
                 # see the bodyless row of test_the_wire_answer_matches_what_is_described.
+                response.raw_content = b""
                 response.headers.pop("content-length", None)
             flow.response = response
             flow.metadata["mock_matched"] = resolved["id"]

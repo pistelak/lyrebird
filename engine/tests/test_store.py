@@ -158,6 +158,56 @@ def test_startup_reports_exactly_what_the_shared_loader_reports(profile):
     assert make_store(profile).load_problems == offline
 
 
+FILE_RULE = {
+    "id": "banner",
+    "mode": "replace",
+    "match": {"path": "/mock-assets/banner.png"},
+    "bodyFile": "banner.png",
+    "headers": {"Content-Type": "image/png"},
+}
+
+
+def test_a_body_file_is_read_beside_its_scenario_when_it_loads(profile):
+    """Read at the boundary and kept: a rule that loaded whole always has its bytes, and a group's
+    file is found in the group's directory, beside the file that names it."""
+    (profile / "scenarios" / "checkout").mkdir()
+    (profile / "scenarios" / "checkout" / "banner.png").write_bytes(b"\x89PNG\r\n\x1a\nbytes")
+    _scenario(profile, "checkout/banner", FILE_RULE)
+
+    subject = make_store(profile)
+
+    assert subject.scenarios_not_whole == {}
+    assert subject.scenarios["checkout/banner"]["_files"] == {"banner": b"\x89PNG\r\n\x1a\nbytes"}
+    subject.set_active("checkout/banner")
+    assert subject.file_body("banner") == b"\x89PNG\r\n\x1a\nbytes"
+
+
+def test_a_missing_body_file_drops_the_rule_naming_it_and_the_scenario_is_not_whole(profile):
+    """The same drop path as a malformed rule, so `validate` fails, `up --use` refuses and a reload
+    refuses — a rule that answered a broken image with nothing would look like the backend's fault."""
+    _scenario(profile, "banner", FILE_RULE)
+
+    subject = make_store(profile)
+
+    assert subject.scenarios["banner"]["overrides"] == []
+    [problem] = subject.scenarios_not_whole["banner"]
+    assert problem.startswith("banner.json: override 'banner': bodyFile 'banner.png' — ")
+    assert "not a file beside banner.json" in problem
+
+
+def test_a_body_file_linked_out_of_the_scenarios_directory_is_refused(profile):
+    """Beside the scenario means beside it: a link to a file elsewhere in the profile is refused
+    even though it never leaves the profile."""
+    (profile / "elsewhere.png").write_bytes(b"outside")
+    (profile / "scenarios" / "banner.png").symlink_to(profile / "elsewhere.png")
+    _scenario(profile, "banner", FILE_RULE)
+
+    subject = make_store(profile)
+
+    assert subject.scenarios["banner"]["overrides"] == []
+    assert "escapes" in subject.scenarios_not_whole["banner"][0]
+
+
 def test_scenario_path_refuses_a_name_that_would_escape_the_scenarios_directory(profile):
     with pytest.raises(store.UnsafeName):
         store.scenario_path("../../etc/passwd")

@@ -305,7 +305,32 @@ def load_scenario_file(file: Path) -> tuple[dict | None, list[str]]:
         scenario = rules.normalise_scenario(raw, name)
     except rules.ValidationError as error:
         return None, [f"skipped {label}: {error}"]
-    return scenario, [f"{label}: {problem}" for problem in scenario.pop("_problems", [])]
+    problems = [f"{label}: {problem}" for problem in scenario.pop("_problems", [])]
+    # A `bodyFile` is read at this boundary and kept on the scenario, never on the override, so a
+    # missing file drops its rule like a malformed one and `/rules` cannot leak bytes — see
+    # test_a_body_file_is_read_beside_its_scenario_when_it_loads.
+    kept, files = [], {}
+    for override in scenario["overrides"]:
+        body_file = override.get("bodyFile")
+        try:
+            if body_file is not None:
+                files[override["id"]] = _body_file_bytes(target, body_file)
+        except (UnsafeName, OSError) as error:
+            problems.append(f"{label}: override {override['id']!r}: bodyFile {body_file!r} — {error}")
+            continue
+        kept.append(override)
+    scenario["overrides"] = kept
+    scenario["_files"] = files
+    return scenario, problems
+
+
+def _body_file_bytes(scenario_file: Path, name: str) -> bytes:
+    """The bytes a `bodyFile` names: one safe component, resolved beside the scenario file and inside
+    the profile, and a regular file — a FIFO would block the read, and a directory is not a body."""
+    path = _contained(scenario_file.parent, safe_component(name, "bodyFile"))
+    if not path.is_file():
+        raise FileNotFoundError(f"not a file beside {scenario_file.name}")
+    return path.read_bytes()
 
 
 def _now_iso() -> str:
@@ -530,6 +555,10 @@ class Store:
 
     def active_overrides(self) -> list[dict]:
         return self.active_scenario().setdefault("overrides", [])
+
+    def file_body(self, rule_id: str) -> bytes:
+        """The bytes a `bodyFile` rule in the active scenario answers with, read when it loaded."""
+        return self.active_scenario()["_files"][rule_id]
 
     def find_override(self, method: str, pathname: str, query: dict[str, str], body_text: str) -> dict | None:
         return rules.find_override(self.active_overrides(), method, pathname, query, body_text)
