@@ -88,6 +88,7 @@ OVERRIDE_FIELDS = (
     "status",
     "headers",
     "body",
+    "bodyFile",
     "patch",
     "patchStrategy",
     "sequence",
@@ -526,7 +527,14 @@ def describe_rewrite(override: Mapping[str, Any]) -> dict:
     # Only a plain `replace` rule answers with a body of its own: a sequenced rule answers with its
     # steps, and a patch answers with the upstream body merged — the wire ignores a `body` a patch
     # rule carries, and describing one would name a payload no request ever receives.
-    kind, size = _body_summary(wire_response(override)) if steps is None and not patching else ("none", None)
+    if steps is not None or patching:
+        kind, size = "none", None
+    elif override.get("bodyFile") and effective_status(override) not in BODYLESS_STATUSES:
+        # The bytes live beside the scenario and are sent as they are; `none` here read as "No body"
+        # in the app for a rule that answers with a file — see test_describe_rewrite_calls_a_file_body_a_file.
+        kind, size = "file", None
+    else:
+        kind, size = _body_summary(wire_response(override))
     if steps is not None:
         status = None  # each step carries its own, reported below
     elif patching:
@@ -758,6 +766,23 @@ def validate_override(override: Any) -> dict:
         result["delayMs"] = int(delay)
 
     _validate_response_fields(result, "")
+
+    # `in`, not `.get`: an explicit `null` is a rule that would answer 200 with nothing — see
+    # test_a_body_file_needs_a_content_type_and_nothing_that_would_contend_with_it.
+    if "bodyFile" in result:
+        body_file = result["bodyFile"]
+        # Shape only; the loader, which knows the scenario's path, checks the file itself.
+        if not isinstance(body_file, str) or not body_file:
+            raise ValidationError("bodyFile must be a file name")
+        if mode != "replace":
+            raise ValidationError("bodyFile needs mode 'replace' — a patch answers with the real body merged")
+        if "body" in result:
+            raise ValidationError("bodyFile and body are exclusive — a rule answers with one or the other")
+        if result.get("sequence") is not None:
+            raise ValidationError("bodyFile is not supported on a sequenced rule; its steps carry `body`")
+        if not any(key.lower() == "content-type" for key in result.get("headers") or {}):
+            # Written, not guessed from the extension: the header is what the app receives.
+            raise ValidationError('bodyFile needs a Content-Type header (for example "image/png")')
 
     if mode == "patch":
         # `in`, not `.get(...) or {}`: `[]`, `false` and `0` passed as "no patch" and were later

@@ -287,6 +287,29 @@ the rule when omitted — so the minimum is:
 }
 ```
 
+**An image, or any bytes, from a file.** A `replace` rule can answer with a file kept beside the
+scenario instead of a `body`: `bodyFile` names it (one file name, same directory as the scenario
+file) and a `Content-Type` header says what it is. The proxy is the one https host the simulator
+already trusts, so this is how a screen meets an asset the backend does not serve yet — patch the
+JSON that carries the URL so it points at a path on an intercepted host, and answer that path with
+the file:
+
+```json
+{
+  "name": "banner-preview",
+  "overrides": [
+    { "match": { "method": "GET", "path": "/api/v1/home" },
+      "mode": "patch",
+      "patch": { "banner": { "imageUrl": "https://api.example.com/mock-assets/banner.png" } } },
+    { "match": { "method": "GET", "path": "/mock-assets/banner.png" },
+      "mode": "replace", "bodyFile": "banner.png", "headers": { "Content-Type": "image/png" } }
+  ]
+}
+```
+
+`banner.png` sits next to `banner-preview.json`. The file is read when the scenario loads — replace
+it, then `scenario reload` — and `validate` fails naming the rule and the file when it is missing.
+
 Files are picked up when the proxy starts, so a scenario file written while Lyrebird is running is
 not there yet. `lyrebird --profile PATH scenario reload` re-reads them without a restart; it refuses
 whole if any file cannot be read, and **it resets run evidence**, so `lyrebird reset` and any

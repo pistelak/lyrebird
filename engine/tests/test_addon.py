@@ -246,6 +246,75 @@ def test_replace_short_circuits_without_an_upstream(hosts, profile):
     assert json.loads(flow.response.get_text()) == {"error": "mocked"}
 
 
+def test_a_body_file_is_served_byte_for_byte(hosts, profile):
+    """An asset the backend does not serve yet has to come from somewhere the simulator trusts over
+    https, and the proxy is the one such host on the machine (issue #69): the bytes beside the
+    scenario go out as they are, under the rule's own content type."""
+    png = b"\x89PNG\r\n\x1a\n" + bytes(range(256))
+    (profile / "scenarios" / "banner.png").write_bytes(png)
+    rule = {
+        "id": "banner",
+        "mode": "replace",
+        "match": {"method": "GET", "path": "/mock-assets/banner.png"},
+        "bodyFile": "banner.png",
+        "headers": {"Content-Type": "image/png"},
+    }
+    subject = subject_with(
+        profile,
+        rule,
+        {
+            **rule,
+            "id": "unmodified",
+            "status": 304,
+            "match": {"path": "/mock-assets/cached.png"},
+            "headers": {"Content-Type": "image/png", "Content-Encoding": "gzip"},
+        },
+        {
+            **rule,
+            "id": "packed",
+            "match": {"path": "/mock-assets/packed.png"},
+            "headers": {"Content-Type": "image/png", "Content-Encoding": "gzip, br"},
+        },
+        {
+            **rule,
+            "id": "chunked",
+            "match": {"path": "/mock-assets/chunked.png"},
+            "headers": {"Content-Type": "image/png", "Transfer-Encoding": "chunked"},
+        },
+    )
+
+    flow = _flow(path="/mock-assets/banner.png")
+    run_request(subject, flow)
+    assert flow.response.status_code == 200
+    assert flow.response.raw_content == png
+    assert flow.response.headers["content-type"] == "image/png"
+    assert flow.response.headers["content-length"] == str(len(png))
+    assert flow.metadata["mock_matched"] == "banner"
+
+    cached = _flow(path="/mock-assets/cached.png")
+    run_request(subject, cached)
+    assert cached.response.status_code == 304
+    assert cached.response.raw_content in (b"", None), "a bodyless status drops the file, encoding header or not"
+    assert "content-length" not in {key.lower() for key in cached.response.headers}
+
+    # A Content-Encoding header describes the file: `Response.make` would have gzipped it again, and
+    # dropped a stack it cannot produce.
+    packed = _flow(path="/mock-assets/packed.png")
+    run_request(subject, packed)
+    assert packed.response.raw_content == png
+    assert packed.response.headers["content-encoding"] == "gzip, br"
+    assert packed.response.headers["content-length"] == str(len(png))
+
+    # Framing is the rule's too: no constructor-made Content-Length beside a Transfer-Encoding.
+    chunked = _flow(path="/mock-assets/chunked.png")
+    run_request(subject, chunked)
+    assert chunked.response.raw_content == png
+    assert {key.lower(): value for key, value in chunked.response.headers.items()} == {
+        "content-type": "image/png",
+        "transfer-encoding": "chunked",
+    }
+
+
 def test_bodyless_status_carries_no_body_or_length(hosts, profile):
     """204 with a Content-Length is malformed, and clients do notice."""
     subject = subject_with(
