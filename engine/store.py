@@ -247,6 +247,26 @@ def scenario_files() -> tuple[list[Path], list[tuple[str | None, str]]]:
     return files, problems
 
 
+Stamp = tuple[int, int] | None
+
+
+def _stamp_files(files: list[Path]) -> dict[str, Stamp]:
+    """`{label: (mtime_ns, size)}` for every discovered file, `None` for one that cannot be stat'ed.
+
+    Every label is kept, stamp or not, so a dangling link still counts as appeared or vanished — see
+    test_a_file_that_cannot_be_stated_still_counts_as_appeared_or_vanished.
+    """
+    stamps: dict[str, Stamp] = {}
+    for file in files:
+        try:
+            info = file.stat()
+        except OSError:
+            stamps[_relative_label(file)] = None
+            continue
+        stamps[_relative_label(file)] = (info.st_mtime_ns, info.st_size)
+    return stamps
+
+
 def load_scenario_file(file: Path) -> tuple[dict | None, list[str]]:
     """Read one scenario file the way startup does: `(scenario, problems)`.
 
@@ -401,18 +421,24 @@ class Store:
         # Which identities actually came from a file. `scenarios` alone cannot say: it holds a
         # synthesised `default` whether or not one was ever written.
         self._disk_names: set[str] = set()
+        # What each scenario file looked like when it was read — `stale_files` compares against it.
+        self._stamps: dict[str, Stamp] = {}
         self._load()
 
     # MARK: - Loading / persistence
 
     @staticmethod
-    def _read_snapshot() -> tuple[dict[str, dict], list[tuple[str | None, str]], set[str]]:
-        """Read every scenario file: `(scenarios, problems, on_disk)`. Publishes nothing.
+    def _read_snapshot() -> tuple[dict[str, dict], list[tuple[str | None, str]], set[str], dict[str, Stamp]]:
+        """Read every scenario file: `(scenarios, problems, on_disk, stamps)`. Publishes nothing.
 
         `on_disk` is the set of identities that came from a file, which is not the same as the keys
         of `scenarios`: `default` is synthesised when no file provides it, and `reload_scenarios`
         has to tell "the file is gone" from "there never was one" — see
         test_reload_keeps_serving_a_virtual_default_that_was_never_on_disk.
+
+        `stamps` is `{file label: (mtime_ns, size)}` for every file discovered, read whole or not,
+        taken *before* the file is read: an edit landing between the two leaves an old stamp beside
+        new contents, which reads as stale on the next check rather than as fresh.
 
         A static reader rather than part of `_load`, so a reload can build a candidate snapshot and
         throw it away without any of it having been visible.
@@ -421,6 +447,7 @@ class Store:
         files, problems = scenario_files()
         problems = list(problems)
         on_disk: set[str] = set()
+        stamps = _stamp_files(files)
         for file in files:
             scenario, file_problems = load_scenario_file(file)
             # Which scenario these problems belong to. `load_scenario_file` reports the *file*,
@@ -438,10 +465,26 @@ class Store:
                 continue
             scenarios[scenario["name"]] = scenario
             on_disk.add(scenario["name"])
-        return scenarios, problems, on_disk
+        return scenarios, problems, on_disk, stamps
+
+    def stale_files(self) -> list[str]:
+        """Scenario files whose size or modification time differs from when they were read, plus
+        files that appeared or vanished since — by label, sorted.
+
+        Metadata only: an edit that keeps both is not seen, a `touch` is, and a directory that cannot
+        be listed discovers nothing, so every file read from it is reported. The remedy is
+        `scenario reload`; this exists so the reader learns it is needed — see
+        test_a_scenario_file_edited_after_load_is_reported_stale.
+        """
+        files, _problems = scenario_files()
+        now = _stamp_files(files)
+        absent = object()  # distinct from `None`, which is a discovered file that could not be stat'ed
+        return sorted(
+            label for label in set(self._stamps) | set(now) if self._stamps.get(label, absent) != now.get(label, absent)
+        )
 
     def _load(self) -> None:
-        self.scenarios, problems, self._disk_names = self._read_snapshot()
+        self.scenarios, problems, self._disk_names, self._stamps = self._read_snapshot()
         for owner, problem in problems:
             self._problem(problem, owner)
 
@@ -706,7 +749,7 @@ class Store:
         Prior run evidence does not survive: the new scenarios carry no runtime slots, so
         `answer_states` reports `runId: None` and a slot captured before the reload credits nobody.
         """
-        scenarios, problems, on_disk = self._read_snapshot()
+        scenarios, problems, on_disk, stamps = self._read_snapshot()
         if problems:
             raise ReloadRefused([problem for _owner, problem in problems])
 
@@ -727,6 +770,9 @@ class Store:
 
         self.scenarios = scenarios
         self._disk_names = on_disk
+        # Here and not earlier: a refused reload keeps serving the old snapshot, so the old stamps
+        # must stay beside it — see test_a_refused_reload_keeps_the_old_stamps.
+        self._stamps = stamps
         self.load_problems = []
         self.scenarios_not_whole = {}
         self._activate(target)

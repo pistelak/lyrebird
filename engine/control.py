@@ -147,6 +147,8 @@ def make_app(store: Store, meta_provider: MetaProvider) -> web.Application:
                 # sent keyed by the scenario they belong to.
                 "loadProblems": store.load_problems,
                 "scenariosNotWhole": store.scenarios_not_whole,
+                # Files whose metadata changed, or that appeared or vanished, since the proxy read them.
+                "staleScenarioFiles": store.stale_files(),
                 "sequences": sequences,
                 # Named for what it holds, not for the objects it describes: `overrides` would read as
                 # the rules themselves, which is what GET /overrides returns.
