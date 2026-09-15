@@ -34,6 +34,19 @@ extension AppTests {
             #expect(try render() == full)
         }
 
+        /// Two identical icons for two running builds (issue #104): the Debug bird is circled and its
+        /// description says so. The tooltip and button label sit on a private status item; they are
+        /// checked by hand.
+        @Test func aDebugBuildSaysSoInTheMenuBar() throws {
+            #if DEBUG
+                #expect(AppModel.Status.intercepting.symbolName == "bird.circle.fill")
+                #expect(AppModel.Status.down.symbolName == "bird.circle")
+                let image = try #require(
+                    StatusItemController.templateImage(for: .intercepting, description: "Intercepting · debug build"))
+                #expect(image.accessibilityDescription == "Intercepting · debug build")
+            #endif
+        }
+
         @Test func menuBarBirdRemainsATemplateInEveryStatus() throws {
             let states: [AppModel.Status] = [
                 .intercepting, .pacDisabled, .pacUnobserved("networksetup failed"), .down,

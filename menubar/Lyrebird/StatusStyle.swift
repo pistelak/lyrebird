@@ -5,10 +5,17 @@ extension AppModel.Status {
     /// template glyph for the menu bar. An unreadable or foreign proxy is filled: something is
     /// there, and the dot says it is not usable.
     var symbolName: String {
+        let filled: Bool
         switch self {
-        case .intercepting, .pacDisabled, .pacUnobserved, .foreignProfile, .unreadable: return "bird.fill"
-        case .down, .profileUnknown: return "bird"
+        case .intercepting, .pacDisabled, .pacUnobserved, .foreignProfile, .unreadable: filled = true
+        case .down, .profileUnknown: filled = false
         }
+        #if DEBUG
+            // Two builds, two identical birds: the circle marks the Debug one — see aDebugBuildSaysSoInTheMenuBar.
+            return filled ? "bird.circle.fill" : "bird.circle"
+        #else
+            return filled ? "bird.fill" : "bird"
+        #endif
     }
 
     /// Compact toolbar label, preserving each connection state.
