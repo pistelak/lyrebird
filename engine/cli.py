@@ -12,6 +12,7 @@
                                           (--scenario NAME reads a file instead of the proxy)
     lyrebird assert-answered <id> [--run R]  exit non-zero unless that rule answered in that run
     lyrebird scenario reload [--use N]    re-read the scenario files after writing or editing them
+    lyrebird scenario show                every scenario as the proxy would load it, as JSON, offline
     lyrebird reset [id] [--json]          start a fresh run: rewind sequences, clear answer counts
     lyrebird sequence wait <id> --step N  block until a sequence serves a given step
     lyrebird status [--json]              show intercept state (honest about PAC on/off)
@@ -58,6 +59,9 @@ cli.add_command(supervisor.status)
 cli.add_command(scenario.use)
 cli.add_command(scenario.recent)
 cli.add_command(scenario.scenario_group)
+# Under `scenario` with `reload`, because both are about the files; in `offline` because, unlike
+# `reload`, it never touches the proxy.
+scenario.scenario_group.add_command(offline.scenario_show)
 cli.add_command(evidence.sequence)
 cli.add_command(evidence.reset)
 cli.add_command(evidence.assert_answered)
