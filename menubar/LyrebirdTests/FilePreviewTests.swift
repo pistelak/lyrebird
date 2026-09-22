@@ -132,15 +132,28 @@ extension AppTests {
         }
 
         @Test
-        func aPreviewThatFailedCarriesTheEnginesReasonNotAnEmptyList() async throws {
+        func aForeignOrUnreadableProxyIsNotPreviewed() async throws {
             try await withAppTestEnvironment {
-                StubURLProtocol.install { _ in throw URLError(.cannotConnectToHost) }
-                _ = try spyLauncher(exiting: 1, printing: Self.unreadable)
+                // Those states are not "stopped": another profile holds the port, or something
+                // answered and could not be read. Each keeps its own placeholder and Stop button, and
+                // a preview under either would show this profile's files beside a proxy that is not
+                // this profile's.
+                let launcher = try spyLauncher(exiting: 0, printing: Self.payload)
                 let model = makeModel(expecting: RulesFixture.ours)
 
+                StubURLProtocol.install { request in RulesFixture.serve(request, fingerprint: RulesFixture.theirs) }
                 await model.windowAppeared()
+                #expect(model.status == .foreignProfile(running: RulesFixture.theirs))
 
-                #expect(model.previewRead == .unavailable("cannot read /path/to/profile/scenarios: Permission denied"))
+                StubURLProtocol.install { _ in throw URLError(.timedOut) }
+                await model.refresh()
+                guard case .unreadable = model.status else {
+                    Issue.record("a timed-out health read was reported as \(model.status)")
+                    return
+                }
+
+                #expect(recordedCalls(launcher.calls) == "")
+                #expect(model.previewRead == nil)
             }
         }
 
