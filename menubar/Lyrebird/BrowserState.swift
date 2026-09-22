@@ -33,8 +33,8 @@ final class BrowserState {
         self.destination = destination
     }
 
-    func reconcile(_ snapshot: RulesSnapshot?, activeScenario: String?) {
-        if destination == nil, let activeScenario { destination = .scenario(activeScenario) }
+    func reconcile(_ snapshot: RulesSnapshot?, initialScenario: String?) {
+        if destination == nil, let initialScenario { destination = .scenario(initialScenario) }
         guard let snapshot, snapshot.scenario == scenario else { return }
         if selectionScenario != snapshot.scenario {
             ruleSelection = nil

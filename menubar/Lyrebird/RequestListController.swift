@@ -178,7 +178,7 @@ final class RequestListController: NSViewController {
         }
         let problems = RuleFormatting.problems(in: rulesRead)
         if !problems.isEmpty { appendNote("problems", problems.joined(separator: "\n"), error: true, to: &next) }
-        switch RuleFormatting.rulesColumn(status: content.status, read: rulesRead) {
+        switch RuleFormatting.rulesColumn(status: content.status, read: rulesRead, preview: content.previewRead) {
         case .vacancy(let vacancy): appendNote("vacancy", vacancy.message + "\n" + vacancy.hint, to: &next)
         case .list(let snapshot, let vacancy):
             appendSnapshotRows(snapshot, vacancy: vacancy, scenarios: content.scenarios, to: &next)

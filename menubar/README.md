@@ -96,6 +96,15 @@ without the folder and the full name in the tooltip. **Reload from disk** in the
 the scenario files, for a profile edited outside the app; it refuses whole if any file cannot be
 read, and it resets run evidence.
 
+**File preview.** While the proxy is stopped, the browser shows the profile's scenarios and their
+configured responses read from the files instead, through `lyrebird scenario show` — the same
+loader the proxy starts with, so the preview is what the proxy would serve. The toolbar badge reads
+*stopped · file preview* and a note sits above the rules, because nothing here is a run: no
+scenario is marked active, there are no answer counts or sequence positions, Recent still needs the
+proxy, and Activate and Reload stay disabled. A file that could not be read is named in the note
+rather than left out. The preview is re-read on the ordinary poll while the window is open; it is
+not shown while another profile's proxy holds the port.
+
 The menu lists only the folder the active scenario is in — the set one run is about — or the root
 scenarios when the active one is at the root. An active scenario missing from the list is said to be
 missing rather than shown as an empty profile. This window is where the whole profile is; switching

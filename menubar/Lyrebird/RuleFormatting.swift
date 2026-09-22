@@ -56,10 +56,12 @@ enum RuleFormatting {
         match?.path ?? "*"
     }
 
-    /// The toolbar's status item: `intercepting · orders-outage`.
-    /// See `RuleFormattingTests`.
-    static func statusItem(status: AppModel.Status, activeScenario: String?) -> String {
-        ([status.word] + (activeScenario.map { [$0] } ?? [])).joined(separator: " · ")
+    /// The toolbar's status item: `intercepting · orders-outage`, or `stopped · file preview` while
+    /// the window shows scenarios read from files. The badge is the one label that does not scroll
+    /// away with the list, so it is where the preview is named — see `RuleFormattingTests`.
+    static func statusItem(status: AppModel.Status, activeScenario: String?, previewing: Bool = false) -> String {
+        let detail = previewing ? "file preview" : activeScenario
+        return ([status.word] + (detail.map { [$0] } ?? [])).joined(separator: " · ")
     }
 
     /// What to draw where a step's body goes.
@@ -328,24 +330,50 @@ enum RuleFormatting {
         }
     }
 
+    /// The rules panes' gate: `proxyVacancy`, except while previewing, when a stopped proxy is
+    /// the state the preview exists for. Recent keeps calling `proxyVacancy` directly — traffic
+    /// needs a proxy whatever the rules panes show. See `RuleFormattingTests`.
+    static func rulesGate(status: AppModel.Status, preview: AppModel.PreviewRead?) -> Vacancy? {
+        preview == nil ? proxyVacancy(status: status) : nil
+    }
+
     /// Why there is no rules list, or nil when there is a snapshot with rules in it.
-    static func rulesVacancy(status: AppModel.Status, read: MockClient.RulesRead?) -> Vacancy? {
-        if let vacancy = proxyVacancy(status: status) { return vacancy }
+    static func rulesVacancy(
+        status: AppModel.Status, read: MockClient.RulesRead?, preview: AppModel.PreviewRead? = nil
+    ) -> Vacancy? {
+        if let vacancy = rulesGate(status: status, preview: preview) { return vacancy }
         switch read {
         case .ok(let snapshot):
             guard snapshot.rules.isEmpty else { return nil }
             return Vacancy(
                 message: "\(snapshot.scenario) has no rules yet.",
-                hint: "Edit the scenario file, then Reload.")
+                hint: preview == nil ? "Edit the scenario file, then Reload." : "Edit the scenario file.")
         case .unsupported:
             return Vacancy(
                 message: "This engine predates the rules view.",
                 hint: "The control API answered 404 for the rules snapshot. Update Lyrebird's engine.")
         case .unavailable(let reason):
-            return Vacancy(message: "The rules could not be read.", hint: reason)
+            // A preview that failed says so in the files' terms: "the rules could not be read"
+            // would send the reader to a proxy that is not running.
+            return Vacancy(
+                message: preview == nil ? "The rules could not be read." : "The scenario files could not be read.",
+                hint: reason)
         case nil:
-            return Vacancy(message: "Reading the rules…", hint: "The proxy is answering; this window polls it.")
+            return preview == nil
+                ? Vacancy(message: "Reading the rules…", hint: "The proxy is answering; this window polls it.")
+                : Vacancy(message: "Reading the scenario files…", hint: "The proxy is not running.")
         }
+    }
+
+    /// The note that sits above a previewed list. Top-level problems — files that loaded nothing —
+    /// travel in the hint, because a file with no scenario has no sidebar row to warn on.
+    static func previewNote(_ preview: ProfilePreview) -> Vacancy {
+        Vacancy(
+            message: "Preview from files",
+            hint: ([
+                "The proxy is not running, so there are no counts, sequence positions or Recent. Start it to see them."
+            ]
+                + preview.problems).joined(separator: "\n"))
     }
 
     /// An empty snapshot retains the scenario's list and shows its vacancy within it.
@@ -354,12 +382,15 @@ enum RuleFormatting {
         case list(RulesSnapshot, note: Vacancy?)
     }
 
-    static func rulesColumn(status: AppModel.Status, read: MockClient.RulesRead?) -> RulesColumn {
-        if let vacancy = proxyVacancy(status: status) { return .vacancy(vacancy) }
+    static func rulesColumn(
+        status: AppModel.Status, read: MockClient.RulesRead?, preview: AppModel.PreviewRead? = nil
+    ) -> RulesColumn {
+        if let vacancy = rulesGate(status: status, preview: preview) { return .vacancy(vacancy) }
         guard case .ok(let snapshot) = read else {
-            return .vacancy(rulesVacancy(status: status, read: read)!)
+            return .vacancy(rulesVacancy(status: status, read: read, preview: preview)!)
         }
-        return .list(snapshot, note: rulesVacancy(status: status, read: read))
+        if case .ok(let profile) = preview { return .list(snapshot, note: previewNote(profile)) }
+        return .list(snapshot, note: rulesVacancy(status: status, read: read, preview: preview))
     }
 
     /// What a failed action left behind, or nil when there is nothing to say.

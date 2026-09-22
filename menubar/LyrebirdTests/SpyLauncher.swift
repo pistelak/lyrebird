@@ -25,3 +25,21 @@ func spyLauncher(exiting code: Int) throws -> (path: String, calls: URL) {
 func recordedCalls(_ calls: URL) -> String {
     (try? String(contentsOf: calls, encoding: .utf8)) ?? ""
 }
+
+/// A launcher that prints `payload` and exits as told, recording its argv like `spyLauncher`. For
+/// the reads the app decodes — `scenario show` — where what the child printed is the point.
+@MainActor
+func previewLauncher(printing payload: String, exiting code: Int) throws -> (path: String, calls: URL) {
+    let dir = FileManager.default.temporaryDirectory
+        .appendingPathComponent("lyrebird-launcher-\(ProcessInfo.processInfo.globallyUniqueString)")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let calls = dir.appendingPathComponent("calls")
+    let script = dir.appendingPathComponent("lyrebird")
+    let body =
+        "#!/bin/sh\nprintf '%s port=%s\\n' \"$*\" \"$LYREBIRD_CONTROL_PORT\" >> \"\(calls.path)\"\n"
+        + "cat <<'LYREBIRD_PAYLOAD'\n\(payload)\nLYREBIRD_PAYLOAD\nexit \(code)\n"
+    try body.write(to: script, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+    Config.defaults.set(script.path, forKey: Config.lyrebirdPathKey)
+    return (script.path, calls)
+}

@@ -34,9 +34,9 @@ final class StatusBadgeView: NSView {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    func update(_ status: AppModel.Status, scenario: String?, help: String) {
+    func update(_ status: AppModel.Status, scenario: String?, help: String, previewing: Bool = false) {
         content.status = status
-        label.stringValue = RuleFormatting.statusItem(status: status, activeScenario: scenario)
+        label.stringValue = RuleFormatting.statusItem(status: status, activeScenario: scenario, previewing: previewing)
         toolTip = help
         content.needsDisplay = true
     }

@@ -41,6 +41,15 @@ final class AppModel {
     var busy = false
     /// Nil means rules were not requested; `status` explains whether the proxy can be read.
     var rulesRead: MockClient.RulesRead?
+    /// What the file preview found, or why there is none. A preview that failed is not "no proxy":
+    /// the reason is shown where the rules would be — see `RulesReadTests`.
+    enum PreviewRead: Sendable, Equatable {
+        case ok(ProfilePreview)
+        case unavailable(String)
+    }
+    /// The last file preview, read only while a window is open and the proxy is stopped. Nil in
+    /// every other state, so a preview can never survive a poll into the live one.
+    var previewRead: PreviewRead?
     /// Read saved bodies only while a window is open. Count windows so closing one does not
     /// blank another; see `RulesReadTests`.
     private(set) var openWindows = 0
@@ -94,6 +103,17 @@ final class AppModel {
     private static func isOurs(_ health: Health, expected: String) -> Bool {
         guard health.proxyUp == true else { return false }
         return health.profileFingerprint == expected
+    }
+
+    /// The one reading that means nothing is running: no listener on the port, or a control API
+    /// saying so. `status` and the file preview agree through this, so the preview runs in exactly
+    /// the state the window calls "stopped".
+    private static func isStopped(_ read: MockClient.HealthRead?) -> Bool {
+        switch read {
+        case .down, nil: return true
+        case .up(let health): return health.proxyUp != true
+        case .unreadable: return false
+        }
     }
 
     private var pollTask: Task<Void, Never>?
@@ -243,6 +263,7 @@ final class AppModel {
         scenariosRead = nil
         recentRead = nil
         rulesRead = nil
+        previewRead = nil
     }
 
     /// Results from a superseded refresh are dropped, so a slow refresh cannot overwrite a newer
@@ -276,6 +297,7 @@ final class AppModel {
         var scenariosRead: MockClient.ScenariosRead?
         var recentRead: MockClient.RecentRead?
         var rulesRead: MockClient.RulesRead?
+        var previewRead: PreviewRead?
         // The scenario list, the recent traffic and the rules belong to whichever profile answered,
         // so they are read only when that is ours. Showing another profile's scenarios under this
         // profile's name is the same mistake as showing its health.
@@ -283,6 +305,11 @@ final class AppModel {
             scenariosRead = await client.scenarios()
             recentRead = await client.recent()
             if rulesWindowOpen { rulesRead = await client.rules(scenario: browsing) }
+        } else if Self.isStopped(read), rulesWindowOpen {
+            // Nothing to ask, so the files are read instead — through the CLI, which is the one
+            // reader of scenario files, and only while a window is open to show them. A foreign or
+            // unreadable proxy is not "stopped": those states keep their own placeholders.
+            previewRead = await Self.preview()
         }
 
         guard generation == refreshGeneration, configuration == configGeneration,
@@ -291,6 +318,7 @@ final class AppModel {
         self.healthRead = read
         self.scenariosRead = scenariosRead
         self.recentRead = recentRead
+        self.previewRead = previewRead
         // Every list that arrives, not only one that renamed the active scenario — see
         // `RulesReadTests`.
         if case .ok(let list) = scenariosRead { remembered = RememberedScenarios(fingerprint: expected, list: list) }
@@ -319,6 +347,34 @@ final class AppModel {
         guard openWindows == 0 else { return }
         rulesGeneration &+= 1
         rulesRead = nil
+        previewRead = nil
+    }
+
+    /// Run `lyrebird scenario show` and read what it printed.
+    private static func preview() async -> PreviewRead {
+        guard let result = await Control.preview() else {
+            return .unavailable("`lyrebird scenario show` did not answer within \(Int(Control.fingerprintTimeout))s")
+        }
+        return decodePreview(result.output)
+    }
+
+    /// What a finished `scenario show` printed means. The exit status is not consulted: the command
+    /// exits 1 whenever it could not show everything and prints the JSON — with the reason in
+    /// `problems` — either way, and the payload's own sentence beats "exit status 1". A payload with
+    /// no scenarios is a failure carrying its reasons, never an empty profile — see `RulesReadTests`.
+    static func decodePreview(_ output: String) -> PreviewRead {
+        guard let span = Control.jsonSpan(in: output),
+            let preview = try? JSONDecoder().decode(ProfilePreview.self, from: span)
+        else {
+            let printed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+            return .unavailable(printed.isEmpty ? "`lyrebird scenario show` printed nothing" : printed)
+        }
+        guard !preview.scenarios.isEmpty else {
+            return .unavailable(
+                preview.problems.isEmpty
+                    ? "the profile has no scenario files" : preview.problems.joined(separator: "\n"))
+        }
+        return .ok(preview)
     }
 
     /// Dismiss the last failure. The window shows it until it is read; the next action that succeeds
@@ -351,9 +407,9 @@ final class AppModel {
         guard let expected = expectedFingerprint else {
             return .profileUnknown(profileProblem ?? "asking the CLI which profile this is")
         }
+        if Self.isStopped(healthRead) { return .down }
         switch healthRead {
         case .up(let health):
-            guard health.proxyUp == true else { return .down }
             // A health with no fingerprint is an older engine that cannot answer the question, and
             // the CLI refuses it too: until a proxy says whose it is, it is somebody else's.
             guard let running = health.profileFingerprint else {
