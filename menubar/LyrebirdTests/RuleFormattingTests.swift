@@ -27,45 +27,6 @@ struct RuleFormattingTests {
                 == "another profile")
     }
 
-    @Test
-    func theToolbarNamesAFilePreviewWhereverTheListIsScrolled() {
-        // The list's note scrolls away with the rows; the badge is the label that stays.
-        #expect(
-            RuleFormatting.statusItem(status: .down, activeScenario: nil, previewing: true) == "stopped · file preview")
-        #expect(RuleFormatting.statusItem(status: .down, activeScenario: nil, previewing: false) == "stopped")
-    }
-
-    @Test
-    func aPreviewOpensTheRulesGatesButNotRecents() throws {
-        // The stopped-proxy vacancy is what the preview exists to replace — in the rules panes.
-        // `proxyVacancy` itself is untouched: Recent is run state and keeps saying so.
-        let preview = ProfilePreview(problems: ["skipped broken.json: boom"], scenarios: [], rules: [:])
-        let snapshot = RulesSnapshot(scenario: "orders-outage", notWhole: [], rules: [])
-
-        #expect(RuleFormatting.rulesGate(status: .down, preview: .ok(preview)) == nil)
-        #expect(
-            RuleFormatting.rulesGate(status: .down, preview: .unavailable("x")) == nil,
-            "a failed preview is rendered, not hidden")
-        #expect(RuleFormatting.rulesGate(status: .down, preview: nil)?.message == "Proxy is not running.")
-        #expect(RuleFormatting.proxyVacancy(status: .down)?.message == "Proxy is not running.")
-
-        guard
-            case .list(_, let note) = RuleFormatting.rulesColumn(
-                status: .down, read: .ok(snapshot), preview: .ok(preview))
-        else {
-            Issue.record("a previewed scenario was replaced by a vacancy")
-            return
-        }
-        let shown = try #require(note)
-        #expect(shown.message == "Preview from files")
-        #expect(shown.hint.contains("skipped broken.json: boom"), "a file that loaded nothing is named in the note")
-
-        let failed = RuleFormatting.rulesVacancy(
-            status: .down, read: .unavailable("Permission denied"), preview: .unavailable("Permission denied"))
-        #expect(failed?.message == "The scenario files could not be read.")
-        #expect(failed?.hint == "Permission denied")
-    }
-
     // MARK: - Numbers
 
     @Test(

@@ -181,7 +181,10 @@ final class RequestListController: NSViewController {
         switch RuleFormatting.rulesColumn(status: content.status, read: rulesRead, preview: content.previewRead) {
         case .vacancy(let vacancy): appendNote("vacancy", vacancy.message + "\n" + vacancy.hint, to: &next)
         case .list(let snapshot, let vacancy):
-            appendSnapshotRows(snapshot, vacancy: vacancy, scenarios: content.scenarios, to: &next)
+            // The notes live on the list entry, live or previewed — a previewed scenario lost its
+            // "About this scenario" while only the live list was consulted; see `FilePreviewTests`.
+            appendSnapshotRows(
+                snapshot, vacancy: vacancy, scenarios: content.scenarios ?? content.previewList, to: &next)
         }
     }
 

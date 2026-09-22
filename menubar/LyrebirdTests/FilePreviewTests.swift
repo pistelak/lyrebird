@@ -13,7 +13,8 @@ extension AppTests {
         /// What `scenario show` prints for a profile holding the two fixture scenarios.
         static let payload =
             #"{"problems": [], "scenarios": ["#
-            + #"{"name": "orders-outage", "overrideCount": 3, "verified": true, "notes": ""}, "#
+            + #"{"name": "orders-outage", "overrideCount": 3, "verified": true, "#
+            + #""notes": "what the app shows during the outage"}, "#
             + #"{"name": "checkout", "overrideCount": 2, "verified": false, "notes": ""}], "#
             + #""rules": {"orders-outage": \#(RulesFixture.snapshot), "checkout": \#(RulesFixture.browsed)}}"#
 
@@ -83,7 +84,6 @@ extension AppTests {
             }
             #expect(preview.scenarios.map(\.name) == ["orders-outage", "checkout"])
             #expect(preview.rules.keys.sorted() == ["checkout", "orders-outage"])
-            #expect(preview.list.active == "", "a file has no run, so nothing may match the active name")
             #expect(try #require(preview.rules["orders-outage"]).rules.count == 3)
         }
 
@@ -94,7 +94,7 @@ extension AppTests {
             try await withAppTestEnvironment {
                 StubURLProtocol.install { _ in throw URLError(.cannotConnectToHost) }
                 Config.defaults.set("/tmp/lyrebird-profile", forKey: Config.profilePathKey)
-                let launcher = try previewLauncher(printing: Self.payload, exiting: 0)
+                let launcher = try spyLauncher(exiting: 0, printing: Self.payload)
                 let model = makeModel(expecting: RulesFixture.ours)
 
                 await model.windowAppeared()
@@ -119,7 +119,7 @@ extension AppTests {
                 // A spawn every poll for a window nobody is looking at is the same waste as polling a
                 // closed window for its rules.
                 StubURLProtocol.install { _ in throw URLError(.cannotConnectToHost) }
-                let launcher = try previewLauncher(printing: Self.payload, exiting: 0)
+                let launcher = try spyLauncher(exiting: 0, printing: Self.payload)
                 let model = makeModel(expecting: RulesFixture.ours)
 
                 await model.refresh()
@@ -135,7 +135,7 @@ extension AppTests {
         func aPreviewThatFailedCarriesTheEnginesReasonNotAnEmptyList() async throws {
             try await withAppTestEnvironment {
                 StubURLProtocol.install { _ in throw URLError(.cannotConnectToHost) }
-                _ = try previewLauncher(printing: Self.unreadable, exiting: 1)
+                _ = try spyLauncher(exiting: 1, printing: Self.unreadable)
                 let model = makeModel(expecting: RulesFixture.ours)
 
                 await model.windowAppeared()
@@ -145,10 +145,30 @@ extension AppTests {
         }
 
         @Test
+        func aPreviewThatFinishesAfterTheLastWindowClosedIsDropped() async throws {
+            try await withAppTestEnvironment {
+                // Closed mid-read: the payload arrives for nobody. Committed anyway, it was what the
+                // next window rendered before its own read began — a stale preview under a fresh badge.
+                StubURLProtocol.install { _ in throw URLError(.cannotConnectToHost) }
+                _ = try spyLauncher(exiting: 0, printing: Self.payload, delay: 0.5)
+                let model = makeModel(expecting: RulesFixture.ours)
+                model.windowOpened()
+                let refresh = Task { await model.refresh() }
+                try await Task.sleep(for: .milliseconds(100))  // the launcher is still sleeping
+
+                model.windowClosed()
+                await refresh.value
+
+                #expect(model.status == .down, "the health reading is committed regardless")
+                #expect(model.previewRead == nil, "a preview nobody asked to see was committed")
+            }
+        }
+
+        @Test
         func theFirstLiveReadingReplacesThePreviewInTheSameCommit() async throws {
             try await withAppTestEnvironment {
                 StubURLProtocol.install { _ in throw URLError(.cannotConnectToHost) }
-                _ = try previewLauncher(printing: Self.payload, exiting: 0)
+                _ = try spyLauncher(exiting: 0, printing: Self.payload)
                 let model = makeModel(expecting: RulesFixture.ours)
                 await model.windowAppeared()
                 #expect(model.previewRead != nil)
@@ -169,7 +189,7 @@ extension AppTests {
         func aColdOpenedPreviewIsLabelledBrowsesItsFirstScenarioAndOffersNoActivation() async throws {
             try await withAppTestEnvironment {
                 StubURLProtocol.install { _ in throw URLError(.cannotConnectToHost) }
-                _ = try previewLauncher(printing: Self.payloadWithABrokenFile, exiting: 1)
+                _ = try spyLauncher(exiting: 1, printing: Self.payloadWithABrokenFile)
                 let model = makeModel(expecting: RulesFixture.ours)
                 let controller = RulesWindowController(model: model, restore: false)
                 controller.showWindow(nil)
@@ -198,6 +218,17 @@ extension AppTests {
                 #expect(!controller.canActivateSelection)
                 let activate = try #require(buttons(controller.requests.view).first { $0.title == "Activate" })
                 #expect(!activate.isEnabled)
+                // Reload asks a running proxy to re-read its files; there is none. Start stays enabled:
+                // it is how the reader leaves the preview.
+                let toolbar = try #require(controller.window?.toolbar)
+                let reload = try #require(toolbar.items.first { $0.itemIdentifier.rawValue == "reload" })
+                let interception = try #require(toolbar.items.first { $0.itemIdentifier.rawValue == "interception" })
+                reload.validate()
+                interception.validate()
+                #expect(!reload.isEnabled)
+                #expect(interception.isEnabled)
+                // The scenario's notes come from the previewed list, as they come from the live one.
+                #expect(rowTexts(controller).contains { $0.contains("what the app shows during the outage") })
                 // The detail pane shows the selected rule's configured response — the sequence rule
                 // is first in the fixture — not the stopped-proxy vacancy.
                 #expect(controller.detail.textView.string.contains("/api/v1/items"))
@@ -219,7 +250,7 @@ extension AppTests {
                 StubURLProtocol.install { request in RulesFixture.serve(request) }
                 // Installed first: the launcher path is part of the settings the model was discovered
                 // under, and a refresh under changed settings is dropped until rediscovery.
-                _ = try previewLauncher(printing: Self.unreadable, exiting: 1)
+                _ = try spyLauncher(exiting: 1, printing: Self.unreadable)
                 let model = makeModel(expecting: RulesFixture.ours)
                 let controller = RulesWindowController(model: model, restore: false)
                 controller.showWindow(nil)

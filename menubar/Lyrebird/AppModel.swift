@@ -318,7 +318,6 @@ final class AppModel {
         self.healthRead = read
         self.scenariosRead = scenariosRead
         self.recentRead = recentRead
-        self.previewRead = previewRead
         // Every list that arrives, not only one that renamed the active scenario — see
         // `RulesReadTests`.
         if case .ok(let list) = scenariosRead { remembered = RememberedScenarios(fingerprint: expected, list: list) }
@@ -327,6 +326,10 @@ final class AppModel {
         // Nil, not the previous snapshot: the gate above failing means this proxy is not ours to
         // read, and last poll's rules would then be shown beside a header saying so.
         self.rulesRead = rulesRead
+        // Behind the same guard as the rules: both are read for a window, and a preview that
+        // finished after the last window closed used to be committed to nobody and shown to the
+        // next window before its own read began — see `FilePreviewTests`.
+        self.previewRead = previewRead
     }
 
     /// Register a window without waiting for a refresh.

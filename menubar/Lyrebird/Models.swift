@@ -270,8 +270,4 @@ struct ProfilePreview: Codable, Sendable, Equatable {
     var problems: [String]
     var scenarios: [ScenarioSummary]
     var rules: [String: RulesSnapshot]
-
-    /// The sidebar's shape. `active` is empty because it matches no name: a file has no run, so no
-    /// row may be marked active — see `BrowserControllerTests`.
-    var list: ScenarioList { ScenarioList(active: "", scenarios: scenarios) }
 }

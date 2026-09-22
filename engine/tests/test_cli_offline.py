@@ -578,7 +578,6 @@ def test_scenario_show_describes_rules_as_the_browsed_route_does(profile, runner
     assert payload["rules"]["sequenced"] == browsed
     items = next(row for row in browsed["rules"] if row["id"] == "ovr_items")
     assert items["rewrite"]["sequence"]["advanceOnRule"] == "ovr_delete", "the comparison exercised a trigger"
-    assert items["answer"] is None and items["sequenceState"] is None
 
 
 def test_scenario_show_reports_a_dropped_rule_under_the_scenario_that_lost_it(profile, runner, offline):

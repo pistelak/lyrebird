@@ -23,11 +23,11 @@ struct BrowserContent {
     /// True for a preview that failed as well as one that succeeded — see `previewRead`.
     var previewing: Bool { previewRead != nil }
 
-    var preview: ProfilePreview? {
-        if case .ok(let preview) = previewRead { return preview }
+    /// The preview in the sidebar's shape; nil when there is none, or it failed. `active` is empty
+    /// because it matches no name: a file has no run, so no row may be marked active — see
+    /// `FilePreviewTests`.
+    var previewList: ScenarioList? {
+        if case .ok(let preview) = previewRead { return ScenarioList(active: "", scenarios: preview.scenarios) }
         return nil
     }
-
-    /// What the sidebar draws from the preview; nil when there is none, or it failed.
-    var previewList: ScenarioList? { preview?.list }
 }

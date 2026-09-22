@@ -321,9 +321,10 @@ extension RulesWindowController: NSMenuItemValidation {
 extension RulesWindowController: NSToolbarItemValidation {
     func validateToolbarItem(_ item: NSToolbarItem) -> Bool {
         // A busy Reload used to silently do nothing; see reloadToolbarItemDisablesWhileItsRequestIsOutstanding.
-        if item.action == #selector(reload) || item.action == #selector(toggleInterception) {
-            return !model.busy
-        }
+        if item.action == #selector(toggleInterception) { return !model.busy }
+        // Reload asks the running proxy to re-read its files. Under a file preview there is none to
+        // ask, and an enabled button answered with a connection error — see `FilePreviewTests`.
+        if item.action == #selector(reload) { return !model.busy && model.previewRead == nil }
         return true
     }
 }
