@@ -428,7 +428,7 @@ extension AppTests {
             let state = BrowserState()
             state.select(.scenario("checkout"))
             state.select(nil)
-            state.reconcile(nil, activeScenario: "orders-outage")
+            state.reconcile(nil, initialScenario: "orders-outage")
             #expect(state.scenario == "checkout")
             state.select(.recent)
             #expect(state.showsRecent)
@@ -440,12 +440,12 @@ extension AppTests {
             var snapshot = try JSONDecoder().decode(RulesSnapshot.self, from: Data(RulesFixture.snapshot.utf8))
             let state = BrowserState()
             state.select(.scenario(snapshot.scenario))
-            state.reconcile(snapshot, activeScenario: snapshot.scenario)
+            state.reconcile(snapshot, initialScenario: snapshot.scenario)
             state.pickStep(3, rule: "ovr_items")
             state.ruleSelection = .rule("missing")
             snapshot.scenario = "checkout"
             state.select(.scenario("checkout"))
-            state.reconcile(snapshot, activeScenario: "orders-outage")
+            state.reconcile(snapshot, initialScenario: "orders-outage")
             #expect(state.pickedStep == nil)
             #expect(state.ruleSelection != .rule("missing"))
         }

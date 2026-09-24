@@ -4,6 +4,7 @@ The live command asks the running proxy for its rules. `validate` and `explain-m
 answer the same questions from a scenario file instead, under their own mark below.
 """
 
+import errno
 import io
 import json
 
@@ -507,3 +508,134 @@ def test_an_unnameable_file_does_not_break_a_lookup_by_name(profile, runner, off
     assert result.exit_code == 0
     payload = json.loads(result.output)
     assert [report["name"] for report in payload["scenarios"]] == ["whole"]
+
+
+# MARK: - Offline inspection: `scenario show`
+#
+# The menu-bar app's file preview reads this while the proxy is down, so what it pins is that the
+# payload cannot drift from the two routes it stands in for, and that nothing a directory can hold
+# — a file that loaded nothing, a directory nobody can list, no files at all — leaves it looking
+# like an empty profile.
+
+_SEQUENCED = {
+    "name": "sequenced",
+    "overrides": [
+        {"id": "ovr_orders", "mode": "replace", "status": 500, "match": {"method": "GET", "path": "/api/v1/orders/*"}},
+        {
+            "id": "ovr_delete",
+            "mode": "replace",
+            "status": 204,
+            "match": {"method": "DELETE", "path": "/api/v1/items/*"},
+        },
+        {
+            "id": "ovr_items",
+            "mode": "replace",
+            "match": {"method": "GET", "path": "/api/v1/items"},
+            "sequence": {
+                "advanceOn": {"method": "DELETE", "path": "/api/v1/items/*"},
+                "steps": [{"status": 200, "body": {"items": [1]}}, {"status": 200, "body": {"items": []}}],
+            },
+        },
+        {"id": "ovr_off", "active": False, "mode": "replace", "status": 200, "match": {"path": "/api/v1/off"}},
+    ],
+}
+
+
+def _show(runner):
+    result = runner.invoke(cli.cli, ["scenario", "show"])
+    return result.exit_code, json.loads(result.output)
+
+
+def test_scenario_show_lists_every_file_the_way_the_proxy_would(profile, runner):
+    """The same summaries `GET /__mock__/scenarios` sends, minus the `default` a store invents when
+    no file provides one: the preview names files, and an invented scenario is not a file."""
+    write_scenario(profile, "whole", _WHOLE)
+    write_grouped(profile, "checkout", "sequenced", _SEQUENCED)
+
+    code, payload = _show(runner)
+
+    assert code == 0, payload["problems"]
+    live = [entry for entry in store.Store().list_scenarios()["scenarios"] if entry["name"] != "default"]
+    assert payload["scenarios"] == live
+    assert {entry["name"] for entry in payload["scenarios"]} == {"whole", "checkout/sequenced"}
+    assert "active" not in payload, "a file has no run, so nothing is active"
+
+
+def test_scenario_show_describes_rules_as_the_browsed_route_does(profile, runner):
+    """Field for field what `GET /__mock__/rules?scenario=NAME` sends for a scenario that is looked
+    at rather than served — the description, `advanceOnRule`, the null runtime — so a preview and a
+    live browse of the same file cannot disagree. Only `active` differs: the route says whether the
+    snapshot is the serving one, and a file never is."""
+    from test_control import call
+
+    write_scenario(profile, "sequenced", _SEQUENCED)
+    _status, _headers, browsed = call(profile, "GET", "/__mock__/rules?scenario=sequenced")
+    assert browsed.pop("active") is False
+
+    code, payload = _show(runner)
+
+    assert code == 0, payload["problems"]
+    assert payload["rules"]["sequenced"] == browsed
+    items = next(row for row in browsed["rules"] if row["id"] == "ovr_items")
+    assert items["rewrite"]["sequence"]["advanceOnRule"] == "ovr_delete", "the comparison exercised a trigger"
+
+
+def test_scenario_show_reports_a_dropped_rule_under_the_scenario_that_lost_it(profile, runner, offline):
+    """A dropped rule otherwise looks exactly like a scenario one rule shorter. It is the scenario's
+    problem, filed as the live `notWhole` files it — and the scenario still loaded, so it is shown."""
+    write_scenario(profile, "partial", _PARTIAL)
+
+    code, payload = _show(runner)
+
+    assert code == 0, "the payload covers everything in the directory"
+    assert payload["problems"] == []
+    assert [row["id"] for row in payload["rules"]["partial"]["rules"]] == ["ovr_orders"]
+    assert any("unknown field 'paths'" in problem for problem in payload["rules"]["partial"]["notWhole"])
+
+
+def test_scenario_show_names_a_file_that_loaded_nothing_beside_the_ones_that_did(profile, runner, offline):
+    """The loader records a malformed file's problem against the name it would have had, and that
+    name has no `rules` entry to carry it — filed only there, `broken.json` vanished from the payload
+    and the preview showed one scenario as though the directory held one."""
+    write_scenario(profile, "whole", _WHOLE)
+    write_scenario(profile, "broken", "{not json")
+
+    code, payload = _show(runner)
+
+    assert code == 1
+    assert [entry["name"] for entry in payload["scenarios"]] == ["whole"]
+    assert any("skipped broken.json" in problem for problem in payload["problems"]), payload["problems"]
+
+
+def test_scenario_show_reports_an_unreadable_directory_rather_than_an_empty_profile(
+    profile, runner, offline, monkeypatch
+):
+    """A directory nobody can list is not a profile with no scenarios. Discovery files its failure
+    under `default`, which loaded nothing here, so it has to surface at the top."""
+    real = store.Path.iterdir
+
+    def refuse(self):
+        if self.name == "scenarios":
+            raise PermissionError(errno.EACCES, "Permission denied")
+        return real(self)
+
+    monkeypatch.setattr(store.Path, "iterdir", refuse)
+
+    code, payload = _show(runner)
+
+    assert code == 1
+    assert payload["scenarios"] == [] and payload["rules"] == {}
+    assert any("cannot read" in problem for problem in payload["problems"]), payload["problems"]
+
+
+def test_scenario_show_says_when_there_are_no_scenario_files(profile, runner, offline):
+    """Discovery has nothing to say about an empty directory, so without this the payload was an
+    empty list, empty problems and exit 1 — a failure with no reason, which the preview could only
+    render as a blank. The sentence is `validate`'s, so the two cannot word it differently."""
+    code, payload = _show(runner)
+
+    assert code == 1
+    assert payload["scenarios"] == []
+    assert len(payload["problems"]) == 1 and "no scenario files" in payload["problems"][0]
+    validated = runner.invoke(cli.cli, ["validate", "--json"])
+    assert json.loads(validated.output)["problems"] == payload["problems"]

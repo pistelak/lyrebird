@@ -164,7 +164,7 @@ extension AppTests {
                 model.rulesRead = .ok(snapshot)
                 let state = BrowserState()
                 state.select(.scenario(snapshot.scenario))
-                state.reconcile(snapshot, activeScenario: snapshot.scenario)
+                state.reconcile(snapshot, initialScenario: snapshot.scenario)
                 let ending = try #require(
                     RuleFormatting.flowSections(snapshot).flatMap(\.rows).first { $0.endingTransition != nil })
                 state.ruleSelection = ending.selection
@@ -234,7 +234,7 @@ extension AppTests {
                         ]))
                 let state = BrowserState()
                 state.select(.scenario(snapshot.scenario))
-                state.reconcile(snapshot, activeScenario: snapshot.scenario)
+                state.reconcile(snapshot, initialScenario: snapshot.scenario)
                 let controller = RequestListController()
                 let window = NSWindow(contentViewController: controller)
                 window.isReleasedWhenClosed = false
@@ -268,7 +268,7 @@ extension AppTests {
                 model.rulesRead = .ok(snapshot)
                 let state = BrowserState()
                 state.select(.scenario(snapshot.scenario))
-                state.reconcile(snapshot, activeScenario: snapshot.scenario)
+                state.reconcile(snapshot, initialScenario: snapshot.scenario)
                 let detail = RuleDetailController()
                 let window = NSWindow(contentViewController: detail)
                 window.isReleasedWhenClosed = false

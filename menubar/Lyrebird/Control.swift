@@ -249,25 +249,44 @@ enum Control {
     /// doing — it is config-derived, and the command exits 1 when not intercepting while still
     /// printing the JSON — so a down or foreign proxy answers this question just as well.
     static func fingerprint() async throws -> String {
-        let result = try await withThrowingTaskGroup(of: Result?.self) { group -> Result in
-            group.addTask { await lyrebird(["status", "--json"]) }
+        guard let result = await lyrebird(["status", "--json"], within: fingerprintTimeout) else {
+            throw ProfileUnknown(
+                reason: "`lyrebird status --json` did not answer within "
+                    + "\(Int(fingerprintTimeout))s")
+        }
+        return try fingerprint(from: result)
+    }
+
+    /// Run a CLI command that only reads, giving up after `timeout`: nil when the timeout won.
+    /// Shared by the two reads the app makes on its own schedule — the profile lookup and the file
+    /// preview — so a launcher that never returns cannot hold either.
+    private static func lyrebird(_ command: [String], within timeout: Double) async -> Result? {
+        await withTaskGroup(of: Result?.self) { group -> Result? in
+            group.addTask { await lyrebird(command) }
             group.addTask {
-                try await Task.sleep(for: .seconds(fingerprintTimeout))
+                try? await Task.sleep(for: .seconds(timeout))
                 return nil  // the timeout won the race
             }
             defer { group.cancelAll() }  // cancelling the shell task terminates the child
-            guard let first = try await group.next() else {
-                throw ProfileUnknown(reason: "the profile lookup produced no result at all")
-            }
-            guard let result = first else {
-                throw ProfileUnknown(
-                    reason: "`lyrebird status --json` did not answer within "
-                        + "\(Int(fingerprintTimeout))s")
-            }
-            return result
+            return await group.next() ?? nil
         }
+    }
 
-        return try fingerprint(from: result)
+    /// The profile's scenarios read from files, as `lyrebird scenario show` prints them. Nil when
+    /// the launcher did not answer in time; the caller decodes the rest, exit status included, since
+    /// the command prints its JSON — and the reason for a nonzero exit — either way.
+    static func preview() async -> Result? {
+        await lyrebird(["scenario", "show"], within: fingerprintTimeout)
+    }
+
+    /// Everything from the first `{` to the last `}` of what a launcher printed, or nil when there
+    /// is no such span. The launcher merges stderr into stdout, so a warning before or after the
+    /// JSON is normal and is not a reason to report the payload as missing.
+    static func jsonSpan(in output: String) -> Data? {
+        guard let start = output.firstIndex(of: "{"), let end = output.lastIndex(of: "}"), start < end else {
+            return nil
+        }
+        return Data(output[start...end].utf8)
     }
 
     /// The half of the lookup that decides what a finished `status --json` run means, kept apart
@@ -295,11 +314,8 @@ enum Control {
     /// profile as unknown. Everything from the first `{` to the last `}` is offered to the
     /// decoder; nil means the field was not there, never a guess.
     static func fingerprint(fromStatusJSON output: Data) -> String? {
-        guard let text = String(data: output, encoding: .utf8),
-            let start = text.firstIndex(of: "{"),
-            let end = text.lastIndex(of: "}"), start < end
-        else { return nil }
-        let object = try? JSONSerialization.jsonObject(with: Data(text[start...end].utf8))
+        guard let text = String(data: output, encoding: .utf8), let span = jsonSpan(in: text) else { return nil }
+        let object = try? JSONSerialization.jsonObject(with: span)
         guard let fingerprint = (object as? [String: Any])?["profileFingerprint"] as? String,
             !fingerprint.isEmpty
         else { return nil }

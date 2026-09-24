@@ -369,6 +369,13 @@ The top-level `problems` is about the *request* rather than a file — a name th
 name that could not be one, a profile with no scenarios in it — and `scenarios` is then empty. Every
 failure comes back in this shape, so `--json` output never has to be parsed as prose.
 
+`lyrebird --profile PATH scenario show` is the same loader read the other way round: every scenario
+the proxy would load, as JSON, with the list `GET /__mock__/scenarios` would send and each
+scenario's rules as `GET /__mock__/rules?scenario=NAME` describes them — no proxy, no run state, no
+`active`. It is what the menu-bar app previews while the proxy is down. Files that loaded nothing go
+to top-level `problems` and the exit is 1; a rule dropped from a scenario that did load is under that
+scenario's `notWhole`.
+
 **Check a rule before you launch anything.** `explain-match` answers, in a second, what otherwise
 costs a cold launch and a walk through the app:
 

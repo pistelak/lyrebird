@@ -122,7 +122,10 @@ final class RulesWindowController: NSWindowController {
         let content = BrowserContent(model: model)
         let snapshot: RulesSnapshot?
         if case .ok(let value) = content.rulesRead { snapshot = value } else { snapshot = nil }
-        state.reconcile(snapshot, activeScenario: model.ownHealth?.activeScenario)
+        // A cold-opened preview browses its first scenario: there is no active one to start from,
+        // and a window that waited for a click showed nothing — see `BrowserControllerTests`.
+        state.reconcile(
+            snapshot, initialScenario: model.ownHealth?.activeScenario ?? content.previewList?.scenarios.first?.name)
         reconcilePendingDestination(in: snapshot)
         // Browsing an initially active scenario makes subsequent activation changes independent.
         if registered, let scenario = state.scenario, model.browsedScenario != scenario, !state.showsRecent {
@@ -132,13 +135,20 @@ final class RulesWindowController: NSWindowController {
                 await model.browse(scenario)
             }
         }
-        statusBadge.update(content.status, scenario: model.ownHealth?.activeScenario, help: model.statusLine)
+        statusBadge.update(
+            content.status, scenario: model.ownHealth?.activeScenario, help: model.statusLine,
+            previewing: content.previewing)
         updateInterceptionItem()
         updateDismissItem(for: content.lastError)
         window?.toolbar?.validateVisibleItems()
+        // While previewing the sidebar draws from the preview alone, nil included: the greyed list a
+        // stopped proxy leaves behind keeps its active marker, and under a label saying "file
+        // preview" that marker would name a run the files do not have — see `BrowserControllerTests`.
+        let list = content.previewing ? content.previewList : (content.scenarios ?? model.lastScenarios)
         sidebar.update(
-            content.scenarios ?? model.lastScenarios, selection: state.destination,
-            problems: model.ownHealth?.scenariosNotWhole ?? [:], stale: content.scenarios == nil)
+            list, selection: state.destination,
+            problems: model.ownHealth?.scenariosNotWhole ?? [:],
+            stale: !content.previewing && content.scenarios == nil)
         requests.update(content, state: state)
         detail.update(content, state: state)
     }
@@ -311,9 +321,10 @@ extension RulesWindowController: NSMenuItemValidation {
 extension RulesWindowController: NSToolbarItemValidation {
     func validateToolbarItem(_ item: NSToolbarItem) -> Bool {
         // A busy Reload used to silently do nothing; see reloadToolbarItemDisablesWhileItsRequestIsOutstanding.
-        if item.action == #selector(reload) || item.action == #selector(toggleInterception) {
-            return !model.busy
-        }
+        if item.action == #selector(toggleInterception) { return !model.busy }
+        // Reload asks the running proxy to re-read its files. Under a file preview there is none to
+        // ask, and an enabled button answered with a connection error — see `FilePreviewTests`.
+        if item.action == #selector(reload) { return !model.busy && model.previewRead == nil }
         return true
     }
 }

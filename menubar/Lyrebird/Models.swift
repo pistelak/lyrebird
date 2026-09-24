@@ -259,3 +259,15 @@ struct RulesSnapshot: Codable, Sendable, Equatable {
     var notWhole: [String]
     var rules: [RuleRow]
 }
+
+/// What `lyrebird scenario show` prints: the profile's scenarios read from their files, with no
+/// run behind them. Shown while the proxy is down, so a reader can review what an agent prepared
+/// without starting anything — see `RulesReadTests`.
+struct ProfilePreview: Codable, Sendable, Equatable {
+    /// What could not be shown: a file that loaded nothing, a directory that could not be read, a
+    /// profile with no scenario files. A rule dropped from a scenario that did load is under that
+    /// scenario's snapshot in `rules`, as it is live.
+    var problems: [String]
+    var scenarios: [ScenarioSummary]
+    var rules: [String: RulesSnapshot]
+}

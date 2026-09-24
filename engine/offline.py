@@ -70,6 +70,89 @@ def _offline_scenario(name: str) -> tuple[dict | None, list[str]]:
     return scenario, [*problems, *file_problems]
 
 
+def _no_scenario_files() -> str:
+    """The one sentence for a profile with nothing in `scenarios/`, shared by `validate` and
+    `scenario show` so an empty directory is never a reasonless failure in either."""
+    return (
+        f"no scenario files in {config.SCENARIOS_DIR} — check --profile, or create "
+        f"a profile with `lyrebird init {config.PROFILE_DIR}`"
+    )
+
+
+def _described_rules(overrides: list[dict]) -> list[dict]:
+    """The rows `GET /__mock__/rules?scenario=NAME` sends for a scenario that is browsed, not
+    served: the rule as stored, the engine's description of what it answers with, and a null
+    runtime — a file has no run, and `count: 0` would say it answered nothing when nothing has asked.
+    Pinned field for field against the route by test_scenario_show_describes_rules_as_the_browsed_route_does."""
+
+    def advance_on_rule(matcher: dict | None) -> str | None:
+        # Trigger identity, not which rule would answer: inactive rules count and the first in
+        # scenario order wins, as in the route.
+        if matcher is None:
+            return None
+        return next((o["id"] for o in overrides if rules.same_matcher(o.get("match"), matcher)), None)
+
+    rows = []
+    for override in overrides:
+        rewrite = rules.describe_rewrite(override)
+        if rewrite["sequence"] is not None:
+            rewrite["sequence"]["advanceOnRule"] = advance_on_rule(rewrite["sequence"]["advanceOn"])
+        rows.append({**override, "rewrite": rewrite, "answer": None, "sequenceState": None})
+    return rows
+
+
+@click.command(name="show")
+def scenario_show() -> None:
+    """Every scenario in this profile as the proxy would load it, as JSON — without starting anything.
+
+    The menu-bar app's file preview reads this while the proxy is down. The list carries the same
+    fields as `GET /__mock__/scenarios`, each scenario's `rules` the same rows as browsing it through
+    `GET /__mock__/rules?scenario=NAME`, so what is previewed is what the proxy would serve. There is
+    no `active` and no runtime state: a file has no run.
+
+    `problems` holds what could not be shown: a file that loaded nothing, a directory that could not
+    be read, a profile with no scenario files at all. A rule dropped from a scenario that did load is
+    under that scenario's `notWhole`, as it is live. Exits 1 when `problems` is non-empty, with the
+    JSON printed either way — the reason is in the payload, not the exit code.
+    """
+    # The static reader, not a `Store`: it publishes nothing and synthesises no `default`, so the
+    # payload names only files. `on_disk` and `stamps` are startup's concerns.
+    scenarios, discovery, _on_disk, _stamps = store.Store._read_snapshot()
+    problems: list[str] = []
+    not_whole: dict[str, list[str]] = {name: [] for name in scenarios}
+    for owner, problem in discovery:
+        # An owner with no loaded scenario has no `rules` entry to file its problem under — a
+        # malformed `broken.json` beside a good file used to vanish from the payload entirely, see
+        # test_scenario_show_names_a_file_that_loaded_nothing_beside_the_ones_that_did.
+        (not_whole[owner] if owner in not_whole else problems).append(problem)
+    if not scenarios and not problems:
+        problems.append(_no_scenario_files())
+
+    payload = {
+        "problems": problems,
+        "scenarios": [
+            {
+                "name": scenario["name"],
+                "group": store.scenario_group(scenario["name"]),
+                "overrideCount": len(scenario.get("overrides", [])),
+                "verified": scenario.get("verified", False),
+                "notes": scenario.get("notes", ""),
+            }
+            for scenario in scenarios.values()
+        ],
+        "rules": {
+            name: {
+                "scenario": name,
+                "notWhole": not_whole[name],
+                "rules": _described_rules(list(scenario.get("overrides") or [])),
+            }
+            for name, scenario in scenarios.items()
+        },
+    }
+    click.echo(json.dumps(payload, indent=2))
+    raise SystemExit(1 if problems else 0)
+
+
 def _validation_report(file: Path) -> dict:
     """One file's verdict. `loaded` and `ok` are separate answers on purpose: a scenario can load
     and still be missing the rule you came for, and `problems` says which."""
@@ -127,10 +210,7 @@ def validate(name: str | None, as_json: bool) -> None:
             # when discovery itself had nothing to say — a profile whose every file was skipped
             # has already been told why, and adding "no scenario files" would send the reader
             # to --profile over files that are sitting right there.
-            problems = [
-                f"no scenario files in {config.SCENARIOS_DIR} — check --profile, or create "
-                f"a profile with `lyrebird init {config.PROFILE_DIR}`"
-            ]
+            problems = [_no_scenario_files()]
 
     reports = [_validation_report(file) for file in files]
     ok = not problems and all(report["ok"] for report in reports)

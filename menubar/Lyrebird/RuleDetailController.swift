@@ -134,13 +134,15 @@ final class RuleDetailController: NSViewController {
         let flow = RuleFormatting.flowRow(state.ruleSelection, in: snapshot)
         if state.showsRecent {
             appendRecentDetail(content, state: state, to: document)
-        } else if let value = RuleFormatting.proxyVacancy(status: content.status) {
+        } else if let value = RuleFormatting.rulesGate(status: content.status, preview: content.previewRead) {
             appendVacancy(value, to: document)
         } else if let rule = RuleFormatting.detailRule(selection: state.ruleSelection, in: snapshot) {
             appendRuleDetail(rule, flow: flow, scenario: snapshot?.scenario, pick: state.pickedStep, to: document)
         } else if let value = flow?.transition {
             appendTransition(value, scenario: state.scenario, to: document)
-        } else if let value = RuleFormatting.rulesVacancy(status: content.status, read: content.rulesRead) {
+        } else if let value = RuleFormatting.rulesVacancy(
+            status: content.status, read: content.rulesRead, preview: content.previewRead)
+        {
             appendVacancy(value, to: document)
         } else {
             appendVacancy(
