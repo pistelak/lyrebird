@@ -512,7 +512,7 @@ extension AppTests {
                 StubURLProtocol.install { request in RulesFixture.serve(request) }
                 let model = makeModel(
                     expecting: RulesFixture.ours,
-                    discover: { RulesFixture.theirs })
+                    discover: { .init(fingerprint: RulesFixture.theirs) })
                 await model.refresh()
                 #expect(model.lastScenarios != nil)
 

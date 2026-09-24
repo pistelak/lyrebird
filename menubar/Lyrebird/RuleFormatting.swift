@@ -313,6 +313,10 @@ enum RuleFormatting {
         switch status {
         case .down:
             return Vacancy(message: "Proxy is not running.", hint: "Start it from the menu.")
+        case .stale:
+            return Vacancy(
+                message: "Proxy is not running, and the Mac's proxy settings still point at it.",
+                hint: "Stop it from the menu to restore them.")
         case .foreignProfile(let running):
             // No port number: the only one on hand was the traffic port mislabelled as the control
             // port, and a foreign proxy's health is not read under this profile anyway.

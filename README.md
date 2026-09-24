@@ -243,8 +243,15 @@ moment to stop rather than to delete the command that fixes it. If it does fail,
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md#the-proxy-is-gone-but-the-network-still-points-at-it) has
 the manual recovery — do that first, then come back.
 
-Then delete the checkout, and the app from `/Applications` if you built and copied it. **Quitting
-the menu-bar app does not stop interception** — the engine runs detached from it, and `down` is
+Then delete the checkout, and the app from `/Applications` if you built and copied it. Quitting
+the menu-bar app while it shows this profile's proxy running stops it — its Quit runs `down`
+first, and stays open with the error if that fails — so after a plain Quit that went through
+there is nothing left to stop, with the one exception
+[menubar/README.md](menubar/README.md#menu-bar-controls) describes: a `down` that put the settings
+back but could not stop the process. Everything else still needs `lyrebird down`: a session left
+running on purpose with **Quit, leave the proxy running** (⌥ in the status menu), one started from a
+terminal with the app never open, and the states Quit never touches — a dead session, another
+profile's proxy, one the app could not read. The engine runs detached from the app, and `down` is
 what puts your proxy settings back.
 
 Operational state is separate, and optional to remove: the CA under

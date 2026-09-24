@@ -16,6 +16,11 @@ final class AppModel {
         /// this is the absence of one, and the menu used to present the two as the same fact.
         case pacUnobserved(String)
         case down
+        /// Nothing answers the port, and the Mac's proxy settings still point at it: the proxy
+        /// died — a crash, a `kill -9`, a bad sleep — with its PAC installed. Read as `.down`, this
+        /// showed "Stopped" beside a Start that `up` refuses, and no Stop to run the `down` that
+        /// puts the network back — see `StaleSessionTests`.
+        case stale
         /// A proxy holds the port, and it is running the profile named here — not ours.
         case foreignProfile(running: String)
         /// Something answered and could not be understood. Says nothing about what it is.
@@ -27,6 +32,10 @@ final class AppModel {
     }
 
     var healthRead: MockClient.HealthRead?
+    /// What `status --json` last said, read at discovery and again when the health poll finds
+    /// nothing on the port: the one reading that tells "stopped" from "stopped, with the network
+    /// still routed at it". Nil when the last probe failed, which shows as `.down`.
+    private(set) var statusReading: Control.StatusReading?
     /// The last scenario-list read, or why there is none. A read that failed is not "no proxy" —
     /// see `MockClient.ScenariosRead`.
     var scenariosRead: MockClient.ScenariosRead?
@@ -148,7 +157,7 @@ final class AppModel {
     /// built from it would claim profile A on a call meant for profile B.
     private var fingerprintSettings: Settings?
 
-    private let discover: @Sendable () async throws -> String
+    private let discover: @Sendable () async throws -> Control.StatusReading
     /// Rebuilt per use so a control URL edited in Settings takes effect without a relaunch, and so
     /// the client always carries the fingerprint the model currently holds. A test injects one
     /// instead, built on a stub session.
@@ -168,11 +177,11 @@ final class AppModel {
         client: MockClient? = nil,
         autoStart: Bool = true,
         expectedFingerprint: String? = nil,
-        discover: (@Sendable () async throws -> String)? = nil
+        discover: (@Sendable () async throws -> Control.StatusReading)? = nil
     ) {
         self.injectedClient = client
         self.expectedFingerprint = expectedFingerprint
-        self.discover = discover ?? { try await Control.fingerprint() }
+        self.discover = discover ?? { try await Control.statusReading() }
         // A fingerprint handed in belongs to the settings as they stand now, the same way a
         // discovered one belongs to the settings it was discovered under.
         self.fingerprintSettings = expectedFingerprint == nil ? nil : Self.currentSettings
@@ -201,9 +210,10 @@ final class AppModel {
         let settings = Self.currentSettings
         do {
             _ = try settings.controlURL.get()
-            let fingerprint = try await discover()
+            let reading = try await discover()
             guard generation == configGeneration, settings == Self.currentSettings else { return }
-            expectedFingerprint = fingerprint
+            expectedFingerprint = reading.fingerprint
+            statusReading = reading
             fingerprintSettings = settings
             profileProblem = nil
         } catch {
@@ -260,6 +270,7 @@ final class AppModel {
 
     private func clearReadings() {
         healthRead = nil
+        statusReading = nil
         scenariosRead = nil
         recentRead = nil
         rulesRead = nil
@@ -294,6 +305,21 @@ final class AppModel {
         guard let expected = expectedFingerprint, fingerprintSettings == settings else { return }
 
         let read = await client.health()
+        // `status --json` is asked only where the health poll cannot answer: on the first poll
+        // that finds nothing on the port after one that did not — a nil previous read counts, so
+        // the first poll after discovery probes too — and on every poll while the reading says the
+        // network is still routed at the dead proxy, so a `down` run from a terminal clears it
+        // within a poll. Not on every poll while merely stopped: that is a Python spawn every two
+        // seconds on an idle machine. A probe that failed is not a reading: the state falls back
+        // to "stopped", with no `lastError` — a background observation is not a command the user
+        // ran — and `up`'s refusal names `down` if there was a session after all.
+        // See `StaleSessionTests`.
+        var statusReading = statusReading
+        if Self.isStopped(read),
+            healthRead == nil || !Self.isStopped(healthRead) || statusReading?.routesToADeadProxy == true
+        {
+            statusReading = try? await discover()
+        }
         var scenariosRead: MockClient.ScenariosRead?
         var recentRead: MockClient.RecentRead?
         var rulesRead: MockClient.RulesRead?
@@ -316,6 +342,7 @@ final class AppModel {
             settings == Self.currentSettings
         else { return }
         self.healthRead = read
+        self.statusReading = statusReading
         self.scenariosRead = scenariosRead
         self.recentRead = recentRead
         // Every list that arrives, not only one that renamed the active scenario — see
@@ -410,7 +437,7 @@ final class AppModel {
         guard let expected = expectedFingerprint else {
             return .profileUnknown(profileProblem ?? "asking the CLI which profile this is")
         }
-        if Self.isStopped(healthRead) { return .down }
+        if Self.isStopped(healthRead) { return statusReading?.routesToADeadProxy == true ? .stale : .down }
         switch healthRead {
         case .up(let health):
             // A health with no fingerprint is an older engine that cannot answer the question, and
@@ -442,6 +469,10 @@ final class AppModel {
             return "Proxy up, PAC could not be read: \(reason)"
         case .down:
             return "Stopped"
+        case .stale:
+            // An instruction, not a promise: with the journal deleted by hand, `down` finds no
+            // session and restores nothing, and menubar/README.md names the manual remedy.
+            return "Proxy stopped, but the Mac's proxy settings still point at it — press Stop"
         case .foreignProfile(let running):
             return "Proxy up for another profile (\(running)) — Stop it, or change the profile in Settings"
         case .unreadable(let reason):
@@ -471,7 +502,7 @@ final class AppModel {
         case .foreignProfile: return "another profile's proxy"
         case .unreadable: return "the proxy could not be read"
         case .profileUnknown: return "profile unknown"
-        case .down: return "proxy not running"
+        case .down, .stale: return "proxy not running"
         case .intercepting, .pacDisabled, .pacUnobserved:
             if case .unavailable(let reason) = scenariosRead { return "scenarios could not be read: \(reason)" }
             return "scenarios not read yet"
@@ -484,7 +515,9 @@ final class AppModel {
     /// the truth.
     var stopsRatherThanStarts: Bool {
         switch status {
-        case .intercepting, .foreignProfile, .unreadable: return true
+        // Stale stops too: `down` restores the settings from the journal, and `up` over that
+        // journal is refused — Start was the one button this state used to offer.
+        case .intercepting, .foreignProfile, .unreadable, .stale: return true
         // Unobserved starts too: `up` is what re-observes, and it says what it found.
         case .pacDisabled, .pacUnobserved, .down, .profileUnknown: return false
         }
@@ -496,8 +529,48 @@ final class AppModel {
     var simBundleId: String? {
         switch status {
         case .intercepting, .pacDisabled, .pacUnobserved: return health?.simBundleId
-        case .down, .foreignProfile, .unreadable, .profileUnknown: return nil
+        case .down, .stale, .foreignProfile, .unreadable, .profileUnknown: return nil
         }
+    }
+
+    /// Whether Quit runs `down` first: this profile's proxy is up, whether or not it intercepts —
+    /// `down` is what releases its journal and puts the network back either way. Never a dead
+    /// session, a foreign proxy or an unreadable one: on the shared port a journal may be another
+    /// profile's, and `down` consumes whichever exists, so that authorization stays with an
+    /// explicit Stop — see `QuitTests`.
+    private var quitStopsProxy: Bool {
+        switch status {
+        case .intercepting, .pacDisabled, .pacUnobserved: return true
+        case .down, .stale, .foreignProfile, .unreadable, .profileUnknown: return false
+        }
+    }
+
+    /// Whether the app may quit now. The menu-bar icon is the only sign on screen that the Mac's
+    /// proxy settings are rewritten, so Quit stops this profile's running proxy before it goes —
+    /// or stays, with the reason in the menu, when it could not: a "Stop and Quit" that stopped
+    /// nothing must not vanish. `leaveProxy` is "Quit, leave the proxy running", and it belongs
+    /// to this request alone: kept as model state, a choice made while another quit was still
+    /// deciding used to be consumed by the next plain ⌘Q. See `QuitTests`.
+    ///
+    /// Refused at once while another action runs, rather than waited for: `Control.up()` has no
+    /// deadline and neither have the engine's simulator calls, so a wait could hold the app for
+    /// as long as a hanging `up`. The refresh that follows is an attempt at a current reading, not
+    /// a guarantee — a poll starting during it supersedes it and the last committed status is
+    /// what decides.
+    func prepareToQuit(leaveProxy: Bool = false) async -> Bool {
+        guard !busy else {
+            lastError = "another action is still running — quit when it finishes"
+            return false
+        }
+        busy = true
+        defer { busy = false }
+        await refresh()
+        guard !leaveProxy, quitStopsProxy else { return true }
+        if let failure = await Control.down().failure {
+            lastError = failure
+            return false
+        }
+        return true
     }
 
     func toggle() async {
@@ -597,7 +670,7 @@ final class AppModel {
         defer { busy = false }
         guard let bundleId = simBundleId, !bundleId.isEmpty else {
             switch status {
-            case .intercepting, .pacDisabled, .pacUnobserved, .down:
+            case .intercepting, .pacDisabled, .pacUnobserved, .down, .stale:
                 lastError = "No simBundleId in the active profile — set it in profile.json."
             case .foreignProfile, .unreadable, .profileUnknown:
                 lastError = "Relaunch needs this profile's own proxy: \(statusLine)"

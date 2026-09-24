@@ -241,20 +241,47 @@ enum Control {
     /// returns would leave the menu in "profile unknown" with nothing to explain it.
     static let fingerprintTimeout = 15.0
 
-    /// The fingerprint of the profile the app is configured for, straight from the engine.
+    /// What `status --json` said: which profile the app is configured for, and whether the Mac's
+    /// proxy settings point at a proxy that is no longer there.
     ///
-    /// It is `sha256(resolved profile dir)[:12]` in `config`, and it is the engine's to compute:
-    /// the app cannot even see which directory it is when the profile is unset and the engine
-    /// falls back to its own default. `status --json` prints the field whatever the proxy is
+    /// The fingerprint is `sha256(resolved profile dir)[:12]` in `config`, and it is the engine's
+    /// to compute: the app cannot even see which directory it is when the profile is unset and
+    /// the engine falls back to its own default. `status --json` prints it whatever the proxy is
     /// doing — it is config-derived, and the command exits 1 when not intercepting while still
     /// printing the JSON — so a down or foreign proxy answers this question just as well.
-    static func fingerprint() async throws -> String {
+    ///
+    /// The PAC fields are optional on purpose: the engine prints `pac: null` when `networksetup`
+    /// could not be asked, and a reading that required them would turn a valid fingerprint into
+    /// "profile unknown". A missing field is nil, never false — see `StaleSessionTests`.
+    struct StatusReading: Sendable, Equatable {
+        var fingerprint: String
+        var proxyUp: Bool?
+        var pacOurs: Bool?
+        var pacEnabled: Bool?
+
+        init(fingerprint: String, proxyUp: Bool? = nil, pacOurs: Bool? = nil, pacEnabled: Bool? = nil) {
+            self.fingerprint = fingerprint
+            self.proxyUp = proxyUp
+            self.pacOurs = pacOurs
+            self.pacEnabled = pacEnabled
+        }
+
+        /// Nothing answers the control port, and the PAC is enabled and points at it: the Mac is
+        /// routed at a dead proxy until `down` runs. Only a reading that saw all three says so.
+        var routesToADeadProxy: Bool {
+            proxyUp == false && pacOurs == true && pacEnabled == true
+        }
+    }
+
+    /// Runs `status --json` and reads it. Throws with the CLI's own words when it did not answer,
+    /// or answered without naming a profile.
+    static func statusReading() async throws -> StatusReading {
         guard let result = await lyrebird(["status", "--json"], within: fingerprintTimeout) else {
             throw ProfileUnknown(
                 reason: "`lyrebird status --json` did not answer within "
                     + "\(Int(fingerprintTimeout))s")
         }
-        return try fingerprint(from: result)
+        return try statusReading(from: result)
     }
 
     /// Run a CLI command that only reads, giving up after `timeout`: nil when the timeout won.
@@ -296,30 +323,32 @@ enum Control {
     /// not intercepting — proxy down, PAC off, another profile holding the port — and prints the
     /// same config-derived `profileFingerprint` either way. Requiring 0 here would leave the menu
     /// unable to name its own profile in exactly the situations it exists to explain.
-    static func fingerprint(from result: Result) throws -> String {
-        guard let fingerprint = fingerprint(fromStatusJSON: Data(result.output.utf8)) else {
+    static func statusReading(from result: Result) throws -> StatusReading {
+        guard let reading = statusReading(fromStatusJSON: Data(result.output.utf8)) else {
             let output = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
             throw ProfileUnknown(
                 reason: output.isEmpty
                     ? "`lyrebird status --json` printed nothing"
                     : output)
         }
-        return fingerprint
+        return reading
     }
 
-    /// Pulls `profileFingerprint` out of what `status --json` printed.
+    /// Pulls `profileFingerprint` — and, when printed, `proxyUp` and the `pac` object — out of
+    /// what `status --json` printed.
     ///
     /// Lenient about what surrounds the object: the launcher merges stderr into stdout, so a
     /// warning printed before or after the JSON is normal and is not a reason to report the
     /// profile as unknown. Everything from the first `{` to the last `}` is offered to the
-    /// decoder; nil means the field was not there, never a guess.
-    static func fingerprint(fromStatusJSON output: Data) -> String? {
+    /// decoder; nil means the fingerprint was not there, never a guess.
+    static func statusReading(fromStatusJSON output: Data) -> StatusReading? {
         guard let text = String(data: output, encoding: .utf8), let span = jsonSpan(in: text) else { return nil }
-        let object = try? JSONSerialization.jsonObject(with: span)
-        guard let fingerprint = (object as? [String: Any])?["profileFingerprint"] as? String,
-            !fingerprint.isEmpty
-        else { return nil }
-        return fingerprint
+        let object = (try? JSONSerialization.jsonObject(with: span)) as? [String: Any]
+        guard let fingerprint = object?["profileFingerprint"] as? String, !fingerprint.isEmpty else { return nil }
+        let pac = object?["pac"] as? [String: Any]
+        return StatusReading(
+            fingerprint: fingerprint, proxyUp: object?["proxyUp"] as? Bool,
+            pacOurs: pac?["ours"] as? Bool, pacEnabled: pac?["enabled"] as? Bool)
     }
 
     static func up() async -> Result {

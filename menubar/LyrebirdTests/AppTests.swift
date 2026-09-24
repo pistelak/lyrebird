@@ -26,7 +26,7 @@ func withAppTestEnvironment(_ body: @MainActor () async throws -> Void) async th
 /// Models start without polling or shell discovery; tests supply the fingerprint they mean.
 @MainActor
 func makeModel(
-    expecting fingerprint: String?, discover: (@Sendable () async throws -> String)? = nil
+    expecting fingerprint: String?, discover: (@Sendable () async throws -> Control.StatusReading)? = nil
 ) -> AppModel {
     AppModel(client: Stub.makeClient(), autoStart: false, expectedFingerprint: fingerprint, discover: discover)
 }

@@ -335,7 +335,7 @@ extension AppTests {
                 let fingerprint = MutableFingerprint(Fixture.ours)
                 let model = makeModel(
                     expecting: Fixture.ours,
-                    discover: { fingerprint.value })
+                    discover: { .init(fingerprint: fingerprint.value) })
                 await model.refresh()
                 #expect(model.status == .intercepting)
                 #expect(model.scenarios != nil)
@@ -385,7 +385,7 @@ extension AppTests {
                 // on hand answers a question about the profile that was configured a keystroke ago, and a
                 // header built from it would name that one on a call meant for this one.
                 StubURLProtocol.install { request in Stub.read(request) }
-                let model = makeModel(expecting: nil, discover: { Fixture.ours })
+                let model = makeModel(expecting: nil, discover: { .init(fingerprint: Fixture.ours) })
                 await model.discoverProfile()
                 #expect(model.expectedFingerprint == Fixture.ours)
 
@@ -474,7 +474,7 @@ extension AppTests {
                 // side of it.
                 let payload = #"{"proxyUp":false,"intercepting":false,"profileFingerprint":"\#(Fixture.ours)"}"#
 
-                #expect(Control.fingerprint(fromStatusJSON: Data(payload.utf8)) == Fixture.ours)
+                #expect(Control.statusReading(fromStatusJSON: Data(payload.utf8))?.fingerprint == Fixture.ours)
             }
         }
 
@@ -490,7 +490,8 @@ extension AppTests {
                      "profileFingerprint":"\#(Fixture.ours)","runningProfileFingerprint":"\#(Fixture.theirs)"}
                     """#
 
-                let fingerprint = try Control.fingerprint(from: Control.Result(output: payload, status: 1))
+                let fingerprint = try Control.statusReading(from: Control.Result(output: payload, status: 1))
+                    .fingerprint
 
                 #expect(fingerprint == Fixture.ours)
             }
@@ -503,7 +504,7 @@ extension AppTests {
 
                 let error = try #require(
                     #expect(throws: (any Error).self) {
-                        try Control.fingerprint(from: result)
+                        try Control.statusReading(from: result)
                     })
                 #expect(
                     error.localizedDescription.contains("no such profile directory"),
@@ -518,7 +519,7 @@ extension AppTests {
                     "warning: something on stderr\n"
                     + #"{"profileFingerprint":"\#(Fixture.ours)"}"# + "\ntrailing noise\n"
 
-                #expect(Control.fingerprint(fromStatusJSON: Data(output.utf8)) == Fixture.ours)
+                #expect(Control.statusReading(fromStatusJSON: Data(output.utf8))?.fingerprint == Fixture.ours)
             }
         }
 
@@ -530,7 +531,7 @@ extension AppTests {
                     #"{"profileFingerprint":""}"#,
                 ] {
                     #expect(
-                        Control.fingerprint(fromStatusJSON: Data(output.utf8)) == nil,
+                        Control.statusReading(fromStatusJSON: Data(output.utf8)) == nil,
                         "'\(output)' produced a fingerprint out of nothing")
                 }
             }
