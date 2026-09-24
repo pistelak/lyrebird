@@ -95,7 +95,9 @@ extension AppTests {
                 StubURLProtocol.install { _ in throw URLError(.cannotConnectToHost) }
                 Config.defaults.set("/tmp/lyrebird-profile", forKey: Config.profilePathKey)
                 let launcher = try spyLauncher(exiting: 0, printing: Self.payload)
-                let model = makeModel(expecting: RulesFixture.ours)
+                // The probe `status --json` makes on the first stopped poll is answered here, so the
+                // launcher records the preview's line alone — see `StaleSessionTests`.
+                let model = makeModel(expecting: RulesFixture.ours, discover: { .init(fingerprint: RulesFixture.ours) })
 
                 await model.windowAppeared()
 
@@ -120,7 +122,9 @@ extension AppTests {
                 // closed window for its rules.
                 StubURLProtocol.install { _ in throw URLError(.cannotConnectToHost) }
                 let launcher = try spyLauncher(exiting: 0, printing: Self.payload)
-                let model = makeModel(expecting: RulesFixture.ours)
+                // The probe `status --json` makes on the first stopped poll is answered here, so the
+                // launcher records the preview's line alone — see `StaleSessionTests`.
+                let model = makeModel(expecting: RulesFixture.ours, discover: { .init(fingerprint: RulesFixture.ours) })
 
                 await model.refresh()
                 await model.refresh()

@@ -18,9 +18,29 @@ enum LyrebirdApp {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var model: AppModel?
+    /// Answers a termination request once its decision is made. A seam: a test replaces it, since
+    /// a real `reply(true)` would terminate the test host.
+    var replyToTermination: (Bool) -> Void = { NSApp.reply(toApplicationShouldTerminate: $0) }
+    /// Raises the termination request the alternate Quit makes. The same seam, for the same
+    /// reason: a real `terminate` in a test host ends the test run.
+    var requestTermination: () -> Void = { NSApp.terminate(nil) }
+    /// A termination request whose answer is still being decided. One at a time: AppKit is owed
+    /// exactly one reply per request, and a second Quit during the first's `down` used to start a
+    /// second decision that could answer after the first — see `QuitTests`.
+    private var terminationPending = false
+    /// "Quit, leave the proxy running" was chosen for the termination request about to arrive.
+    /// Captured and cleared by every request, accepted or not, so a choice made while another
+    /// quit was still deciding cannot be consumed by a later plain ⌘Q — see `QuitTests`.
+    private var leaveProxyRequested = false
     private var browser: RulesWindowController?
     private var settings: SettingsWindowController?
     private var status: StatusItemController?
+
+    /// The model is handed in by a test; the app builds its own at launch.
+    init(model: AppModel? = nil) {
+        self.model = model
+        super.init()
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Hosted tests must never poll a real profile or launch the CLI; see LaunchEnvironmentTests.
@@ -45,6 +65,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         status = StatusItemController(model: model)
         status?.onBrowse = { [weak self] in self?.showBrowser(nil) }
         status?.onSettings = { [weak self] in self?.showSettings(nil) }
+        status?.onLeaveProxy = { [weak self] in self?.quitLeavingProxy() }
         DockPresence.settingChanged()
         if !Config.dockOnlyWhileWindowOpen { showBrowser(nil) }
     }
@@ -73,6 +94,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
+    }
+
+    /// Quit stops this profile's running proxy first, or stays open saying why it could not —
+    /// `AppModel.prepareToQuit` decides. Not under `--preview`: that model claims an intercepting
+    /// proxy over a launcher path that does not exist, and the UI tests run and terminate the app
+    /// that way.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        let leaveProxy = leaveProxyRequested
+        leaveProxyRequested = false
+        guard let model else { return .terminateNow }
+        #if DEBUG
+            if ProcessInfo.processInfo.arguments.contains("--preview") { return .terminateNow }
+        #endif
+        // The pending request will answer; this one is declined so it cannot answer twice.
+        guard !terminationPending else { return .terminateCancel }
+        terminationPending = true
+        Task { @MainActor in
+            let quit = await model.prepareToQuit(leaveProxy: leaveProxy)
+            terminationPending = false
+            replyToTermination(quit)
+        }
+        return .terminateLater
+    }
+
+    /// The status menu's alternate Quit: the choice is recorded for the request `terminate`
+    /// raises synchronously on this same turn of the run loop, and for no other.
+    func quitLeavingProxy() {
+        leaveProxyRequested = true
+        requestTermination()
     }
 
     private func installMenus() {

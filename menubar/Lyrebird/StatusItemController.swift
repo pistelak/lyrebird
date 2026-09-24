@@ -29,6 +29,9 @@ final class StatusItemController: NSObject {
     var onRelaunch: () -> Void = {}
     var onActivate: (String) -> Void = { _ in }
     var onClear: () -> Void = {}
+    /// The alternate Quit. The handler records the choice and asks the app to terminate — see
+    /// `AppDelegate.quitLeavingProxy` — so the two stay on one turn of the run loop.
+    var onLeaveProxy: () -> Void = {}
 
     init(content: Content) {
         self.content = content
@@ -130,6 +133,13 @@ final class StatusItemController: NSObject {
         _ = command("Settings…", #selector(settings))
         let quit = command("Quit Lyrebird", #selector(terminate))
         quit.keyEquivalent = "q"
+        // Shown in Quit's place while ⌥ is held. Quit stops this profile's running proxy first
+        // (`AppModel.prepareToQuit`); this is the way out that leaves it running, for a session
+        // somebody else is driving from a terminal.
+        let leave = command("Quit, leave the proxy running", #selector(terminateLeavingProxy))
+        leave.keyEquivalent = "q"
+        leave.keyEquivalentModifierMask = [.command, .option]
+        leave.isAlternate = true
     }
 
     @objc private func toggle() {
@@ -159,6 +169,10 @@ final class StatusItemController: NSObject {
 
     @objc private func terminate() {
         NSApp.terminate(nil)
+    }
+
+    @objc private func terminateLeavingProxy() {
+        onLeaveProxy()
     }
 }
 

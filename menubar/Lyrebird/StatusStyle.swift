@@ -8,7 +8,8 @@ extension AppModel.Status {
         let filled: Bool
         switch self {
         case .intercepting, .pacDisabled, .pacUnobserved, .foreignProfile, .unreadable: filled = true
-        case .down, .profileUnknown: filled = false
+        // Stale is outlined: no proxy of ours is running. The dot carries the warning.
+        case .down, .stale, .profileUnknown: filled = false
         }
         #if DEBUG
             // Two builds, two identical birds: the circle marks the Debug one — see aDebugBuildSaysSoInTheMenuBar.
@@ -25,6 +26,7 @@ extension AppModel.Status {
         case .pacDisabled: return "not intercepting"
         case .pacUnobserved: return "PAC unread"
         case .down: return "stopped"
+        case .stale: return "stopped, still routed"
         case .foreignProfile: return "another profile"
         case .unreadable: return "unreadable"
         case .profileUnknown: return "profile unknown"
@@ -38,6 +40,8 @@ extension AppModel.Status {
         // Up, and not intercepting for this profile — the same thing to the user as a disabled
         // PAC, whatever the reason behind it.
         case .pacDisabled, .pacUnobserved, .foreignProfile, .unreadable: return .systemOrange
+        // Nothing running, but the network still points at it: the one stopped state with a dot.
+        case .stale: return .systemOrange
         case .down, .profileUnknown: return nil
         }
     }

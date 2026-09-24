@@ -255,7 +255,9 @@ Set `simBundleId` in the profile and `up` handles it — and name the scenario i
 
 It restores the proxy settings that were there before. Run it even on your failure paths, for a
 session you started. Nothing else does it: a proxy that dies leaves the Mac routed at a dead port
-until `lyrebird down` runs.
+until `lyrebird down` runs. One other thing runs it: a person quitting the menu-bar app stops the
+session it shows as this profile's, unless they choose "Quit, leave the proxy running" (⌥ in its
+status menu) — so a run that suddenly reports "no session" may have been quit, not crashed.
 
 `down` is also the only recovery command, and it needs nothing to find the session: no `--profile`,
 no port, no directory. It reads this user's one session journal, which is what the run recorded the

@@ -35,7 +35,7 @@
             let model = AppModel(
                 client: MockClient(
                     base: URL(string: "http://preview.invalid")!, session: URLSession(configuration: configuration)),
-                autoStart: false, expectedFingerprint: fingerprint, discover: { fingerprint })
+                autoStart: false, expectedFingerprint: fingerprint, discover: { .init(fingerprint: fingerprint) })
             model.start()
             return model
         }

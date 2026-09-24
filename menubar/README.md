@@ -61,15 +61,37 @@ conventional route.
 ## Menu-bar controls
 
 Menu-bar glyph: filled bird with a green dot while intercepting, orange when the proxy is up but
-not intercepting or could not read the PAC at all (the menu says which), and an outlined bird with
-no dot when stopped.
+not intercepting or could not read the PAC at all (the menu says which), an outlined bird with
+no dot when stopped, and an outlined bird with an orange dot when the proxy is stopped but the
+Mac's proxy settings still point at it — a crash, a `kill -9`, a bad sleep. The menu says so and
+its button is Stop, which runs `down` to restore the settings from the session journal. With that
+journal deleted by hand `down` finds no session and restores nothing; the `networksetup` line in
+[TROUBLESHOOTING.md](../TROUBLESHOOTING.md#the-proxy-is-gone-but-the-network-still-points-at-it)
+is the remedy then.
 Click for a scenario menu, Start/Stop (`lyrebird up|down`), a Relaunch app command, the requests
 the proxy has seen, and settings.
 
+The app tells "stopped" from "stopped, still routed" by running `lyrebird status --json` — once
+when it starts, again on the poll that first finds nothing on the port, and on every poll while
+the settings still point at the dead proxy, so a `down` run from a terminal clears the state
+within a poll. Not on every poll while merely stopped. The gaps are known: a session that started
+and died between two polls, or a probe that failed, shows as Stopped until the next change, and a
+Start pressed then is refused by `up` with the text naming `down`.
+
 Lyrebird is a regular app: a Dock icon and a menu bar extra, both from launch. **Show in Dock only
 while a window is open** in Settings puts it in the menu bar instead, with the Dock icon appearing
-only while the window is. ⌘Q quits the app and removes the extra; it leaves a running proxy running,
-exactly as Quit in the menu does.
+only while the window is.
+
+**Quit stops this profile's running proxy first.** ⌘Q and Quit in the status menu run `lyrebird
+down` when the app's last reading is this profile's proxy up — intercepting or not — and quit once
+it exits 0; if it fails the app stays open with the reason in the menu, and a Quit pressed while
+Start or another action is still running is refused until it finishes. Hold ⌥ in the status menu
+for **Quit, leave the proxy running**, for a session somebody else drives from a terminal. Quit
+never stops a dead session, another profile's proxy or one it could not read: on the shared port
+the journal may be somebody else's, and stopping those stays an explicit Stop. Two limits: Force
+Quit leaves what a crash leaves; and after a `down` that restored the settings but could not stop
+the process, a second Quit finds no session and exits with the proxy alive — the first failure's
+text names the pid to kill.
 
 ## Scenario browser
 

@@ -90,7 +90,7 @@ extension AppTests {
                 #expect(throws: Config.ControlURLProblem.self) {
                     try Config.controlURL.get()
                 }
-                let model = makeModel(expecting: RulesFixture.ours, discover: { RulesFixture.ours })
+                let model = makeModel(expecting: RulesFixture.ours, discover: { .init(fingerprint: RulesFixture.ours) })
                 await model.refresh()
                 #expect(model.lastError?.contains("Invalid control URL") == true)
                 await model.discoverProfile()
