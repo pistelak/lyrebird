@@ -11,6 +11,7 @@
     lyrebird explain-match <method> <path>  which rule would be selected, and why the rest were not
                                           (--scenario NAME reads a file instead of the proxy)
     lyrebird assert-answered <id> [--run R]  exit non-zero unless that rule answered in that run
+    lyrebird prove <id>... -- <action>...  reset those rules, run the action, assert each answered in its run
     lyrebird scenario reload [--use N]    re-read the scenario files after writing or editing them
     lyrebird scenario show                every scenario as the proxy would load it, as JSON, offline
     lyrebird reset [id] [--json]          start a fresh run: rewind sequences, clear answer counts
@@ -65,6 +66,7 @@ scenario.scenario_group.add_command(offline.scenario_show)
 cli.add_command(evidence.sequence)
 cli.add_command(evidence.reset)
 cli.add_command(evidence.assert_answered)
+cli.add_command(evidence.prove)
 cli.add_command(offline.validate)
 cli.add_command(offline.explain_match)
 cli.add_command(sim.relaunch_cmd)

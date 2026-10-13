@@ -6,11 +6,15 @@ already happened sends the operator looking in the wrong place.
 """
 
 import json
+import sys
 import time
+
+import click
 
 import api
 import cli
 import config
+import evidence
 from cli_doubles import _BASE_SEQ, _answers_over, _health_payload, _polling
 
 
@@ -398,3 +402,200 @@ def test_assert_answered_with_a_run_reports_an_unreachable_proxy_as_unproven(pro
     result = runner.invoke(cli.cli, ["assert-answered", "ovr_a", "--run", "run1"])
     assert result.exit_code == 3
     assert "cannot reach the control API" in result.output
+
+
+# MARK: - prove: the boundary, the action and the assertions in one process
+#
+# Every test here is a way `prove` could report something other than what happened inside the
+# boundary it drew.
+
+
+def _resets(**run_ids):
+    """A `_control` double answering `POST /reset {"id"}` with that rule's run id, as the API does."""
+
+    def control(path, method="GET", payload=None, **_):
+        assert (path, method) == ("/__mock__/reset", "POST"), (path, method)
+        return {"scenario": "default", "reset": {payload["id"]: run_ids[payload["id"]]}}
+
+    return control
+
+
+def _must_not_happen(what):
+    def refuse(*_args, **_kwargs):
+        raise AssertionError(what)
+
+    return refuse
+
+
+def _answers(*states):
+    """Answer counts for several rules at once, every one active unless the state says otherwise."""
+    return lambda *_a, **_k: _health_payload(answers=[{"active": True, **state} for state in states])
+
+
+def test_prove_refuses_to_act_on_a_boundary_it_could_not_draw(profile, runner, monkeypatch, tmp_path):
+    """A reset the proxy refuses — an unknown id, a dead port, another profile — is `_control`
+    exiting 1. Reported as-is that is "the rule answered nothing", the wrong bug; and running the
+    action anyway would prove nothing, since the run it would be asserted in was never started."""
+
+    def refuse(*_args, **_kwargs):
+        click.echo("✗ unknown_override")
+        raise SystemExit(1)
+
+    monkeypatch.setattr(api, "_control", refuse)
+    monkeypatch.setattr(api, "_health", _must_not_happen("an assertion was made with no boundary drawn"))
+    ran = tmp_path / "ran"
+    touch = [sys.executable, "-c", "import pathlib, sys; pathlib.Path(sys.argv[1]).touch()", str(ran)]
+    result = runner.invoke(cli.cli, ["prove", "ovr_nope", "--", *touch])
+    assert result.exit_code == 3, result.output
+    assert not ran.exists(), "the action ran on a boundary that was not drawn"
+    assert "unknown_override" in result.output and "did not run" in result.output
+
+
+def test_prove_reports_a_failed_action_as_nothing_asserted(profile, runner, monkeypatch):
+    """The issue this command answers: a wrapper that passed the action's own code through made
+    an action exiting 1 read as "the rule answered nothing". The action's code is in the line; the
+    exit says no assertion was made, and none is — the proxy is never read."""
+    monkeypatch.setattr(api, "_control", _resets(ovr_a="run1"))
+    monkeypatch.setattr(api, "_health", _must_not_happen("an assertion was made after the action failed"))
+    result = runner.invoke(cli.cli, ["prove", "ovr_a", "--", sys.executable, "-c", "raise SystemExit(1)"])
+    assert result.exit_code == 3, result.output
+    assert "exited 1" in result.output and "✓" not in result.output
+
+
+def test_prove_reports_an_action_that_cannot_start_the_same_way(profile, runner, monkeypatch, tmp_path):
+    monkeypatch.setattr(api, "_control", _resets(ovr_a="run1"))
+    monkeypatch.setattr(api, "_health", _must_not_happen("an assertion was made after the action failed to start"))
+    result = runner.invoke(cli.cli, ["prove", "ovr_a", "--", str(tmp_path / "no-such-program")])
+    assert result.exit_code == 3, result.output
+    assert "could not start" in result.output and "no-such-program" in result.output
+
+
+def test_prove_reports_every_rule_and_exits_with_the_one_that_answered_nothing(profile, runner, monkeypatch):
+    monkeypatch.setattr(api, "_control", _resets(ovr_a="ra", ovr_b="rb"))
+    monkeypatch.setattr(
+        api, "_health", _answers({"id": "ovr_a", "count": 2, "runId": "ra"}, {"id": "ovr_b", "count": 0, "runId": "rb"})
+    )
+    result = runner.invoke(cli.cli, ["prove", "ovr_a", "ovr_b", "--", sys.executable, "-c", "pass"])
+    assert result.exit_code == 1, result.output
+    assert "✓ ovr_a run ra: answered" in result.output
+    assert "✗ ovr_b run rb: answered nothing" in result.output
+
+
+def test_prove_exits_with_the_worst_verdict_and_still_reports_the_rest(profile, runner, monkeypatch):
+    """One rule answered, the other is in a run this command did not start — unproven, 3 — and 3
+    outranks the 0: an aggregate that stopped at the first failure, or took the last code, would
+    either hide the second rule or report the wrong one."""
+    monkeypatch.setattr(api, "_control", _resets(ovr_a="ra", ovr_b="rb"))
+    monkeypatch.setattr(
+        api,
+        "_health",
+        _answers({"id": "ovr_a", "count": 0, "runId": "elsewhere"}, {"id": "ovr_b", "count": 1, "runId": "rb"}),
+    )
+    result = runner.invoke(cli.cli, ["prove", "ovr_a", "ovr_b", "--", sys.executable, "-c", "pass"])
+    assert result.exit_code == 3, result.output
+    assert "✗ ovr_a run ra: unproven" in result.output
+    assert "✓ ovr_b run rb: answered" in result.output
+
+
+def test_prove_resets_before_the_action_and_asserts_after_it(profile, runner, monkeypatch, tmp_path):
+    """The order is the whole point (`reset`'s docstring), and canned doubles would pass with the
+    action run first. So the resets leave files, the action refuses to run unless both are there
+    and leaves its own, and no health reading answers until the action's file exists. Each rule is
+    then asserted against the run id *its* reset returned."""
+
+    def control(_path, _method="GET", payload=None, **_):
+        (tmp_path / f"reset-{payload['id']}").touch()
+        return {"scenario": "default", "reset": {payload["id"]: f"run-{payload['id']}"}}
+
+    monkeypatch.setattr(api, "_control", control)
+    done = tmp_path / "action-done"
+
+    def health(*_args, **_kwargs):
+        assert done.exists(), "an assertion was made before the action completed"
+        return _health_payload(
+            answers=[
+                {"id": "ovr_a", "active": True, "count": 1, "runId": "run-ovr_a"},
+                {"id": "ovr_b", "active": True, "count": 1, "runId": "run-ovr_b"},
+            ]
+        )
+
+    monkeypatch.setattr(api, "_health", health)
+    action = [
+        sys.executable,
+        "-c",
+        "import pathlib, sys\n"
+        "root = pathlib.Path(sys.argv[1])\n"
+        "if not all((root / f'reset-{r}').exists() for r in ('ovr_a', 'ovr_b')):\n"
+        "    sys.exit(9)\n"
+        "(root / 'action-done').touch()\n",
+        str(tmp_path),
+    ]
+    result = runner.invoke(cli.cli, ["prove", "ovr_a", "ovr_b", "--", *action])
+    assert result.exit_code == 0, result.output
+    assert "✓ ovr_a run run-ovr_a: answered" in result.output
+    assert "✓ ovr_b run run-ovr_b: answered" in result.output
+
+
+def test_prove_needs_the_separator(profile, runner, monkeypatch):
+    """Click drops the first `--` from a variadic positional, so the split is made on raw argv.
+    Without one there is no action — a usage error that names the shape, before anything is reset.
+    `--help` on the rule side still reaches Click, a negative timeout is a usage error rather than
+    the 1 the exit table reserves, and a rule named twice is refused rather than reset twice."""
+    monkeypatch.setattr(api, "_control", _must_not_happen("a rule was reset with no action to run"))
+    result = runner.invoke(cli.cli, ["prove", "ovr_a", "true"])  # read as two ids, no action
+    assert result.exit_code == 2 and "-- ACTION" in result.output, result.output
+    result = runner.invoke(cli.cli, ["prove", "ovr_a", "--"])
+    assert result.exit_code == 2 and "-- ACTION" in result.output, result.output
+    result = runner.invoke(cli.cli, ["prove", "--", sys.executable, "-c", "pass"])
+    assert result.exit_code == 2, result.output
+    result = runner.invoke(cli.cli, ["prove", "--help"])
+    assert result.exit_code == 0 and "Usage" in result.output, result.output
+    result = runner.invoke(cli.cli, ["prove", "ovr_a", "--timeout", "-1", "--", sys.executable, "-c", "pass"])
+    assert result.exit_code == 2, result.output
+    result = runner.invoke(cli.cli, ["prove", "ovr_a", "ovr_a", "--", sys.executable, "-c", "pass"])
+    assert result.exit_code == 2 and "more than once" in result.output, result.output
+
+
+def test_prove_passes_a_second_separator_to_the_action(profile, runner, monkeypatch):
+    """Only the first `--` is the command's; one inside the action is the action's own."""
+    monkeypatch.setattr(api, "_control", _resets(ovr_a="run1"))
+    monkeypatch.setattr(api, "_health", _answers({"id": "ovr_a", "count": 1, "runId": "run1"}))
+    action = [sys.executable, "-c", "import sys; sys.exit(0 if sys.argv[1:] == ['--', 'x'] else 9)", "--", "x"]
+    result = runner.invoke(cli.cli, ["prove", "ovr_a", "--", *action])
+    assert result.exit_code == 0, result.output
+
+
+def test_prove_reports_an_unexpected_exit_as_unproven(profile, runner, monkeypatch):
+    """The per-rule catch sees every `SystemExit` the assertion path can raise. Only 1 means the
+    assertion was made and failed; a 0, a 2 or a code from a bug is not a verdict, and must never
+    be reported as "answered" or leak out as the usage-error code."""
+    monkeypatch.setattr(api, "_control", _resets(ovr_a="run1"))
+
+    def escape(*_args, **_kwargs):
+        raise SystemExit(0)
+
+    monkeypatch.setattr(evidence, "_assert_answered", escape)
+    result = runner.invoke(cli.cli, ["prove", "ovr_a", "--", sys.executable, "-c", "pass"])
+    assert result.exit_code == 3, result.output
+    assert "✗ ovr_a run run1: unproven" in result.output and "✓" not in result.output
+
+
+def test_prove_treats_a_reset_it_cannot_read_as_undrawn(profile, runner, monkeypatch, tmp_path):
+    """A 200 whose body is not the reset shape — `reset` a list, or no JSON at all — is a boundary
+    that was not drawn, not a traceback exiting 1; and the action must not run on it."""
+    monkeypatch.setattr(api, "_health", _must_not_happen("an assertion was made with no boundary drawn"))
+    ran = tmp_path / "ran"
+    touch = [sys.executable, "-c", "import pathlib, sys; pathlib.Path(sys.argv[1]).touch()", str(ran)]
+    for answer in ({"scenario": "default", "reset": ["run1"]}, ["run1"]):
+        monkeypatch.setattr(api, "_control", lambda *_a, answer=answer, **_k: answer)
+        result = runner.invoke(cli.cli, ["prove", "ovr_a", "--", *touch])
+        assert result.exit_code == 3, (answer, result.output)
+        assert "no run id" in result.output
+
+    def malformed(*_args, **_kwargs):
+        raise ValueError("Expecting value: line 1 column 1 (char 0)")
+
+    monkeypatch.setattr(api, "_control", malformed)
+    result = runner.invoke(cli.cli, ["prove", "ovr_a", "--", *touch])
+    assert result.exit_code == 3, result.output
+    assert not ran.exists()

@@ -33,9 +33,7 @@ that scenario in the loop. On a shared Mac, one agent runs at a time — see
 ```bash
 lyrebird --profile PATH validate NAME   # offline: non-zero unless that scenario loads whole
 lyrebird --profile PATH up --use NAME   # start, activate the scenario, then relaunch the app
-RUN=$(lyrebird --profile PATH reset ovr_x --json | jq -r .reset.ovr_x)   # a fresh run, and its id — immediately before the action under test
-# …do the work you came to do…
-lyrebird --profile PATH assert-answered ovr_x --run "$RUN" --timeout 30   # non-zero unless it answered in it
+lyrebird --profile PATH prove ovr_x --timeout 30 -- ACTION…   # reset ovr_x, run the action, non-zero unless it answered in that run
 lyrebird --profile PATH down        # restores the proxy settings that were there before
 ```
 
@@ -47,13 +45,16 @@ The contract:
   [Several agents on one Mac](#several-agents-on-one-mac). Run `down` on every exit path of a
   session you started.
 - **Exit codes** — 0 means the postcondition was met, never merely that the command ran.
-  `assert-answered --run`: 1 = the rule answered nothing in your run; 3 = the assertion could not be
-  made — resolve the reported cause, then reset and repeat the action.
+  `prove` and `assert-answered --run`: 1 = a rule answered nothing in your run; 3 = the assertion
+  could not be made, or (`prove`) nothing was asserted because a reset was refused or the action
+  failed — resolve the reported cause, then run it again.
 - **Simulator** — more than one booted → `up --simulator <udid>`. That picks the device for the CA
   and the relaunch only: interception still covers the profile's hosts across the Mac and every
   simulator.
-- **Proof** — only `assert-answered <id> --run "$RUN"` proves the named rule answered in your run,
-  so keep the id `reset --json` prints. `--timeout N` waits for it instead of sleeping and hoping.
+- **Proof** — `prove ID… -- ACTION…` proves the named rules answered in your run: it resets them,
+  runs the action, and asserts each with its own run id, in one process. `--timeout N` waits for
+  the answer instead of sleeping and hoping, and an action that returns before the app fetches
+  needs it.
 
 Do not:
 
@@ -146,16 +147,38 @@ applied or never matched, because the real backend usually produces the same scr
 that can be testing nothing, and it stays green when a rule quietly stops matching.
 
 ```bash
+lyrebird --profile PATH prove ovr_x ovr_y --timeout 30 -- xcrun simctl launch booted com.example.Store
+```
+
+Non-zero unless every rule named answered a request in the run `prove` started for it. Underneath,
+it is this sequence, in this order, with the run ids held in the process:
+
+```bash
 RUN=$(lyrebird --profile PATH reset ovr_x --json | jq -r .reset.ovr_x)   # draw the boundary…
 # trigger the action under test
 lyrebird --profile PATH assert-answered ovr_x --run "$RUN"   # …and assert inside *that* boundary
 ```
 
-Non-zero unless that rule answered a request in the run you name. `--timeout N` waits instead of
-sampling. Put the reset immediately before the action, not once at start-up: the app's launch
-fetches land in between, and an answer they produced would satisfy an assertion your test never
-earned. A rule that answered is counted where the answer is produced, so the evidence outlives its
-entry in `recent` and can never come from a rule that merely matched and lost.
+A caller that can keep a shell variable may run it by hand; `prove` exists because the order is
+the whole proof and a copy of it can be wrong in ways that still pass. The action is an argv after
+`--`, never a shell string (`-- zsh -c '…'` for a pipeline). `--timeout N` waits instead of
+sampling, and an action that returns before the app fetches — a launch — needs it. The reset lands
+immediately before the action, not once at start-up: the app's launch fetches would otherwise land
+in between, and an answer they produced would satisfy an assertion your test never earned. A rule
+that answered is counted where the answer is produced, so the evidence outlives its entry in
+`recent` and can never come from a rule that merely matched and lost. What it proves is that the
+rule answered *inside the boundary*, not that the action caused it: a background request landing
+in the window earns the same evidence.
+
+`prove` prints a verdict line per rule after that rule's own diagnostic — `✓ ovr_x run R: answered`,
+`✗ ovr_x run R: answered nothing`, `✗ ovr_x run R: unproven` — and exits with the worst of them
+(2 is Click's usage error, as everywhere: no `--`, a negative `--timeout`, a rule named twice):
+
+| Exit | Meaning |
+|---|---|
+| 0 | Every rule answered, in the run its reset started |
+| 1 | A rule answered nothing in that run — including a rule that is inactive and can never answer |
+| 3 | Nothing was asserted, or an assertion could not be made: a reset was refused (unknown rule, proxy unreachable or running another profile) and the action never ran; the action failed to start or exited non-zero — its code is in the line, never the exit; or a rule's assertion hit one of the `assert-answered` exit-3 causes below |
 
 **Keep the run id and pass it.** `reset` issues a fresh run id per rule, and every answer the rule
 then gathers is reported under that id. A second reset, a reload, or a scenario switch ends that
