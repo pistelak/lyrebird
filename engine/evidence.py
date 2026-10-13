@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import time
 
 import click
@@ -256,6 +257,14 @@ def assert_answered(override_id: str, required_run: str | None, timeout: int) ->
     \b
     Without --run, every failure is 1.
     """
+    _assert_answered(override_id, required_run, timeout)
+
+
+def _assert_answered(override_id: str, required_run: str | None, timeout: int) -> None:
+    """The body of `assert-answered`: prints the verdict, returns on success and raises `SystemExit`
+    with the command's code on every failure. `prove` calls it once per rule and catches the exit —
+    this module's one error channel, including the exits `api` raises — so one rule's verdict
+    never ends the report before the others are made."""
     if timeout < 0:
         click.echo(f"{ui.RED}✗ --timeout must not be negative{ui.R}")
         raise SystemExit(1)
@@ -328,3 +337,103 @@ def assert_answered(override_id: str, required_run: str | None, timeout: int) ->
     click.echo(f"{ui.RED}✗ '{override_id}' has not answered any request {scope}{waited}.{ui.R}")
     click.echo("   `lyrebird recent` shows what did reach the proxy, and on which paths.")
     raise SystemExit(_ANSWERED_NONE)
+
+
+# MARK: - prove: the boundary, the action and the assertions in one process
+
+
+class _ActionCommand(click.Command):
+    """Splits argv at the first `--` before Click parses it.
+
+    Click drops the separator from a variadic positional, so once it has parsed `ID… -- ACTION…`
+    the boundary between the rules and the action is gone — see test_prove_needs_the_separator.
+    Only the split happens here; the check that an action followed is in the callback, after Click
+    has handled an eager `--help` on the rule side.
+    """
+
+    def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
+        if "--" in args:
+            at = args.index("--")
+            ctx.meta["action"], args = args[at + 1 :], args[:at]
+        else:
+            ctx.meta["action"] = None
+        return super().parse_args(ctx, args)
+
+
+@click.command(name="prove", cls=_ActionCommand)
+@click.argument("ids", nargs=-1, required=True, metavar="ID...")
+@click.option(
+    "--timeout",
+    type=click.IntRange(min=0),
+    default=0,
+    help="Seconds to wait for each rule's first answer (0 checks now).",
+)
+def prove(ids: tuple[str, ...], timeout: int) -> None:
+    """Reset the named rules, run ACTION, then assert each one answered in the run that reset started.
+
+    The four-command sequence — `reset ID --json`, keep the run id, run the action,
+    `assert-answered ID --run RUN` — done in one process, in that order, for every rule named. The
+    run ids never leave the process, so a caller that cannot keep a shell variable can still prove a
+    rule, and nobody copies the order by hand.
+
+    ACTION is an argv, not a shell string: `-- xcrun simctl launch booted com.example.Store`. For a
+    pipeline, pass `-- zsh -c '…'`. An action that returns before the app fetches needs `--timeout`.
+
+    \b
+    Exit codes — the worst across the rules named:
+      0  every rule answered, in the run its reset started
+      1  a rule answered nothing in that run (including: it is inactive)
+      3  nothing was asserted, or an assertion could not be made: a reset was refused (unknown rule,
+         proxy unreachable or running another profile) and the action never ran; the action failed
+         to start or exited non-zero; or `assert-answered --run` could not be made for a rule
+    """
+    action = click.get_current_context().meta["action"]
+    if not action:
+        raise click.UsageError("an action must follow `--`: prove ID [ID ...] [--timeout N] -- ACTION [ARG ...]")
+    if len(set(ids)) != len(ids):
+        # A rule named twice would be reset twice and the first run id lost: refused, not deduped.
+        raise click.UsageError(f"a rule is named more than once: {' '.join(ids)}")
+
+    runs: dict[str, str] = {}
+    for override_id in ids:
+        try:
+            result = api._control("/__mock__/reset", "POST", {"id": override_id})
+        except (SystemExit, ValueError):
+            # `_control` exits 1 for every failure (and lets a malformed body raise), which here would
+            # read as "answered nothing" — and the action must not run on an undrawn boundary:
+            # test_prove_refuses_to_act_on_a_boundary_it_could_not_draw.
+            click.echo(f"{ui.RED}✗ could not reset '{override_id}' — the action did not run; nothing asserted.{ui.R}")
+            raise SystemExit(_ASSERTION_NOT_MADE) from None
+        reset = result.get("reset") if isinstance(result, dict) else None
+        run_id = reset.get(override_id) if isinstance(reset, dict) else None
+        if not run_id:
+            click.echo(f"{ui.RED}✗ the proxy reported no run id for '{override_id}' — nothing asserted.{ui.R}")
+            raise SystemExit(_ASSERTION_NOT_MADE)
+        runs[override_id] = run_id
+
+    try:
+        completed = subprocess.run(action)
+    except OSError as error:
+        click.echo(f"{ui.RED}✗ could not start the action: {error}{ui.R}\n   Nothing asserted.")
+        raise SystemExit(_ASSERTION_NOT_MADE) from None
+    if completed.returncode:
+        # Not the action's own code: an action exiting 1 would read as "answered nothing" to a
+        # harness branching on the exit — see test_prove_reports_a_failed_action_as_nothing_asserted.
+        click.echo(f"{ui.RED}✗ the action exited {completed.returncode} — nothing asserted.{ui.R}")
+        raise SystemExit(_ASSERTION_NOT_MADE)
+
+    worst = 0
+    for override_id, run_id in runs.items():
+        try:
+            _assert_answered(override_id, run_id, timeout)
+            code = 0
+        except SystemExit as failure:
+            # Only 1 is "the assertion was made and failed"; anything else that escapes — including
+            # a 0 — is an assertion not made, never a pass: see test_prove_reports_an_unexpected_exit_as_unproven.
+            code = _ANSWERED_NONE if failure.code == _ANSWERED_NONE else _ASSERTION_NOT_MADE
+        verdict = {0: "answered", _ANSWERED_NONE: "answered nothing"}.get(code, "unproven")
+        mark = "✓" if code == 0 else f"{ui.RED}✗"
+        click.echo(f"{mark} {override_id} run {run_id}: {verdict}{ui.R if code else ''}")
+        worst = max(worst, code)
+    if worst:
+        raise SystemExit(worst)
